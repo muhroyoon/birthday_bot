@@ -7,9 +7,9 @@ from datetime import datetime, timedelta
 
 TOKEN = os.getenv("TOKEN")
 
-GUILD_ID = YOUR_GUILD_ID
-CHANNEL_ID = YOUR_CHANNEL_ID
-ROLE_ID = YOUR_ROLE_ID
+GUILD_ID = 1377672440276058214
+CHANNEL_ID = 1377672440783704219
+ROLE_ID = 1482668657178972300
 
 intents = discord.Intents.default()
 intents.members = True
