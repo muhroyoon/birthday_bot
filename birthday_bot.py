@@ -297,6 +297,10 @@ async def birthday_loop():
 
     now = get_kst_now()
 
+    if now.strftime("%m-%d %H:%M") == "01-01 00:02":
+        cursor.execute("DELETE FROM announced")
+        conn.commit()
+
     if now.strftime("%H:%M") == "00:00":
         await run_birthday()
 
