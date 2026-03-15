@@ -220,4 +220,9 @@ async def on_ready():
     await bot.tree.sync(guild=guild)
     print("명령어 동기화 완료")
 
+@bot.tree.command(name="생일테스트", description="생일 체크 테스트")
+async def birthday_test(interaction: discord.Interaction):
+    await birthday_check()
+    await interaction.response.send_message("생일 체크 실행 완료", ephemeral=True)
+
 bot.run(TOKEN)
