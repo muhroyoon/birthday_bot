@@ -4,6 +4,10 @@ import discord
 from discord.ext import commands, tasks
 from discord import app_commands
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+def get_kst_now():
+    return datetime.now(ZoneInfo("Asia/Seoul"))
 
 TOKEN = os.getenv("TOKEN")
 
@@ -175,7 +179,7 @@ async def send_monthly_calendar():
     guild = bot.get_guild(GUILD_ID)
     channel = await bot.fetch_channel(CHANNEL_ID)
 
-    now = datetime.now()
+    now = get_kst_now()
 
     if now.day != 1:
         return
@@ -214,7 +218,7 @@ async def run_birthday():
     channel = await bot.fetch_channel(CHANNEL_ID)
     role = guild.get_role(ROLE_ID)
 
-    today = datetime.now().strftime("%m-%d")
+    today = get_kst_now().strftime("%m-%d")
 
     cursor.execute("SELECT * FROM birthdays")
     data = cursor.fetchall()
@@ -291,7 +295,7 @@ async def run_birthday():
 @tasks.loop(minutes=1)
 async def birthday_loop():
 
-    now = datetime.now()
+    now = get_kst_now()
 
     if now.strftime("%H:%M") == "00:00":
         await run_birthday()
