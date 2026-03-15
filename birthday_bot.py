@@ -234,11 +234,12 @@ async def run_birthday():
 
     guild = bot.get_guild(GUILD_ID)
     channel = await bot.fetch_channel(CHANNEL_ID)
+
     role = guild.get_role(ROLE_ID)
 
-if role is None:
-    print("❌ ROLE NOT FOUND")
-    return
+    if role is None:
+        print("❌ ROLE NOT FOUND")
+        return
 
     today = get_kst_now().strftime("%m-%d")
 
