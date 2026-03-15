@@ -128,6 +128,24 @@ async def add_birthday(interaction: discord.Interaction, member: discord.Member,
         ephemeral=True
     )
 
+# ---------------- 생일 삭제 ----------------
+@bot.tree.command(name="생일삭제")
+@app_commands.checks.has_permissions(administrator=True)
+async def remove_birthday(interaction: discord.Interaction, member: discord.Member):
+
+    cursor.execute(
+        "DELETE FROM birthdays WHERE user_id=?",
+        (member.id,)
+    )
+
+    conn.commit()
+
+    await interaction.response.send_message(
+        f"{member.display_name} 생일 삭제 완료",
+        ephemeral=True
+    )
+
+
 # ---------------- 생일 목록 ----------------
 
 @bot.tree.command(name="생일목록")
