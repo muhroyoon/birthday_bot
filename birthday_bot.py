@@ -349,6 +349,7 @@ async def on_ready():
 
     bot.tree.copy_global_to(guild=guild)
     await bot.tree.sync(guild=guild)
+    await bot.tree.sync()  # 추가
 
     bot.add_view(BirthdayView())
 
