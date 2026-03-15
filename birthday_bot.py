@@ -274,7 +274,7 @@ async def run_birthday():
 
             embed = discord.Embed(
                 title="🎉 생일 축하!",
-                description=f"{member.mention}님의 생일입니다!",
+                description=f"오늘은 {member.mention}님의 생일입니다! 다들 축하해 주세요!! 🥳",
                 color=0xff69b4
             )
 
