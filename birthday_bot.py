@@ -269,7 +269,7 @@ async def run_birthday():
             try:
                 await member.add_role(role)
                 print(f"역할 지급 성공:{member}")
-            except:Exception as e:
+                except:Exception as e:
                 print(f"역할 지급 실패:{e}")
 
             try:
