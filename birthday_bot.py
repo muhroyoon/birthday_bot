@@ -215,13 +215,9 @@ async def birthday_check():
 
 @bot.event
 async def on_ready():
-
-    await bot.tree.sync()
-
-    bot.add_view(BirthdayView())
-
-    birthday_check.start()
-
-    print("생일봇 실행 완료")
+    guild = discord.Object(id=GUILD_ID)
+    bot.tree.copy_global_to(guild=guild)
+    await bot.tree.sync(guild=guild)
+    print("명령어 동기화 완료")
 
 bot.run(TOKEN)
