@@ -267,7 +267,7 @@ async def run_birthday():
                 continue
 
             try:
-                await member.add_role(role)
+                await member.add_roles(role)
                 print(f"역할 지급 성공:{member}")
             except Exception as e:
                 print(f"역할 지급 실패:{e}")
