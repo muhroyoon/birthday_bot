@@ -104,6 +104,90 @@ class BirthdayView(discord.ui.View):
 
         await interaction.response.send_message("🎉 축하를 보냈습니다!", ephemeral=True)
 
+# ---------------- 생일 목록 (🔥 최종 버전) ----------------
+
+class BirthdayListView(discord.ui.View):
+    def __init__(self, data, per_page=10):
+        super().__init__(timeout=180)
+        self.data = data
+        self.per_page = per_page
+        self.page = 0
+        self.max_page = (len(data) - 1) // per_page
+
+    def update_buttons(self):
+        self.prev.disabled = self.page == 0
+        self.next.disabled = self.page == self.max_page
+
+    def get_embed(self):
+        self.update_buttons()
+
+        now = get_kst_now()
+        current_month = now.month
+
+        start = self.page * self.per_page
+        end = start + self.per_page
+        chunk = self.data[start:end]
+
+        embed = discord.Embed(title="🎂 생일 목록", color=0xff69b4)
+
+        desc = ""
+        for member, date in chunk:
+            month, day = map(int, date.split("-"))
+
+            if month == now.month and day == now.day:
+                desc += f"🎉 **{member.display_name}** - {date} (오늘!)\n"
+            elif month == current_month:
+                desc += f"⭐ **{member.display_name}** - {date}\n"
+            else:
+                desc += f"{member.display_name} - {date}\n"
+
+        embed.description = desc if desc else "데이터 없음"
+        embed.set_footer(text=f"{self.page+1} / {self.max_page+1} 페이지")
+
+        return embed
+
+    @discord.ui.button(label="◀ 이전", style=discord.ButtonStyle.gray)
+    async def prev(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.page > 0:
+            self.page -= 1
+            self.update_buttons()
+            await interaction.response.edit_message(embed=self.get_embed(), view=self)
+        else:
+            await interaction.response.defer()
+
+    @discord.ui.button(label="▶ 다음", style=discord.ButtonStyle.gray)
+    async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.page < self.max_page:
+            self.page += 1
+            self.update_buttons()
+            await interaction.response.edit_message(embed=self.get_embed(), view=self)
+        else:
+            await interaction.response.defer()
+
+
+@bot.tree.command(name="생일목록")
+async def birthday_list(interaction: discord.Interaction):
+
+    cursor.execute("SELECT * FROM birthdays")
+    raw_data = cursor.fetchall()
+
+    birthday_list = []
+
+    for user_id, date in raw_data:
+        member = interaction.guild.get_member(int(user_id))
+        if member:
+            birthday_list.append((member, date))
+
+    # 날짜순 정렬
+    birthday_list.sort(key=lambda x: tuple(map(int, x[1].split("-"))))
+
+    view = BirthdayListView(birthday_list, per_page=10)
+
+    await interaction.response.send_message(
+        embed=view.get_embed(),
+        view=view
+    )
+
 # ---------------- 생일 등록 ----------------
 
 @bot.tree.command(name="생일등록")
@@ -129,6 +213,7 @@ async def add_birthday(interaction: discord.Interaction, member: discord.Member,
     )
 
 # ---------------- 생일 삭제 ----------------
+
 @bot.tree.command(name="생일삭제")
 @app_commands.checks.has_permissions(administrator=True)
 async def remove_birthday(interaction: discord.Interaction, member: discord.Member):
@@ -144,26 +229,6 @@ async def remove_birthday(interaction: discord.Interaction, member: discord.Memb
         f"{member.display_name} 생일 삭제 완료",
         ephemeral=True
     )
-
-
-# ---------------- 생일 목록 ----------------
-
-@bot.tree.command(name="생일목록")
-async def birthday_list(interaction: discord.Interaction):
-
-    cursor.execute("SELECT * FROM birthdays")
-    data = cursor.fetchall()
-
-    embed = discord.Embed(title="🎂 생일 목록", color=0xff69b4)
-
-    for user_id, date in data:
-
-        member = interaction.guild.get_member(int(user_id))
-
-        if member:
-            embed.add_field(name=member.display_name, value=date)
-
-    await interaction.response.send_message(embed=embed)
 
 # ---------------- 축하 랭킹 ----------------
 
@@ -268,9 +333,8 @@ async def run_birthday():
 
             try:
                 await member.add_roles(role)
-                print(f"역할 지급 성공:{member}")
-            except Exception as e:
-                print(f"역할 지급 실패:{e}")
+            except:
+                pass
 
             try:
                 if not member.display_name.startswith("🎂"):
@@ -280,13 +344,13 @@ async def run_birthday():
 
             embed = discord.Embed(
                 title="🎉 생일 축하!",
-                description=f"오늘은 {member.mention}님의 생일입니다! 다들 축하해 주세요!! 🥳",
+                description=f"오늘은 {member.mention}님의 생일입니다! 🥳",
                 color=0xff69b4
             )
 
             view = BirthdayView()
 
-            message = await channel.send(embed=embed, view=view)
+            await channel.send(embed=embed, view=view)
 
             cursor.execute(
                 "INSERT INTO announced VALUES (?,?)",
@@ -294,11 +358,6 @@ async def run_birthday():
             )
 
             conn.commit()
-
-            try:
-                await member.send("🎂 생일 축하합니다!")
-            except:
-                pass
 
         else:
 
@@ -331,15 +390,6 @@ async def birthday_loop():
     if now.strftime("%H:%M") == "00:01":
         await send_monthly_calendar()
 
-# ---------------- 테스트 ----------------
-
-@bot.tree.command(name="생일테스트")
-async def birthday_test(interaction: discord.Interaction):
-
-    await run_birthday()
-
-    await interaction.response.send_message("테스트 실행 완료", ephemeral=True)
-
 # ---------------- READY ----------------
 
 @bot.event
@@ -349,7 +399,7 @@ async def on_ready():
 
     bot.tree.copy_global_to(guild=guild)
     await bot.tree.sync(guild=guild)
-    await bot.tree.sync()  # 추가
+    await bot.tree.sync()
 
     bot.add_view(BirthdayView())
 
