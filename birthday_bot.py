@@ -171,20 +171,50 @@ async def notice(interaction: discord.Interaction, 제목: str, 내용: str):
     embed.set_footer(text=f"쫀놈이 | {interaction.user.display_name}")
     embed.timestamp=get_kst_now()
 
-    await channel.send(embed=embed,view=NoticeView())
+    await channel.send(content="@everyone", embed=embed, view=NoticeView())
     await interaction.response.send_message("공지 완료",ephemeral=True)
 
 @bot.tree.command(name="공지통계")
 async def stats(interaction: discord.Interaction, message_id: str):
-    cursor.execute("SELECT type, COUNT(*) FROM notice_reactions WHERE message_id=? GROUP BY type",(message_id,))
-    data=cursor.fetchall()
 
-    total=sum(c for _,c in data)
-    msg="📊 통계\n\n"
-    for t,c in data:
-        msg+=f"{t}: {c}명 ({(c/total*100) if total else 0:.1f}%)\n"
+    cursor.execute(
+        "SELECT user_id, type FROM notice_reactions WHERE message_id=?",
+        (message_id,)
+    )
 
-    await interaction.response.send_message(msg)
+    data = cursor.fetchall()
+
+    grouped = {
+        "참여": [],
+        "불참": [],
+        "좋아요": []
+    }
+
+    for user_id, t in data:
+        member = interaction.guild.get_member(int(user_id))
+        if member:
+            grouped[t].append(member.display_name)
+
+    result = "📊 공지 통계\n\n"
+
+    total = len(data)
+
+    for t in ["참여", "불참", "좋아요"]:
+        users = grouped[t]
+        count = len(users)
+        percent = (count / total * 100) if total > 0 else 0
+
+        result += f"**{t} ({count}명 / {percent:.1f}%)**\n"
+
+        if users:
+            for name in users:
+                result += f"- {name}\n"
+        else:
+            result += "- 없음\n"
+
+        result += "\n"
+
+    await interaction.response.send_message(result)
 
 @bot.tree.command(name="생일등록")
 @app_commands.checks.has_permissions(administrator=True)
