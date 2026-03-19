@@ -22,7 +22,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ---------------- DATABASE ----------------
 
-conn = sqlite3.connect("birthday.db")
+conn = sqlite3.connect("/data/birthday.db")
 cursor = conn.cursor()
 
 cursor.execute("""
