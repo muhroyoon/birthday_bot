@@ -157,12 +157,15 @@ class NoticeView(discord.ui.View):
 async def notice(interaction: discord.Interaction, 제목: str, 내용: str):
     channel = bot.get_channel(NOTICE_CHANNEL_ID)
 
+    # ✅ 여기 추가
+    content_with_breaks = 내용.replace("|", "\n")
+
     banner=f"""
 ━━━━━━━━━━━━━━━━━━
 📢 **{제목}**
 ━━━━━━━━━━━━━━━━━━
 
-{내용}
+{content_with_breaks}
 
 👇 아래 버튼 클릭
 """
