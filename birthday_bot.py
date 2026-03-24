@@ -285,11 +285,13 @@ async def stats(interaction: discord.Interaction, message_id: str):
 @app_commands.checks.has_permissions(administrator=True)
 async def rule(interaction: discord.Interaction, 내용: str):
 
-    desc = f"""
+content_fixed = 내용.replace("|", "\n")
+
+desc = f"""
 📌 **클랜 규칙 안내**
 ━━━━━━━━━━━━━━━━━━
 
-{내용.replace("|", "\n")}
+{content_fixed}
 
 ━━━━━━━━━━━━━━━━━━
 🎮 위 규칙을 정독해 주세요!
