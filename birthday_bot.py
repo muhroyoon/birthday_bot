@@ -4,7 +4,7 @@ import sqlite3
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 def get_kst_now():
@@ -16,6 +16,13 @@ GUILD_ID = 1377672440276058214
 CHANNEL_ID = 1377672440783704219
 ROLE_ID = 1482668657178972300
 NOTICE_CHANNEL_ID = 1397125455454273578
+
+# ✅ 규칙 관련
+RULE_ROLE_ID = 1486079820160041131
+RULE_LOG_CHANNEL_ID = 1397124964246622238
+
+# ✅ 생일 역할
+BIRTHDAY_ROLE_ID = 1482668657178972300
 
 intents = discord.Intents.default()
 intents.members = True
@@ -32,6 +39,10 @@ cursor.execute("""CREATE TABLE IF NOT EXISTS congrats_count(user_id TEXT PRIMARY
 cursor.execute("""CREATE TABLE IF NOT EXISTS announced(user_id TEXT, date TEXT)""")
 cursor.execute("""CREATE TABLE IF NOT EXISTS scheduled_notices(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, send_time TEXT)""")
 cursor.execute("""CREATE TABLE IF NOT EXISTS notice_reactions(message_id TEXT, user_id TEXT, type TEXT)""")
+
+# ✅ 추가 테이블
+cursor.execute("""CREATE TABLE IF NOT EXISTS rule_confirm(message_id TEXT, user_id TEXT)""")
+cursor.execute("""CREATE TABLE IF NOT EXISTS birthday_messages(message_id TEXT PRIMARY KEY, user_id TEXT)""")
 
 conn.commit()
 
@@ -58,6 +69,18 @@ class BirthdayView(discord.ui.View):
 
         button.label = f"🎁 축하하기 ({count})"
         await interaction.message.edit(view=self)
+
+        # 🎉 생일 주인에게 DM
+        cursor.execute("SELECT user_id FROM birthday_messages WHERE message_id=?", (interaction.message.id,))
+        result = cursor.fetchone()
+
+        if result:
+            member = interaction.guild.get_member(int(result[0]))
+            if member:
+                try:
+                    await member.send(f"🎉 {interaction.user.display_name}님이 생일을 축하했습니다!")
+                except:
+                    pass
 
         await interaction.response.send_message("🎉 축하 완료!", ephemeral=True)
 
@@ -150,6 +173,46 @@ class NoticeView(discord.ui.View):
     async def like(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.handle(interaction,"좋아요")
 
+# ================== 규칙 확인 버튼 ==================
+class RuleConfirmView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def update_count(self, message):
+        cursor.execute("SELECT COUNT(*) FROM rule_confirm WHERE message_id=?", (message.id,))
+        count = cursor.fetchone()[0]
+
+        for item in self.children:
+            if item.custom_id == "rule_confirm":
+                item.label = f"✅ 규칙 확인 ({count})"
+
+        await message.edit(view=self)
+
+    @discord.ui.button(label="✅ 규칙 확인 (0)", style=discord.ButtonStyle.success, custom_id="rule_confirm")
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+
+        cursor.execute("SELECT * FROM rule_confirm WHERE message_id=? AND user_id=?",
+                       (interaction.message.id, interaction.user.id))
+        if cursor.fetchone():
+            await interaction.response.send_message("이미 인증 완료된 상태입니다.", ephemeral=True)
+            return
+
+        cursor.execute("INSERT INTO rule_confirm VALUES (?,?)",
+                       (interaction.message.id, interaction.user.id))
+        conn.commit()
+
+        role = interaction.guild.get_role(RULE_ROLE_ID)
+        if role and role not in interaction.user.roles:
+            await interaction.user.add_roles(role)
+
+        await self.update_count(interaction.message)
+
+        log_channel = interaction.guild.get_channel(RULE_LOG_CHANNEL_ID)
+        if log_channel:
+            await log_channel.send(f"✅ {interaction.user.mention} 님이 규칙 확인")
+
+        await interaction.response.send_message("🎉 규칙 확인 완료!", ephemeral=True)
+
 # ================== 명령어 ==================
 
 @bot.tree.command(name="공지")
@@ -157,7 +220,6 @@ class NoticeView(discord.ui.View):
 async def notice(interaction: discord.Interaction, 제목: str, 내용: str):
     channel = bot.get_channel(NOTICE_CHANNEL_ID)
 
-    # ✅ 여기 추가
     content_with_breaks = 내용.replace("|", "\n")
 
     banner=f"""
@@ -219,6 +281,45 @@ async def stats(interaction: discord.Interaction, message_id: str):
 
     await interaction.response.send_message(result)
 
+@bot.tree.command(name="규칙")
+@app_commands.checks.has_permissions(administrator=True)
+async def rule(interaction: discord.Interaction, 내용: str):
+
+    desc = f"""
+📌 **클랜 규칙 안내**
+━━━━━━━━━━━━━━━━━━
+
+{내용.replace("|", "\n")}
+
+━━━━━━━━━━━━━━━━━━
+🎮 위 규칙을 정독해 주세요!
+
+👇 아래 버튼 클릭
+"""
+
+    embed = discord.Embed(description=desc, color=0x2ecc71)
+    embed.timestamp = get_kst_now()
+
+    await interaction.channel.send(embed=embed, view=RuleConfirmView())
+    await interaction.response.send_message("규칙 전송 완료", ephemeral=True)
+
+@bot.tree.command(name="규칙통계")
+async def rule_stats(interaction: discord.Interaction, message_id: str):
+
+    cursor.execute("SELECT user_id FROM rule_confirm WHERE message_id=?", (message_id,))
+    data = cursor.fetchall()
+
+    names = []
+    for (uid,) in data:
+        m = interaction.guild.get_member(int(uid))
+        if m:
+            names.append(m.display_name)
+
+    result = f"📊 규칙 확인 인원 ({len(names)}명)\n\n"
+    result += "\n".join([f"- {n}" for n in names]) if names else "없음"
+
+    await interaction.response.send_message(result)
+
 @bot.tree.command(name="생일등록")
 @app_commands.checks.has_permissions(administrator=True)
 async def add_birthday(interaction: discord.Interaction, member: discord.Member, date: str):
@@ -243,15 +344,66 @@ async def birthday_list(interaction: discord.Interaction):
     await interaction.response.send_message(embed=view.get_embed(),view=view)
 
 # ================== 루프 ==================
-
 @tasks.loop(minutes=1)
 async def birthday_loop():
-    now=get_kst_now()
-    if now.strftime("%H:%M")=="00:00":
-        pass
+    now = get_kst_now()
+
+    if now.strftime("%H:%M") == "00:00":
+
+        guild = bot.get_guild(GUILD_ID)
+        channel = bot.get_channel(CHANNEL_ID)
+
+        today = now.strftime("%m-%d")
+
+        # 생일 시작
+        cursor.execute("SELECT user_id FROM birthdays WHERE date=?", (today,))
+        users = cursor.fetchall()
+
+        for (uid,) in users:
+            member = guild.get_member(int(uid))
+            if not member:
+                continue
+
+            role = guild.get_role(BIRTHDAY_ROLE_ID)
+            if role and role not in member.roles:
+                await member.add_roles(role)
+
+            try:
+                if "🎂" not in member.display_name:
+                    await member.edit(nick=f"{member.display_name} 🎂")
+            except:
+                pass
+
+            msg = await channel.send(
+                f"🎂 **오늘은 {member.mention}님의 생일입니다!** 🎉\n\n다 같이 축하해주세요 👇",
+                view=BirthdayView()
+            )
+
+            cursor.execute("INSERT INTO birthday_messages VALUES (?, ?)", (msg.id, uid))
+            conn.commit()
+
+        # 생일 종료
+        yesterday = (now - timedelta(days=1)).strftime("%m-%d")
+
+        cursor.execute("SELECT user_id FROM birthdays WHERE date=?", (yesterday,))
+        users = cursor.fetchall()
+
+        for (uid,) in users:
+            member = guild.get_member(int(uid))
+            if not member:
+                continue
+
+            role = guild.get_role(BIRTHDAY_ROLE_ID)
+            if role and role in member.roles:
+                await member.remove_roles(role)
+
+            try:
+                if "🎂" in member.display_name:
+                    await member.edit(nick=member.display_name.replace(" 🎂", ""))
+            except:
+                pass
 
 # ================== READY ==================
-
 @bot.event
 async def on_ready():
     guild=discord.Object(id=GUILD_ID)
@@ -260,6 +412,7 @@ async def on_ready():
 
     bot.add_view(BirthdayView())
     bot.add_view(NoticeView())
+    bot.add_view(RuleConfirmView())
 
     birthday_loop.start()
 
