@@ -406,9 +406,12 @@ async def birthday_loop():
 # ================== READY ==================
 @bot.event
 async def on_ready():
-    guild=discord.Object(id=GUILD_ID)
+    guild = discord.Object(id=GUILD_ID)
+
     bot.tree.copy_global_to(guild=guild)
-    await bot.tree.sync(guild=guild)
+
+    synced = await bot.tree.sync(guild=guild)
+    print(f"슬래시 명령어 동기화: {len(synced)}개")
 
     bot.add_view(BirthdayView())
     bot.add_view(NoticeView())
