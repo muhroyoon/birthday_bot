@@ -282,12 +282,11 @@ async def stats(interaction: discord.Interaction, message_id: str):
     await interaction.response.send_message(result)
 
 @bot.tree.command(name="규칙")
-@app_commands.checks.has_permissions(administrator=True)
 async def rule(interaction: discord.Interaction, 내용: str):
 
-content_fixed = 내용.replace("|", "\n")
+    content_fixed = 내용.replace("|", "\n")
 
-desc = f"""
+    desc = f"""
 📌 **클랜 규칙 안내**
 ━━━━━━━━━━━━━━━━━━
 
@@ -304,24 +303,6 @@ desc = f"""
 
     await interaction.channel.send(embed=embed, view=RuleConfirmView())
     await interaction.response.send_message("규칙 전송 완료", ephemeral=True)
-
-@bot.tree.command(name="규칙통계")
-async def rule_stats(interaction: discord.Interaction, message_id: str):
-
-    cursor.execute("SELECT user_id FROM rule_confirm WHERE message_id=?", (message_id,))
-    data = cursor.fetchall()
-
-    names = []
-    for (uid,) in data:
-        m = interaction.guild.get_member(int(uid))
-        if m:
-            names.append(m.display_name)
-
-    result = f"📊 규칙 확인 인원 ({len(names)}명)\n\n"
-    result += "\n".join([f"- {n}" for n in names]) if names else "없음"
-
-    await interaction.response.send_message(result)
-
 @bot.tree.command(name="생일등록")
 @app_commands.checks.has_permissions(administrator=True)
 async def add_birthday(interaction: discord.Interaction, member: discord.Member, date: str):
