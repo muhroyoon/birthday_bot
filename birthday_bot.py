@@ -213,6 +213,7 @@ class RuleConfirmView(discord.ui.View):
 
         await interaction.response.send_message("🎉 규칙 확인 완료!", ephemeral=True)
 
+
 # ================== 명령어 ==================
 
 @bot.tree.command(name="공지")
@@ -281,28 +282,6 @@ async def stats(interaction: discord.Interaction, message_id: str):
 
     await interaction.response.send_message(result)
 
-@bot.tree.command(name="규칙")
-async def rule(interaction: discord.Interaction, 내용: str):
-
-    content_fixed = 내용.replace("|", "\n")
-
-    desc = f"""
-📌 **클랜 규칙 안내**
-━━━━━━━━━━━━━━━━━━
-
-{content_fixed}
-
-━━━━━━━━━━━━━━━━━━
-🎮 위 규칙을 정독해 주세요!
-
-👇 아래 버튼 클릭
-"""
-
-    embed = discord.Embed(description=desc, color=0x2ecc71)
-    embed.timestamp = get_kst_now()
-
-    await interaction.channel.send(embed=embed, view=RuleConfirmView())
-    await interaction.response.send_message("규칙 전송 완료", ephemeral=True)
 @bot.tree.command(name="생일등록")
 @app_commands.checks.has_permissions(administrator=True)
 async def add_birthday(interaction: discord.Interaction, member: discord.Member, date: str):
@@ -325,6 +304,22 @@ async def birthday_list(interaction: discord.Interaction):
 
     view=BirthdayListView(lst)
     await interaction.response.send_message(embed=view.get_embed(),view=view)
+
+# ================== /규칙확인버튼 명령어 ==================
+@bot.tree.command(name="규칙확인버튼")
+@app_commands.checks.has_permissions(administrator=True)
+async def rule_button(interaction: discord.Interaction):
+
+    desc = """
+원활한 게임을 위해 클랜 규칙을 정독해 주세요!!
+확인 후 아래 버튼을 눌러주세요!
+"""
+
+    embed = discord.Embed(description=desc, color=0x2ecc71)
+    embed.timestamp = get_kst_now()
+
+    await interaction.channel.send(embed=embed, view=RuleConfirmView())
+    await interaction.response.send_message("규칙 확인 버튼 메시지 전송 완료", ephemeral=True)
 
 # ================== 루프 ==================
 @tasks.loop(minutes=1)
