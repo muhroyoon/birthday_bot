@@ -269,6 +269,65 @@ async def stats(interaction: discord.Interaction, message_id: str):
 
     await interaction.response.send_message(result)
 
+@tasks.loop(minutes=1)
+async def birthday_loop():
+    now = get_kst_now()
+
+    if now.strftime("%H:%M") == "00:00":
+
+        guild = bot.get_guild(GUILD_ID)
+        channel = bot.get_channel(CHANNEL_ID)
+
+        today = now.strftime("%m-%d")
+
+        # 생일 시작
+        cursor.execute("SELECT user_id FROM birthdays WHERE date=?", (today,))
+        users = cursor.fetchall()
+
+        for (uid,) in users:
+            member = guild.get_member(int(uid))
+            if not member:
+                continue
+
+            role = guild.get_role(BIRTHDAY_ROLE_ID)
+            if role and role not in member.roles:
+                await member.add_roles(role)
+
+            try:
+                if "🎂" not in member.display_name:
+                    await member.edit(nick=f"{member.display_name} 🎂")
+            except:
+                pass
+
+            msg = await channel.send(
+                f"🎂 **오늘은 {member.mention}님의 생일입니다!** 🎉\n\n다 같이 축하해주세요 👇",
+                view=BirthdayView()
+            )
+
+            cursor.execute("INSERT INTO birthday_messages VALUES (?, ?)", (msg.id, uid))
+            conn.commit()
+
+        # 생일 종료
+        yesterday = (now - timedelta(days=1)).strftime("%m-%d")
+
+        cursor.execute("SELECT user_id FROM birthdays WHERE date=?", (yesterday,))
+        users = cursor.fetchall()
+
+        for (uid,) in users:
+            member = guild.get_member(int(uid))
+            if not member:
+                continue
+
+            role = guild.get_role(BIRTHDAY_ROLE_ID)
+            if role and role in member.roles:
+                await member.remove_roles(role)
+
+            try:
+                if "🎂" in member.display_name:
+                    await member.edit(nick=member.display_name.replace(" 🎂", ""))
+            except:
+                pass
+
 # ================== 나머지 기존 코드 그대로 ==================
 
 @bot.event
