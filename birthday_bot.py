@@ -130,49 +130,6 @@ class BirthdayListView(discord.ui.View):
             self.page += 1
             await interaction.response.edit_message(embed=self.get_embed(), view=self)
 
-# ================== 공지 버튼 ==================
-class NoticeView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    async def update(self, message):
-        counts = {"참여":0,"불참":0,"좋아요":0}
-        cursor.execute("SELECT type, COUNT(*) FROM notice_reactions WHERE message_id=? GROUP BY type",(message.id,))
-        for t,c in cursor.fetchall():
-            counts[t]=c
-
-        for item in self.children:
-            if item.custom_id=="join":
-                item.label=f"🙋 참여 ({counts['참여']})"
-            elif item.custom_id=="no":
-                item.label=f"❌ 불참 ({counts['불참']})"
-            elif item.custom_id=="like":
-                item.label=f"👍 좋아요 ({counts['좋아요']})"
-
-        await message.edit(view=self)
-
-    async def handle(self, interaction, t):
-        cursor.execute("SELECT * FROM notice_reactions WHERE message_id=? AND user_id=?",(interaction.message.id,interaction.user.id))
-        if cursor.fetchone():
-            cursor.execute("UPDATE notice_reactions SET type=? WHERE message_id=? AND user_id=?",(t,interaction.message.id,interaction.user.id))
-        else:
-            cursor.execute("INSERT INTO notice_reactions VALUES (?,?,?)",(interaction.message.id,interaction.user.id,t))
-        conn.commit()
-        await self.update(interaction.message)
-        await interaction.response.send_message("반영 완료", ephemeral=True)
-
-    @discord.ui.button(label="🙋 참여 (0)", style=discord.ButtonStyle.success, custom_id="join")
-    async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle(interaction,"참여")
-
-    @discord.ui.button(label="❌ 불참 (0)", style=discord.ButtonStyle.danger, custom_id="no")
-    async def no(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle(interaction,"불참")
-
-    @discord.ui.button(label="👍 좋아요 (0)", style=discord.ButtonStyle.primary, custom_id="like")
-    async def like(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle(interaction,"좋아요")
-
 # ================== 규칙 확인 버튼 ==================
 class RuleConfirmView(discord.ui.View):
     def __init__(self):
