@@ -314,9 +314,18 @@ async def birthday_loop():
                 pass
 
             msg = await channel.send(
-                f"🎂 **오늘은 {member.mention}님의 생일입니다!** 🎉\n\n다 같이 축하해주세요 👇",
-                view=BirthdayView()
-            )
+    f"""
+✨🎆✨🎆✨🎆✨🎆✨🎆
+
+🎂🎉 오늘은 {member.mention}님의 생일입니다!!! 🎉🎂
+
+💥🎊 축하 폭격 시작!!! 🎊💥
+👇 아래 버튼으로 축하해주세요 👇
+
+✨🎆✨🎆✨🎆✨🎆✨🎆
+""",
+    view=BirthdayView()
+)
 
             cursor.execute("INSERT INTO birthday_messages VALUES (?, ?)", (msg.id, uid))
             conn.commit()
