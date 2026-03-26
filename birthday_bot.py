@@ -129,6 +129,20 @@ class BirthdayListView(discord.ui.View):
             self.page += 1
             await interaction.response.edit_message(embed=self.get_embed(), view=self)
 
+@bot.tree.command(name="생일삭제")
+@app_commands.checks.has_permissions(administrator=True)
+async def delete_birthday(interaction: discord.Interaction, member: discord.Member):
+
+    cursor.execute("SELECT * FROM birthdays WHERE user_id=?", (member.id,))
+    if not cursor.fetchone():
+        await interaction.response.send_message("등록된 생일이 없습니다.", ephemeral=True)
+        return
+
+    cursor.execute("DELETE FROM birthdays WHERE user_id=?", (member.id,))
+    conn.commit()
+
+    await interaction.response.send_message(f"{member.display_name}님의 생일이 삭제되었습니다.", ephemeral=True)
+
 # ================== 공지 버튼 (수정됨) ==================
 class NoticeView(discord.ui.View):
     def __init__(self):
