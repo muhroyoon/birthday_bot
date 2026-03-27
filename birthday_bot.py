@@ -431,22 +431,21 @@ msg = await channel.send(
 
 
 
-# ================== 나머지 기존 코드 그대로 ==================
 
 @bot.event
 async def on_ready():
     guild = discord.Object(id=GUILD_ID)
 
-    bot.tree.clear_commands(guild=guild)  # 🔥 기존 명령어 삭제
+    bot.tree.clear_commands(guild=guild)  # 기존 명령어 제거
     bot.tree.copy_global_to(guild=guild)
 
     synced = await bot.tree.sync(guild=guild)
 
-    print(f"슬래시 명령어 동기화: {len(synced)}개")
+    print(f"동기화된 명령어: {len(synced)}개")
 
     bot.add_view(BirthdayView())
     birthday_loop.start()
 
-    print("🎂 생일봇 완전판 실행 완료")
+    print("🎂 생일봇 실행 완료")
 
 bot.run(TOKEN)
