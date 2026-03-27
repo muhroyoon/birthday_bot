@@ -73,13 +73,29 @@ class BirthdayView(discord.ui.View):
         cursor.execute("SELECT user_id FROM birthday_messages WHERE message_id=?", (interaction.message.id,))
         result = cursor.fetchone()
 
-        if result:
-            member = interaction.guild.get_member(int(result[0]))
-            if member:
-                try:
-                    await member.send(f"🎉 {interaction.user.display_name}님이 생일을 축하했습니다!")
-                except:
-                    pass
+       if result:
+    member = interaction.guild.get_member(int(result[0]))
+    if member:
+        try:
+            embed = discord.Embed(
+                title="🎉 생일 축하 도착!",
+                description=f"**{interaction.user.display_name}님이 당신의 생일을 축하했습니다!** 🎂",
+                color=0xff69b4
+            )
+
+            embed.add_field(
+                name="💌 메시지",
+                value="서버에서 따뜻한 축하가 도착했어요!",
+                inline=False
+            )
+
+            embed.set_thumbnail(url=interaction.user.display_avatar.url)
+            embed.set_footer(text="🎊 행복한 생일 보내세요!")
+
+            await member.send(embed=embed)
+
+        except:
+            pass
 
         await interaction.response.send_message("🎉 축하 완료!", ephemeral=True)
 
@@ -283,6 +299,60 @@ async def stats(interaction: discord.Interaction, message_id: str):
 
     await interaction.response.send_message(result)
 
+@bot.tree.command(name="생일등록")
+@app_commands.checks.has_permissions(administrator=True)
+async def add_birthday(interaction: discord.Interaction, member: discord.Member, date: str):
+
+    try:
+        datetime.strptime(date, "%m-%d")
+    except:
+        await interaction.response.send_message("MM-DD 형식으로 입력", ephemeral=True)
+        return
+
+    cursor.execute(
+        "INSERT OR REPLACE INTO birthdays VALUES (?,?)",
+        (member.id, date)
+    )
+
+    conn.commit()
+
+    await interaction.response.send_message(
+        f"{member.mention} 생일 등록 완료 🎂",
+        ephemeral=True
+    )
+
+@bot.tree.command(name="생일삭제")
+@app_commands.checks.has_permissions(administrator=True)
+async def remove_birthday(interaction: discord.Interaction, member: discord.Member):
+
+    cursor.execute(
+        "DELETE FROM birthdays WHERE user_id=?",
+        (member.id,)
+    )
+
+    conn.commit()
+
+    await interaction.response.send_message(
+        f"{member.display_name} 생일 삭제 완료",
+        ephemeral=True
+    )
+
+@bot.tree.command(name="생일삭제")
+@app_commands.checks.has_permissions(administrator=True)
+async def remove_birthday(interaction: discord.Interaction, member: discord.Member):
+
+    cursor.execute(
+        "DELETE FROM birthdays WHERE user_id=?",
+        (member.id,)
+    )
+
+    conn.commit()
+
+    await interaction.response.send_message(
+        f"{member.display_name} 생일 삭제 완료",
+        ephemeral=True
+    )
+
 @tasks.loop(minutes=1)
 async def birthday_loop():
     now = get_kst_now()
@@ -313,8 +383,9 @@ async def birthday_loop():
             except:
                 pass
 
-            msg = await channel.send(
-    f"""
+            embed = discord.Embed(
+    title="🎂 오늘의 주인공 등장!",
+    description=f"""
 ✨🎆✨🎆✨🎆✨🎆✨🎆
 
 🎂🎉 오늘은 {member.mention}님의 생일입니다!!! 🎉🎂
@@ -324,6 +395,13 @@ async def birthday_loop():
 
 ✨🎆✨🎆✨🎆✨🎆✨🎆
 """,
+    color=0xff69b4
+)
+
+embed.set_footer(text="🎁 버튼 눌러서 축하해보세요!")
+
+msg = await channel.send(
+    embed=embed,
     view=BirthdayView()
 )
 
@@ -350,6 +428,8 @@ async def birthday_loop():
                     await member.edit(nick=member.display_name.replace(" 🎂", ""))
             except:
                 pass
+
+
 
 # ================== 나머지 기존 코드 그대로 ==================
 
