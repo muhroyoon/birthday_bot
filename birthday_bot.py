@@ -262,6 +262,7 @@ async def rule_button(interaction: discord.Interaction):
 @tasks.loop(minutes=1)
 async def birthday_loop():
     now = get_kst_now()
+    guild = bot.get_guild(GUILD_ID)
     if now.strftime("%H:%M")=="00:00":
         guild=bot.get_guild(GUILD_ID)
         channel=bot.get_channel(CHANNEL_ID)
@@ -295,6 +296,31 @@ async def birthday_loop():
 
             cursor.execute("INSERT INTO birthday_messages VALUES (?,?)",(msg.id,uid))
             conn.commit()
+
+    # ================== 생일 종료 처리 ==================
+
+    yesterday = (now - timedelta(days=1)).strftime("%m-%d")
+
+    cursor.execute("SELECT user_id FROM birthdays WHERE date=?", (yesterday,))
+    users = cursor.fetchall()
+
+    for (uid,) in users:
+        member = guild.get_member(int(uid))
+        if not member:
+            continue
+
+        role = guild.get_role(BIRTHDAY_ROLE_ID)
+
+        # 역할 제거
+        if role and role in member.roles:
+            await member.remove_roles(role)
+
+        # 닉네임에서 🎂 제거
+        try:
+            if "🎂" in member.display_name:
+                await member.edit(nick=member.display_name.replace(" 🎂", ""))
+        except:
+            pass
 
 # ================== READY ==================
 @bot.event
