@@ -268,11 +268,12 @@ async def birthday_loop():
         cursor.execute("SELECT user_id FROM birthdays WHERE date=?", (now.strftime("%m-%d"),))
         for (uid,) in cursor.fetchall():
             member=guild.get_member(int(uid))
-            if not member: continue
+            if not member: 
+                continue
 
             embed = discord.Embed(
-    title="🎂 오늘의 주인공 등장!",
-    description=f"""
+                title="🎂 오늘의 주인공 등장!",
+                description=f"""
 ✨🎆✨🎆✨🎆✨🎆✨🎆
 
 🎂🎉 오늘은 {member.mention}님의 생일입니다!!! 🎉🎂
@@ -282,15 +283,15 @@ async def birthday_loop():
 
 ✨🎆✨🎆✨🎆✨🎆✨🎆
 """,
-    color=0xff69b4
-)
+                color=0xff69b4
+            )
 
-# 🔥 핵심 추가 (프로필)
-embed.set_thumbnail(url=member.display_avatar.url)
+            # 🔥 이 두 줄도 반드시 안쪽
+            embed.set_thumbnail(url=member.display_avatar.url)
+            embed.set_footer(text="🎁 버튼 눌러서 축하해보세요!")
 
-embed.set_footer(text="🎁 버튼 눌러서 축하해보세요!")
+            msg = await channel.send(embed=embed, view=BirthdayView())
 
-            msg=await channel.send(embed=embed,view=BirthdayView())
             cursor.execute("INSERT INTO birthday_messages VALUES (?,?)",(msg.id,uid))
             conn.commit()
 
