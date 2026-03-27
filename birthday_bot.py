@@ -237,6 +237,7 @@ async def birthday_list(interaction: discord.Interaction):
     cursor.execute("SELECT * FROM birthdays")
     data = cursor.fetchall()
     result=[(interaction.guild.get_member(int(uid)),date) for uid,date in data if interaction.guild.get_member(int(uid))]
+    result.sort(key=lambda x: tuple(map(int, x[1].split("-"))))
     view=BirthdayListView(result)
     await interaction.response.send_message(embed=view.get_embed(),view=view)
 
