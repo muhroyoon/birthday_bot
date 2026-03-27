@@ -14,14 +14,11 @@ TOKEN = os.getenv("TOKEN")
 
 GUILD_ID = 1377672440276058214
 CHANNEL_ID = 1377672440783704219
-ROLE_ID = 1482668657178972300
 NOTICE_CHANNEL_ID = 1397125455454273578
 
-# ✅ 규칙 관련
 RULE_ROLE_ID = 1486079820160041131
 RULE_LOG_CHANNEL_ID = 1397124964246622238
 
-# ✅ 생일 역할
 BIRTHDAY_ROLE_ID = 1482668657178972300
 
 intents = discord.Intents.default()
@@ -33,16 +30,14 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 conn = sqlite3.connect("/data/birthday.db")
 cursor = conn.cursor()
 
-cursor.execute("""CREATE TABLE IF NOT EXISTS birthdays(user_id TEXT PRIMARY KEY, date TEXT)""")
-cursor.execute("""CREATE TABLE IF NOT EXISTS congrats(message_id TEXT, user_id TEXT)""")
-cursor.execute("""CREATE TABLE IF NOT EXISTS congrats_count(user_id TEXT PRIMARY KEY, count INTEGER)""")
-cursor.execute("""CREATE TABLE IF NOT EXISTS announced(user_id TEXT, date TEXT)""")
-cursor.execute("""CREATE TABLE IF NOT EXISTS scheduled_notices(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, send_time TEXT)""")
-cursor.execute("""CREATE TABLE IF NOT EXISTS notice_reactions(message_id TEXT, user_id TEXT, type TEXT)""")
-
-# ✅ 추가 테이블
-cursor.execute("""CREATE TABLE IF NOT EXISTS rule_confirm(message_id TEXT, user_id TEXT)""")
-cursor.execute("""CREATE TABLE IF NOT EXISTS birthday_messages(message_id TEXT PRIMARY KEY, user_id TEXT)""")
+cursor.execute("CREATE TABLE IF NOT EXISTS birthdays(user_id TEXT PRIMARY KEY, date TEXT)")
+cursor.execute("CREATE TABLE IF NOT EXISTS congrats(message_id TEXT, user_id TEXT)")
+cursor.execute("CREATE TABLE IF NOT EXISTS congrats_count(user_id TEXT PRIMARY KEY, count INTEGER)")
+cursor.execute("CREATE TABLE IF NOT EXISTS announced(user_id TEXT, date TEXT)")
+cursor.execute("CREATE TABLE IF NOT EXISTS scheduled_notices(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, send_time TEXT)")
+cursor.execute("CREATE TABLE IF NOT EXISTS notice_reactions(message_id TEXT, user_id TEXT, type TEXT)")
+cursor.execute("CREATE TABLE IF NOT EXISTS rule_confirm(message_id TEXT, user_id TEXT)")
+cursor.execute("CREATE TABLE IF NOT EXISTS birthday_messages(message_id TEXT PRIMARY KEY, user_id TEXT)")
 
 conn.commit()
 
@@ -70,32 +65,26 @@ class BirthdayView(discord.ui.View):
         button.label = f"🎁 축하하기 ({count})"
         await interaction.message.edit(view=self)
 
+        # ✅ DM 임베드
         cursor.execute("SELECT user_id FROM birthday_messages WHERE message_id=?", (interaction.message.id,))
         result = cursor.fetchone()
 
-       if result:
-    member = interaction.guild.get_member(int(result[0]))
-    if member:
-        try:
-            embed = discord.Embed(
-                title="🎉 생일 축하 도착!",
-                description=f"**{interaction.user.display_name}님이 당신의 생일을 축하했습니다!** 🎂",
-                color=0xff69b4
-            )
+        if result:
+            member = interaction.guild.get_member(int(result[0]))
+            if member:
+                try:
+                    embed = discord.Embed(
+                        title="🎉 생일 축하 도착!",
+                        description=f"**{interaction.user.display_name}님이 당신의 생일을 축하했습니다!** 🎂",
+                        color=0xff69b4
+                    )
+                    embed.add_field(name="💌 메시지", value="서버에서 따뜻한 축하가 도착했어요!", inline=False)
+                    embed.set_thumbnail(url=interaction.user.display_avatar.url)
+                    embed.set_footer(text="🎊 행복한 생일 보내세요!")
 
-            embed.add_field(
-                name="💌 메시지",
-                value="서버에서 따뜻한 축하가 도착했어요!",
-                inline=False
-            )
-
-            embed.set_thumbnail(url=interaction.user.display_avatar.url)
-            embed.set_footer(text="🎊 행복한 생일 보내세요!")
-
-            await member.send(embed=embed)
-
-        except:
-            pass
+                    await member.send(embed=embed)
+                except:
+                    pass
 
         await interaction.response.send_message("🎉 축하 완료!", ephemeral=True)
 
@@ -104,62 +93,42 @@ class BirthdayListView(discord.ui.View):
     def __init__(self, data, per_page=10):
         super().__init__(timeout=180)
         self.data = data
-        self.per_page = per_page
         self.page = 0
-        self.max_page = (len(data) - 1) // per_page
-
-    def update_buttons(self):
-        self.prev.disabled = self.page == 0
-        self.next.disabled = self.page == self.max_page
+        self.per_page = per_page
+        self.max_page = (len(data)-1)//per_page if data else 0
 
     def get_embed(self):
-        self.update_buttons()
         now = get_kst_now()
-
-        start = self.page * self.per_page
+        start = self.page*self.per_page
         chunk = self.data[start:start+self.per_page]
 
         desc = ""
         for member, date in chunk:
-            m, d = map(int, date.split("-"))
-            if m == now.month and d == now.day:
+            m,d = map(int,date.split("-"))
+            if m==now.month and d==now.day:
                 desc += f"🎉 **{member.display_name}** - {date} (오늘!)\n"
-            elif m == now.month:
+            elif m==now.month:
                 desc += f"⭐ **{member.display_name}** - {date}\n"
             else:
                 desc += f"{member.display_name} - {date}\n"
 
         embed = discord.Embed(title="🎂 생일 목록", description=desc or "데이터 없음", color=0xff69b4)
-        embed.set_footer(text=f"{self.page+1}/{self.max_page+1} 페이지")
+        embed.set_footer(text=f"{self.page+1}/{self.max_page+1}")
         return embed
 
-    @discord.ui.button(label="◀ 이전", style=discord.ButtonStyle.gray)
+    @discord.ui.button(label="◀ 이전")
     async def prev(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.page > 0:
-            self.page -= 1
+        if self.page>0:
+            self.page-=1
             await interaction.response.edit_message(embed=self.get_embed(), view=self)
 
-    @discord.ui.button(label="▶ 다음", style=discord.ButtonStyle.gray)
+    @discord.ui.button(label="▶ 다음")
     async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.page < self.max_page:
-            self.page += 1
+        if self.page<self.max_page:
+            self.page+=1
             await interaction.response.edit_message(embed=self.get_embed(), view=self)
 
-@bot.tree.command(name="생일삭제")
-@app_commands.checks.has_permissions(administrator=True)
-async def delete_birthday(interaction: discord.Interaction, member: discord.Member):
-
-    cursor.execute("SELECT * FROM birthdays WHERE user_id=?", (member.id,))
-    if not cursor.fetchone():
-        await interaction.response.send_message("등록된 생일이 없습니다.", ephemeral=True)
-        return
-
-    cursor.execute("DELETE FROM birthdays WHERE user_id=?", (member.id,))
-    conn.commit()
-
-    await interaction.response.send_message(f"{member.display_name}님의 생일이 삭제되었습니다.", ephemeral=True)
-
-# ================== 공지 버튼 (수정됨) ==================
+# ================== 공지 버튼 ==================
 class NoticeView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -196,7 +165,7 @@ class NoticeView(discord.ui.View):
     async def dislike(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.handle(interaction,"싫어요")
 
-# ================== 규칙 확인 버튼 ==================
+# ================== 규칙 버튼 ==================
 class RuleConfirmView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -214,22 +183,29 @@ class RuleConfirmView(discord.ui.View):
     @discord.ui.button(label="✅ 규칙 확인 (0)", style=discord.ButtonStyle.success, custom_id="rule_confirm")
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
 
-        cursor.execute("SELECT * FROM rule_confirm WHERE message_id=? AND user_id=?",
-                       (interaction.message.id, interaction.user.id))
+        cursor.execute(
+            "SELECT * FROM rule_confirm WHERE message_id=? AND user_id=?",
+            (interaction.message.id, interaction.user.id)
+        )
+
         if cursor.fetchone():
             await interaction.response.send_message("이미 인증 완료된 상태입니다.", ephemeral=True)
             return
 
-        cursor.execute("INSERT INTO rule_confirm VALUES (?,?)",
-                       (interaction.message.id, interaction.user.id))
+        cursor.execute(
+            "INSERT INTO rule_confirm VALUES (?,?)",
+            (interaction.message.id, interaction.user.id)
+        )
         conn.commit()
 
         role = interaction.guild.get_role(RULE_ROLE_ID)
         if role and role not in interaction.user.roles:
             await interaction.user.add_roles(role)
 
+        # 🔥 카운트 업데이트
         await self.update_count(interaction.message)
 
+        # 🔥 로그 채널 알림
         log_channel = interaction.guild.get_channel(RULE_LOG_CHANNEL_ID)
         if log_channel:
             await log_channel.send(f"✅ {interaction.user.mention} 님이 규칙 확인")
@@ -238,150 +214,61 @@ class RuleConfirmView(discord.ui.View):
 
 # ================== 명령어 ==================
 @bot.tree.command(name="공지")
-@app_commands.checks.has_permissions(administrator=True)
 async def notice(interaction: discord.Interaction, 제목: str, 내용: str):
     channel = bot.get_channel(NOTICE_CHANNEL_ID)
-
-    content_with_breaks = 내용.replace("|", "\n")
-
-    banner=f"""
-━━━━━━━━━━━━━━━━━━
-📢 **{제목}**
-━━━━━━━━━━━━━━━━━━
-
-{content_with_breaks}
-"""
-
-    embed=discord.Embed(description=banner,color=0x5865F2)
-    embed.set_footer(text=f"쫀놈이 | {interaction.user.display_name}")
-
+    embed=discord.Embed(description=내용.replace("|","\n"),color=0x5865F2)
     await channel.send(content="@everyone", embed=embed, view=NoticeView())
     await interaction.response.send_message("공지 완료",ephemeral=True)
 
-@bot.tree.command(name="공지통계")
-async def stats(interaction: discord.Interaction, message_id: str):
-
-    cursor.execute(
-        "SELECT user_id, type FROM notice_reactions WHERE message_id=?",
-        (message_id,)
-    )
-
-    data = cursor.fetchall()
-
-    grouped = {
-        "좋아요": [],
-        "싫어요": []
-    }
-
-    for user_id, t in data:
-        member = interaction.guild.get_member(int(user_id))
-        if member:
-            grouped[t].append(member.display_name)
-
-    result = "📊 공지 통계\n\n"
-
-    total = len(data)
-
-    for t in ["좋아요", "싫어요"]:
-        users = grouped[t]
-        count = len(users)
-        percent = (count / total * 100) if total > 0 else 0
-
-        result += f"**{t} ({count}명 / {percent:.1f}%)**\n"
-
-        if users:
-            for name in users:
-                result += f"- {name}\n"
-        else:
-            result += "- 없음\n"
-
-        result += "\n"
-
-    await interaction.response.send_message(result)
-
 @bot.tree.command(name="생일등록")
-@app_commands.checks.has_permissions(administrator=True)
 async def add_birthday(interaction: discord.Interaction, member: discord.Member, date: str):
-
-    try:
-        datetime.strptime(date, "%m-%d")
-    except:
-        await interaction.response.send_message("MM-DD 형식으로 입력", ephemeral=True)
-        return
-
-    cursor.execute(
-        "INSERT OR REPLACE INTO birthdays VALUES (?,?)",
-        (member.id, date)
-    )
-
+    cursor.execute("INSERT OR REPLACE INTO birthdays VALUES (?,?)",(member.id,date))
     conn.commit()
-
-    await interaction.response.send_message(
-        f"{member.mention} 생일 등록 완료 🎂",
-        ephemeral=True
-    )
+    await interaction.response.send_message("등록 완료",ephemeral=True)
 
 @bot.tree.command(name="생일삭제")
-@app_commands.checks.has_permissions(administrator=True)
 async def remove_birthday(interaction: discord.Interaction, member: discord.Member):
-
-    cursor.execute(
-        "DELETE FROM birthdays WHERE user_id=?",
-        (member.id,)
-    )
-
+    cursor.execute("DELETE FROM birthdays WHERE user_id=?",(member.id,))
     conn.commit()
+    await interaction.response.send_message("삭제 완료",ephemeral=True)
 
-    await interaction.response.send_message(
-        f"{member.display_name} 생일 삭제 완료",
-        ephemeral=True
-    )
+@bot.tree.command(name="생일목록")
+async def birthday_list(interaction: discord.Interaction):
+    cursor.execute("SELECT * FROM birthdays")
+    data = cursor.fetchall()
+    result=[(interaction.guild.get_member(int(uid)),date) for uid,date in data if interaction.guild.get_member(int(uid))]
+    view=BirthdayListView(result)
+    await interaction.response.send_message(embed=view.get_embed(),view=view)
 
-@bot.tree.command(name="생일삭제")
+@bot.tree.command(name="규칙버튼")
 @app_commands.checks.has_permissions(administrator=True)
-async def remove_birthday(interaction: discord.Interaction, member: discord.Member):
+async def rule_button(interaction: discord.Interaction):
 
-    cursor.execute(
-        "DELETE FROM birthdays WHERE user_id=?",
-        (member.id,)
+    embed = discord.Embed(
+        description="""원활한 게임을 위해 클랜 규칙을 정독해 주세요!!
+확인 후 아래 버튼을 눌러주세요!""",
+        color=0x2ecc71  # 초록색 (사진이랑 동일 느낌)
     )
 
-    conn.commit()
-
-    await interaction.response.send_message(
-        f"{member.display_name} 생일 삭제 완료",
-        ephemeral=True
+    await interaction.channel.send(
+        embed=embed,
+        view=RuleConfirmView()
     )
 
+    await interaction.response.send_message("규칙 버튼 생성 완료", ephemeral=True)
+
+# ================== 생일 루프 ==================
 @tasks.loop(minutes=1)
 async def birthday_loop():
     now = get_kst_now()
+    if now.strftime("%H:%M")=="00:00":
+        guild=bot.get_guild(GUILD_ID)
+        channel=bot.get_channel(CHANNEL_ID)
 
-    if now.strftime("%H:%M") == "00:00":
-
-        guild = bot.get_guild(GUILD_ID)
-        channel = bot.get_channel(CHANNEL_ID)
-
-        today = now.strftime("%m-%d")
-
-        # 생일 시작
-        cursor.execute("SELECT user_id FROM birthdays WHERE date=?", (today,))
-        users = cursor.fetchall()
-
-        for (uid,) in users:
-            member = guild.get_member(int(uid))
-            if not member:
-                continue
-
-            role = guild.get_role(BIRTHDAY_ROLE_ID)
-            if role and role not in member.roles:
-                await member.add_roles(role)
-
-            try:
-                if "🎂" not in member.display_name:
-                    await member.edit(nick=f"{member.display_name} 🎂")
-            except:
-                pass
+        cursor.execute("SELECT user_id FROM birthdays WHERE date=?", (now.strftime("%m-%d"),))
+        for (uid,) in cursor.fetchall():
+            member=guild.get_member(int(uid))
+            if not member: continue
 
             embed = discord.Embed(
     title="🎂 오늘의 주인공 등장!",
@@ -398,54 +285,30 @@ async def birthday_loop():
     color=0xff69b4
 )
 
+# 🔥 핵심 추가 (프로필)
+embed.set_thumbnail(url=member.display_avatar.url)
+
 embed.set_footer(text="🎁 버튼 눌러서 축하해보세요!")
 
-msg = await channel.send(
-    embed=embed,
-    view=BirthdayView()
-)
-
-            cursor.execute("INSERT INTO birthday_messages VALUES (?, ?)", (msg.id, uid))
+            msg=await channel.send(embed=embed,view=BirthdayView())
+            cursor.execute("INSERT INTO birthday_messages VALUES (?,?)",(msg.id,uid))
             conn.commit()
 
-        # 생일 종료
-        yesterday = (now - timedelta(days=1)).strftime("%m-%d")
-
-        cursor.execute("SELECT user_id FROM birthdays WHERE date=?", (yesterday,))
-        users = cursor.fetchall()
-
-        for (uid,) in users:
-            member = guild.get_member(int(uid))
-            if not member:
-                continue
-
-            role = guild.get_role(BIRTHDAY_ROLE_ID)
-            if role and role in member.roles:
-                await member.remove_roles(role)
-
-            try:
-                if "🎂" in member.display_name:
-                    await member.edit(nick=member.display_name.replace(" 🎂", ""))
-            except:
-                pass
-
-
-
-
+# ================== READY ==================
 @bot.event
 async def on_ready():
     guild = discord.Object(id=GUILD_ID)
 
-    bot.tree.clear_commands(guild=guild)  # 기존 명령어 제거
+    bot.tree.clear_commands(guild=guild)
     bot.tree.copy_global_to(guild=guild)
-
-    synced = await bot.tree.sync(guild=guild)
-
-    print(f"동기화된 명령어: {len(synced)}개")
+    await bot.tree.sync(guild=guild)
 
     bot.add_view(BirthdayView())
+    bot.add_view(NoticeView())
+    bot.add_view(RuleConfirmView())
+
     birthday_loop.start()
 
-    print("🎂 생일봇 실행 완료")
+    print("봇 실행 완료")
 
 bot.run(TOKEN)
