@@ -224,6 +224,7 @@ class UpgradePanelView(discord.ui.View):
         guild = interaction.guild
         user = interaction.user
 
+        # 중복 티켓 방지
         existing = discord.utils.get(guild.channels, name=f"{user.name}-등업신청")
         if existing:
             await interaction.response.send_message("이미 신청 티켓이 있습니다.", ephemeral=True)
@@ -240,6 +241,7 @@ class UpgradePanelView(discord.ui.View):
             overwrites=overwrites
         )
 
+        # 관리자 멘션
         admin_roles = [
             guild.get_role(1482028706850537676),
             guild.get_role(1409209830152863845)
@@ -254,6 +256,8 @@ class UpgradePanelView(discord.ui.View):
 
         await interaction.response.send_message(f"{channel.mention} 생성 완료!", ephemeral=True)
 
+
+# ================== 티켓 VIEW ==================
 class UpgradeTicketView(discord.ui.View):
     def __init__(self, user):
         super().__init__(timeout=None)
@@ -284,7 +288,7 @@ class UpgradeTicketView(discord.ui.View):
 
             await log_channel.send(embed=embed)
 
-    @discord.ui.button(label="클랜원등업", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="클랜원등업", style=discord.ButtonStyle.primary, custom_id="upgrade_clan")
     async def clan(self, interaction: discord.Interaction, button: discord.ui.Button):
 
         if not self.is_admin(interaction):
@@ -308,7 +312,7 @@ class UpgradeTicketView(discord.ui.View):
         await self.disable_all_buttons(interaction.message)
         await interaction.response.send_message(embed=embed)
 
-    @discord.ui.button(label="게스트등업", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="게스트등업", style=discord.ButtonStyle.secondary, custom_id="upgrade_guest")
     async def guest(self, interaction: discord.Interaction, button: discord.ui.Button):
 
         if not self.is_admin(interaction):
@@ -332,7 +336,7 @@ class UpgradeTicketView(discord.ui.View):
         await self.disable_all_buttons(interaction.message)
         await interaction.response.send_message(embed=embed)
 
-    @discord.ui.button(label="티켓완료", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="티켓완료", style=discord.ButtonStyle.success, custom_id="ticket_close")
     async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
 
         if not self.is_admin(interaction):
@@ -343,7 +347,7 @@ class UpgradeTicketView(discord.ui.View):
         await interaction.channel.edit(archived=True)
         await interaction.response.send_message("티켓 종료됨")
 
-    @discord.ui.button(label="티켓삭제", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="티켓삭제", style=discord.ButtonStyle.danger, custom_id="ticket_delete")
     async def delete(self, interaction: discord.Interaction, button: discord.ui.Button):
 
         if not self.is_admin(interaction):
@@ -496,7 +500,6 @@ async def on_ready():
     bot.add_view(NoticeView())
     bot.add_view(RuleConfirmView())
     bot.add_view(UpgradePanelView())
-    bot.add_view(UpgradeTicketView(None))
 
     birthday_loop.start()
 
