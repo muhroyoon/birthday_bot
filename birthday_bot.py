@@ -341,20 +341,6 @@ class UpgradeTicketView(discord.ui.View):
 
         await interaction.response.send_message(embed=embed)
 
-    @discord.ui.button(label="티켓완료", style=discord.ButtonStyle.success, custom_id="ticket_close")
-    async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
-
-        if not self.is_admin(interaction):
-            await interaction.response.send_message("관리자만 사용할 수 있습니다.", ephemeral=True)
-            return
-
-        await interaction.channel.set_permissions(
-            interaction.guild.default_role,
-            send_messages=False
-        )
-
-        await interaction.response.send_message("티켓 종료됨")
-
     @discord.ui.button(label="티켓삭제", style=discord.ButtonStyle.danger, custom_id="ticket_delete")
     async def delete(self, interaction: discord.Interaction, button: discord.ui.Button):
 
