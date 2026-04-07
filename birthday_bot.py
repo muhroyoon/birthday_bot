@@ -15,6 +15,7 @@ TOKEN = os.getenv("TOKEN")
 GUILD_ID = 1377672440276058214
 CHANNEL_ID = 1377672440783704219
 NOTICE_CHANNEL_ID = 1397125455454273578
+UPGRADE_LOG_CHANNEL_ID = 1490954873192185999
 
 RULE_ROLE_ID = 1486079820160041131
 RULE_LOG_CHANNEL_ID = 1397124964246622238
@@ -212,6 +213,147 @@ class RuleConfirmView(discord.ui.View):
 
         await interaction.response.send_message("🎉 규칙 확인 완료!", ephemeral=True)
 
+# ================== 등업 패널 ==================
+class UpgradePanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="등업신청", style=discord.ButtonStyle.success, custom_id="upgrade_apply")
+    async def apply(self, interaction: discord.Interaction, button: discord.ui.Button):
+
+        guild = interaction.guild
+        user = interaction.user
+
+        existing = discord.utils.get(guild.channels, name=f"{user.name}-등업신청")
+        if existing:
+            await interaction.response.send_message("이미 신청 티켓이 있습니다.", ephemeral=True)
+            return
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            user: discord.PermissionOverwrite(view_channel=True, send_messages=True),
+            guild.me: discord.PermissionOverwrite(view_channel=True)
+        }
+
+        channel = await guild.create_text_channel(
+            name=f"{user.name}-등업신청",
+            overwrites=overwrites
+        )
+
+        admin_roles = [
+            guild.get_role(1482028706850537676),
+            guild.get_role(1409209830152863845)
+        ]
+        mentions = " ".join([role.mention for role in admin_roles if role])
+
+        await channel.send(
+            content=f"{mentions}\n{user.mention}님이 등업 신청을 하였습니다.\n"
+                    f"[자기소개 바로가기](https://discord.com/channels/{guild.id}/1477705269273165904)",
+            view=UpgradeTicketView(user)
+        )
+
+        await interaction.response.send_message(f"{channel.mention} 생성 완료!", ephemeral=True)
+
+class UpgradeTicketView(discord.ui.View):
+    def __init__(self, user):
+        super().__init__(timeout=None)
+        self.user = user
+
+    def is_admin(self, interaction: discord.Interaction):
+        admin_roles = [1482028706850537676, 1409209830152863845]
+        user_roles = [role.id for role in interaction.user.roles]
+        return any(role_id in user_roles for role_id in admin_roles)
+
+    async def disable_all_buttons(self, message):
+        for item in self.children:
+            item.disabled = True
+        await message.edit(view=self)
+
+    async def send_log(self, interaction, action):
+        log_channel = interaction.guild.get_channel(UPGRADE_LOG_CHANNEL_ID)
+        if log_channel:
+            embed = discord.Embed(
+                title="📋 등업 로그",
+                color=0x3498db
+            )
+            embed.add_field(name="대상", value=self.user.mention, inline=True)
+            embed.add_field(name="처리자", value=interaction.user.mention, inline=True)
+            embed.add_field(name="결과", value=action, inline=False)
+            embed.set_footer(text=f"채널: {interaction.channel.name}")
+            embed.timestamp = datetime.now()
+
+            await log_channel.send(embed=embed)
+
+    @discord.ui.button(label="클랜원등업", style=discord.ButtonStyle.primary)
+    async def clan(self, interaction: discord.Interaction, button: discord.ui.Button):
+
+        if not self.is_admin(interaction):
+            await interaction.response.send_message("관리자만 사용할 수 있습니다.", ephemeral=True)
+            return
+
+        role = interaction.guild.get_role(1409208539548876801)
+        await self.user.add_roles(role)
+
+        await self.send_log(interaction, "클랜원 등업")
+
+        embed = discord.Embed(
+            title="🎉 등업 완료",
+            description=f"{self.user.mention}님의 등업이 완료되었습니다!",
+            color=0x2ecc71
+        )
+        embed.add_field(name="처리자", value=interaction.user.mention, inline=True)
+        embed.add_field(name="결과", value="클랜원", inline=True)
+        embed.set_thumbnail(url=self.user.display_avatar.url)
+
+        await self.disable_all_buttons(interaction.message)
+        await interaction.response.send_message(embed=embed)
+
+    @discord.ui.button(label="게스트등업", style=discord.ButtonStyle.secondary)
+    async def guest(self, interaction: discord.Interaction, button: discord.ui.Button):
+
+        if not self.is_admin(interaction):
+            await interaction.response.send_message("관리자만 사용할 수 있습니다.", ephemeral=True)
+            return
+
+        role = interaction.guild.get_role(1478317433683968041)
+        await self.user.add_roles(role)
+
+        await self.send_log(interaction, "게스트 등업")
+
+        embed = discord.Embed(
+            title="🎉 등업 완료",
+            description=f"{self.user.mention}님의 등업이 완료되었습니다!",
+            color=0x95a5a6
+        )
+        embed.add_field(name="처리자", value=interaction.user.mention, inline=True)
+        embed.add_field(name="결과", value="게스트", inline=True)
+        embed.set_thumbnail(url=self.user.display_avatar.url)
+
+        await self.disable_all_buttons(interaction.message)
+        await interaction.response.send_message(embed=embed)
+
+    @discord.ui.button(label="티켓완료", style=discord.ButtonStyle.success)
+    async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
+
+        if not self.is_admin(interaction):
+            await interaction.response.send_message("관리자만 사용할 수 있습니다.", ephemeral=True)
+            return
+
+        await self.send_log(interaction, "티켓 완료")
+        await interaction.channel.edit(archived=True)
+        await interaction.response.send_message("티켓 종료됨")
+
+    @discord.ui.button(label="티켓삭제", style=discord.ButtonStyle.danger)
+    async def delete(self, interaction: discord.Interaction, button: discord.ui.Button):
+
+        if not self.is_admin(interaction):
+            await interaction.response.send_message("관리자만 사용할 수 있습니다.", ephemeral=True)
+            return
+
+        await self.send_log(interaction, "티켓 삭제")
+        await interaction.response.send_message("삭제 중...")
+        await interaction.channel.delete()
+
 # ================== 명령어 ==================
 @bot.tree.command(name="공지")
 async def notice(interaction: discord.Interaction, 제목: str, 내용: str):
@@ -257,6 +399,25 @@ async def rule_button(interaction: discord.Interaction):
     )
 
     await interaction.response.send_message("규칙 버튼 생성 완료", ephemeral=True)
+
+@bot.tree.command(name="등업패널")
+@app_commands.checks.has_permissions(administrator=True)
+async def upgrade_panel(interaction: discord.Interaction):
+
+    embed = discord.Embed(
+        description="""HICKS 클랜 서버 등업 신청 채널입니다!
+
+1. 닉네임 변경 [배그아이디/별명]
+2. 자기소개 작성
+3. 클랜규칙 확인
+4. 출석체크
+
+위 4가지를 완료하시면 아래 버튼을 눌러주세요!""",
+        color=0x5865F2
+    )
+
+    await interaction.channel.send(embed=embed, view=UpgradePanelView())
+    await interaction.response.send_message("등업 패널 생성 완료", ephemeral=True)
 
 # ================== 생일 루프 ==================
 @tasks.loop(minutes=1)
@@ -334,6 +495,8 @@ async def on_ready():
     bot.add_view(BirthdayView())
     bot.add_view(NoticeView())
     bot.add_view(RuleConfirmView())
+    bot.add_view(UpgradePanelView())
+bot.add_view(UpgradeTicketView(None))
 
     birthday_loop.start()
 
