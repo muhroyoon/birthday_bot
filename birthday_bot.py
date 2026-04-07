@@ -496,7 +496,7 @@ async def on_ready():
     bot.add_view(NoticeView())
     bot.add_view(RuleConfirmView())
     bot.add_view(UpgradePanelView())
-bot.add_view(UpgradeTicketView(None))
+    bot.add_view(UpgradeTicketView(None))
 
     birthday_loop.start()
 
