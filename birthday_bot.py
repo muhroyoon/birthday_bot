@@ -224,7 +224,6 @@ class UpgradePanelView(discord.ui.View):
         guild = interaction.guild
         user = interaction.user
 
-        # 중복 티켓 방지
         existing = discord.utils.get(guild.channels, name=f"{user.name}-등업신청")
         if existing:
             await interaction.response.send_message("이미 신청 티켓이 있습니다.", ephemeral=True)
@@ -241,7 +240,6 @@ class UpgradePanelView(discord.ui.View):
             overwrites=overwrites
         )
 
-        # 관리자 멘션
         admin_roles = [
             guild.get_role(1482028706850537676),
             guild.get_role(1409209830152863845)
@@ -256,7 +254,6 @@ class UpgradePanelView(discord.ui.View):
 
         await interaction.response.send_message(f"{channel.mention} 생성 완료!", ephemeral=True)
 
-
 # ================== 티켓 VIEW ==================
 class UpgradeTicketView(discord.ui.View):
     def __init__(self, user):
@@ -268,24 +265,20 @@ class UpgradeTicketView(discord.ui.View):
         user_roles = [role.id for role in interaction.user.roles]
         return any(role_id in user_roles for role_id in admin_roles)
 
-    async def disable_all_buttons(self, message):
+    async def disable_buttons_except_delete(self, message):
         for item in self.children:
-            item.disabled = True
+            if item.custom_id != "ticket_delete":
+                item.disabled = True
         await message.edit(view=self)
 
     async def send_log(self, interaction, action):
         log_channel = interaction.guild.get_channel(UPGRADE_LOG_CHANNEL_ID)
         if log_channel:
-            embed = discord.Embed(
-                title="📋 등업 로그",
-                color=0x3498db
-            )
+            embed = discord.Embed(title="📋 등업 로그", color=0x3498db)
             embed.add_field(name="대상", value=self.user.mention, inline=True)
             embed.add_field(name="처리자", value=interaction.user.mention, inline=True)
             embed.add_field(name="결과", value=action, inline=False)
-            embed.set_footer(text=f"채널: {interaction.channel.name}")
             embed.timestamp = datetime.now()
-
             await log_channel.send(embed=embed)
 
     @discord.ui.button(label="클랜원등업", style=discord.ButtonStyle.primary, custom_id="upgrade_clan")
@@ -309,7 +302,13 @@ class UpgradeTicketView(discord.ui.View):
         embed.add_field(name="결과", value="클랜원", inline=True)
         embed.set_thumbnail(url=self.user.display_avatar.url)
 
-        await self.disable_all_buttons(interaction.message)
+        await self.disable_buttons_except_delete(interaction.message)
+
+        await interaction.channel.set_permissions(
+            interaction.guild.default_role,
+            send_messages=False
+        )
+
         await interaction.response.send_message(embed=embed)
 
     @discord.ui.button(label="게스트등업", style=discord.ButtonStyle.secondary, custom_id="upgrade_guest")
@@ -333,7 +332,13 @@ class UpgradeTicketView(discord.ui.View):
         embed.add_field(name="결과", value="게스트", inline=True)
         embed.set_thumbnail(url=self.user.display_avatar.url)
 
-        await self.disable_all_buttons(interaction.message)
+        await self.disable_buttons_except_delete(interaction.message)
+
+        await interaction.channel.set_permissions(
+            interaction.guild.default_role,
+            send_messages=False
+        )
+
         await interaction.response.send_message(embed=embed)
 
     @discord.ui.button(label="티켓완료", style=discord.ButtonStyle.success, custom_id="ticket_close")
@@ -343,8 +348,11 @@ class UpgradeTicketView(discord.ui.View):
             await interaction.response.send_message("관리자만 사용할 수 있습니다.", ephemeral=True)
             return
 
-        await self.send_log(interaction, "티켓 완료")
-        await interaction.channel.edit(archived=True)
+        await interaction.channel.set_permissions(
+            interaction.guild.default_role,
+            send_messages=False
+        )
+
         await interaction.response.send_message("티켓 종료됨")
 
     @discord.ui.button(label="티켓삭제", style=discord.ButtonStyle.danger, custom_id="ticket_delete")
@@ -354,7 +362,6 @@ class UpgradeTicketView(discord.ui.View):
             await interaction.response.send_message("관리자만 사용할 수 있습니다.", ephemeral=True)
             return
 
-        await self.send_log(interaction, "티켓 삭제")
         await interaction.response.send_message("삭제 중...")
         await interaction.channel.delete()
 
@@ -422,7 +429,7 @@ async def upgrade_panel(interaction: discord.Interaction):
 
     await interaction.channel.send(embed=embed, view=UpgradePanelView())
     await interaction.response.send_message("등업 패널 생성 완료", ephemeral=True)
-
+    
 # ================== 생일 루프 ==================
 @tasks.loop(minutes=1)
 async def birthday_loop():
