@@ -351,6 +351,64 @@ class UpgradeTicketView(discord.ui.View):
         await interaction.response.send_message("삭제 중...")
         await interaction.channel.delete()
 
+# ================== 시간대 설정 VIEW ==================
+class TimeRoleView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+        self.roles = {
+            "morning": 1494997225192030369,
+            "afternoon": 1494997272641929298,
+            "evening": 1494997462266544188,
+            "night": 1494997501231759490,
+            "dawn": 1494997538879832074
+        }
+
+    async def add_role(self, interaction, role_id):
+        role = interaction.guild.get_role(role_id)
+
+        if role in interaction.user.roles:
+            await interaction.response.send_message("이미 선택된 시간대입니다.", ephemeral=True)
+            return
+
+        await interaction.user.add_roles(role)
+        await interaction.response.send_message(f"{role.name} 역할이 추가되었습니다.", ephemeral=True)
+
+    @discord.ui.button(label="오전반", style=discord.ButtonStyle.primary, custom_id="time_morning")
+    async def morning(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.add_role(interaction, self.roles["morning"])
+
+    @discord.ui.button(label="오후반", style=discord.ButtonStyle.primary, custom_id="time_afternoon")
+    async def afternoon(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.add_role(interaction, self.roles["afternoon"])
+
+    @discord.ui.button(label="저녁반", style=discord.ButtonStyle.primary, custom_id="time_evening")
+    async def evening(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.add_role(interaction, self.roles["evening"])
+
+    @discord.ui.button(label="심야반", style=discord.ButtonStyle.secondary, custom_id="time_night")
+    async def night(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.add_role(interaction, self.roles["night"])
+
+    @discord.ui.button(label="새벽반", style=discord.ButtonStyle.secondary, custom_id="time_dawn")
+    async def dawn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.add_role(interaction, self.roles["dawn"])
+
+    @discord.ui.button(label="리셋", style=discord.ButtonStyle.danger, custom_id="time_reset")
+    async def reset(self, interaction: discord.Interaction, button: discord.ui.Button):
+        removed = []
+
+        for role_id in self.roles.values():
+            role = interaction.guild.get_role(role_id)
+            if role in interaction.user.roles:
+                await interaction.user.remove_roles(role)
+                removed.append(role.name)
+
+        if removed:
+            await interaction.response.send_message(f"삭제된 역할: {', '.join(removed)}", ephemeral=True)
+        else:
+            await interaction.response.send_message("삭제할 시간대 역할이 없습니다.", ephemeral=True)
+
 # ================== 명령어 ==================
 @bot.tree.command(name="공지")
 async def notice(interaction: discord.Interaction, 제목: str, 내용: str):
@@ -415,6 +473,18 @@ async def upgrade_panel(interaction: discord.Interaction):
 
     await interaction.channel.send(embed=embed, view=UpgradePanelView())
     await interaction.response.send_message("등업 패널 생성 완료", ephemeral=True)
+
+@bot.tree.command(name="시간설정패널")
+async def time_panel(interaction: discord.Interaction):
+
+    embed = discord.Embed(
+        title="플레이 시간대 설정",
+        description="원하는 시간대를 선택해주세요!\n중복 선택 가능합니다.",
+        color=0x5865F2
+    )
+
+    await interaction.channel.send(embed=embed, view=TimeRoleView())
+    await interaction.response.send_message("시간 설정 패널 생성 완료", ephemeral=True)
     
 # ================== 생일 루프 ==================
 @tasks.loop(minutes=1)
@@ -493,6 +563,7 @@ async def on_ready():
     bot.add_view(NoticeView())
     bot.add_view(RuleConfirmView())
     bot.add_view(UpgradePanelView())
+    bot.add_view(TimeRoleView())
 
     birthday_loop.start()
 
