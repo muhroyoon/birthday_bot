@@ -22,6 +22,8 @@ RULE_LOG_CHANNEL_ID = 1397124964246622238
 
 BIRTHDAY_ROLE_ID = 1482668657178972300
 
+LEAVE_LOG_CHANNEL_ID = 1397126595092811848
+
 intents = discord.Intents.default()
 intents.members = True
 
@@ -549,6 +551,30 @@ async def birthday_loop():
                 await member.edit(nick=member.display_name.replace(" 🎂", ""))
         except:
             pass
+
+# ================== 퇴장로그 ==================
+@bot.event
+async def on_member_remove(member: discord.Member):
+    if member.guild.id != GUILD_ID:
+        return
+
+    channel = bot.get_channel(LEAVE_LOG_CHANNEL_ID)
+    if channel is None:
+        return
+
+    embed = discord.Embed(
+        title="📤 서버 퇴장",
+        color=0xE74C3C,
+        timestamp=get_kst_now(),
+    )
+    embed.add_field(name="유저", value=f"{member} ({member.id})", inline=False)
+    embed.add_field(name="시간", value=get_kst_now().strftime("%Y-%m-%d %H:%M:%S KST"), inline=False)
+
+    if member.display_avatar:
+        embed.set_thumbnail(url=member.display_avatar.url)
+
+    await channel.send(embed=embed)
+
 
 # ================== READY ==================
 @bot.event
