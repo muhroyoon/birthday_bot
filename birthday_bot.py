@@ -567,13 +567,16 @@ async def on_member_remove(member: discord.Member):
         color=0xE74C3C,
         timestamp=get_kst_now(),
     )
-    embed.add_field(name="유저", value=f"{member} ({member.id})", inline=False)
+    embed.add_field(name="닉네임", value=member.display_name, inline=False)
+    embed.add_field(name="계정명", value=str(member), inline=False)
+    embed.add_field(name="유저 ID", value=str(member.id), inline=False)
     embed.add_field(name="시간", value=get_kst_now().strftime("%Y-%m-%d %H:%M:%S KST"), inline=False)
 
     if member.display_avatar:
         embed.set_thumbnail(url=member.display_avatar.url)
 
     await channel.send(embed=embed)
+
 
 
 # ================== READY ==================
