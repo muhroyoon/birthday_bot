@@ -16,16 +16,17 @@ GUILD_ID = 1377672440276058214
 CHANNEL_ID = 1377672440783704219
 NOTICE_CHANNEL_ID = 1397125455454273578
 UPGRADE_LOG_CHANNEL_ID = 1490954873192185999
+LEAVE_LOG_CHANNEL_ID = 1397126595092811848
 
 RULE_ROLE_ID = 1486079820160041131
 RULE_LOG_CHANNEL_ID = 1397124964246622238
 
 BIRTHDAY_ROLE_ID = 1482668657178972300
-
-LEAVE_LOG_CHANNEL_ID = 1397126595092811848
+NEW_MEMBER_ROLE_ID = 1481662617859657790
 
 intents = discord.Intents.default()
 intents.members = True
+intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -41,8 +42,43 @@ cursor.execute("CREATE TABLE IF NOT EXISTS scheduled_notices(id INTEGER PRIMARY 
 cursor.execute("CREATE TABLE IF NOT EXISTS notice_reactions(message_id TEXT, user_id TEXT, type TEXT)")
 cursor.execute("CREATE TABLE IF NOT EXISTS rule_confirm(message_id TEXT, user_id TEXT)")
 cursor.execute("CREATE TABLE IF NOT EXISTS birthday_messages(message_id TEXT PRIMARY KEY, user_id TEXT)")
+cursor.execute("CREATE TABLE IF NOT EXISTS probation_roles(user_id TEXT PRIMARY KEY, assigned_at TEXT, notified INTEGER DEFAULT 0)")
 
 conn.commit()
+
+# ================== 신입 역할 추적 함수 ==================
+def dt_to_db(value: datetime) -> str:
+    return value.isoformat()
+
+def dt_from_db(value: str) -> datetime:
+    return datetime.fromisoformat(value)
+
+async def backfill_probation_members():
+    guild = bot.get_guild(GUILD_ID)
+    if guild is None:
+        return
+
+    probation_role = guild.get_role(NEW_MEMBER_ROLE_ID)
+    if probation_role is None:
+        return
+
+    now = get_kst_now()
+    for member in probation_role.members:
+        cursor.execute("SELECT assigned_at FROM probation_roles WHERE user_id=?", (str(member.id),))
+        row = cursor.fetchone()
+        if row:
+            continue
+
+        assigned_at = now
+        if member.joined_at is not None:
+            assigned_at = member.joined_at.astimezone(ZoneInfo("Asia/Seoul"))
+
+        cursor.execute(
+            "INSERT OR REPLACE INTO probation_roles(user_id, assigned_at, notified) VALUES (?, ?, 0)",
+            (str(member.id), dt_to_db(assigned_at)),
+        )
+
+    conn.commit()
 
 # ================== 생일 축하 버튼 ==================
 class BirthdayView(discord.ui.View):
@@ -68,7 +104,6 @@ class BirthdayView(discord.ui.View):
         button.label = f"🎁 축하하기 ({count})"
         await interaction.message.edit(view=self)
 
-        # ✅ DM 임베드
         cursor.execute("SELECT user_id FROM birthday_messages WHERE message_id=?", (interaction.message.id,))
         result = cursor.fetchone()
 
@@ -107,10 +142,10 @@ class BirthdayListView(discord.ui.View):
 
         desc = ""
         for member, date in chunk:
-            m,d = map(int,date.split("-"))
-            if m==now.month and d==now.day:
+            m, d = map(int, date.split("-"))
+            if m == now.month and d == now.day:
                 desc += f"🎉 **{member.display_name}** - {date} (오늘!)\n"
-            elif m==now.month:
+            elif m == now.month:
                 desc += f"⭐ **{member.display_name}** - {date}\n"
             else:
                 desc += f"{member.display_name} - {date}\n"
@@ -121,52 +156,15 @@ class BirthdayListView(discord.ui.View):
 
     @discord.ui.button(label="◀ 이전")
     async def prev(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.page>0:
-            self.page-=1
+        if self.page > 0:
+            self.page -= 1
             await interaction.response.edit_message(embed=self.get_embed(), view=self)
 
     @discord.ui.button(label="▶ 다음")
     async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.page<self.max_page:
-            self.page+=1
+        if self.page < self.max_page:
+            self.page += 1
             await interaction.response.edit_message(embed=self.get_embed(), view=self)
-
-# ================== 공지 버튼 ==================
-class NoticeView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    async def update(self, message):
-        counts = {"좋아요":0,"싫어요":0}
-        cursor.execute("SELECT type, COUNT(*) FROM notice_reactions WHERE message_id=? GROUP BY type",(message.id,))
-        for t,c in cursor.fetchall():
-            counts[t]=c
-
-        for item in self.children:
-            if item.custom_id=="like":
-                item.label=f"👍 좋아요 ({counts['좋아요']})"
-            elif item.custom_id=="dislike":
-                item.label=f"👎 싫어요 ({counts['싫어요']})"
-
-        await message.edit(view=self)
-
-    async def handle(self, interaction, t):
-        cursor.execute("SELECT * FROM notice_reactions WHERE message_id=? AND user_id=?",(interaction.message.id,interaction.user.id))
-        if cursor.fetchone():
-            cursor.execute("UPDATE notice_reactions SET type=? WHERE message_id=? AND user_id=?",(t,interaction.message.id,interaction.user.id))
-        else:
-            cursor.execute("INSERT INTO notice_reactions VALUES (?,?,?)",(interaction.message.id,interaction.user.id,t))
-        conn.commit()
-        await self.update(interaction.message)
-        await interaction.response.send_message("반영 완료", ephemeral=True)
-
-    @discord.ui.button(label="👍 좋아요 (0)", style=discord.ButtonStyle.primary, custom_id="like")
-    async def like(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle(interaction,"좋아요")
-
-    @discord.ui.button(label="👎 싫어요 (0)", style=discord.ButtonStyle.danger, custom_id="dislike")
-    async def dislike(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle(interaction,"싫어요")
 
 # ================== 규칙 버튼 ==================
 class RuleConfirmView(discord.ui.View):
@@ -205,10 +203,8 @@ class RuleConfirmView(discord.ui.View):
         if role and role not in interaction.user.roles:
             await interaction.user.add_roles(role)
 
-        # 🔥 카운트 업데이트
         await self.update_count(interaction.message)
 
-        # 🔥 로그 채널 알림
         log_channel = interaction.guild.get_channel(RULE_LOG_CHANNEL_ID)
         if log_channel:
             await log_channel.send(f"✅ {interaction.user.mention} 님이 규칙 확인")
@@ -412,33 +408,26 @@ class TimeRoleView(discord.ui.View):
             await interaction.response.send_message("삭제할 시간대 역할이 없습니다.", ephemeral=True)
 
 # ================== 명령어 ==================
-@bot.tree.command(name="공지")
-async def notice(interaction: discord.Interaction, 제목: str, 내용: str):
-    channel = bot.get_channel(NOTICE_CHANNEL_ID)
-    embed=discord.Embed(description=내용.replace("|","\n"),color=0x5865F2)
-    await channel.send(content="@everyone", embed=embed, view=NoticeView())
-    await interaction.response.send_message("공지 완료",ephemeral=True)
-
 @bot.tree.command(name="생일등록")
 async def add_birthday(interaction: discord.Interaction, member: discord.Member, date: str):
-    cursor.execute("INSERT OR REPLACE INTO birthdays VALUES (?,?)",(member.id,date))
+    cursor.execute("INSERT OR REPLACE INTO birthdays VALUES (?,?)", (member.id, date))
     conn.commit()
-    await interaction.response.send_message("등록 완료",ephemeral=True)
+    await interaction.response.send_message("등록 완료", ephemeral=True)
 
 @bot.tree.command(name="생일삭제")
 async def remove_birthday(interaction: discord.Interaction, member: discord.Member):
-    cursor.execute("DELETE FROM birthdays WHERE user_id=?",(member.id,))
+    cursor.execute("DELETE FROM birthdays WHERE user_id=?", (member.id,))
     conn.commit()
-    await interaction.response.send_message("삭제 완료",ephemeral=True)
+    await interaction.response.send_message("삭제 완료", ephemeral=True)
 
 @bot.tree.command(name="생일목록")
 async def birthday_list(interaction: discord.Interaction):
     cursor.execute("SELECT * FROM birthdays")
     data = cursor.fetchall()
-    result=[(interaction.guild.get_member(int(uid)),date) for uid,date in data if interaction.guild.get_member(int(uid))]
+    result = [(interaction.guild.get_member(int(uid)), date) for uid, date in data if interaction.guild.get_member(int(uid))]
     result.sort(key=lambda x: tuple(map(int, x[1].split("-"))))
-    view=BirthdayListView(result)
-    await interaction.response.send_message(embed=view.get_embed(),view=view)
+    view = BirthdayListView(result)
+    await interaction.response.send_message(embed=view.get_embed(), view=view)
 
 @bot.tree.command(name="규칙버튼")
 @app_commands.checks.has_permissions(administrator=True)
@@ -447,7 +436,7 @@ async def rule_button(interaction: discord.Interaction):
     embed = discord.Embed(
         description="""원활한 게임을 위해 클랜 규칙을 정독해 주세요!!
 확인 후 아래 버튼을 눌러주세요!""",
-        color=0x2ecc71  # 초록색 (사진이랑 동일 느낌)
+        color=0x2ecc71
     )
 
     await interaction.channel.send(
@@ -487,72 +476,25 @@ async def time_panel(interaction: discord.Interaction):
 
     await interaction.channel.send(embed=embed, view=TimeRoleView())
     await interaction.response.send_message("시간 설정 패널 생성 완료", ephemeral=True)
-    
-# ================== 생일 루프 ==================
-@tasks.loop(minutes=1)
-async def birthday_loop():
-    now = get_kst_now()
-    guild = bot.get_guild(GUILD_ID)
-    if now.strftime("%H:%M")=="00:00":
-        guild=bot.get_guild(GUILD_ID)
-        channel=bot.get_channel(CHANNEL_ID)
 
-        cursor.execute("SELECT user_id FROM birthdays WHERE date=?", (now.strftime("%m-%d"),))
-        for (uid,) in cursor.fetchall():
-            member=guild.get_member(int(uid))
-            if not member: 
-                continue
+# ================== 신입 역할 자동 기록 ==================
+@bot.event
+async def on_member_update(before: discord.Member, after: discord.Member):
+    before_role_ids = {role.id for role in before.roles}
+    after_role_ids = {role.id for role in after.roles}
 
-            embed = discord.Embed(
-                title="🎂 오늘의 주인공 등장!",
-                description=f"""
-✨🎆✨🎆✨🎆✨🎆✨🎆
+    if NEW_MEMBER_ROLE_ID not in before_role_ids and NEW_MEMBER_ROLE_ID in after_role_ids:
+        cursor.execute(
+            "INSERT OR REPLACE INTO probation_roles(user_id, assigned_at, notified) VALUES (?, ?, 0)",
+            (str(after.id), dt_to_db(get_kst_now())),
+        )
+        conn.commit()
 
-🎂🎉 오늘은 {member.mention}님의 생일입니다!!! 🎉🎂
+    if NEW_MEMBER_ROLE_ID in before_role_ids and NEW_MEMBER_ROLE_ID not in after_role_ids:
+        cursor.execute("DELETE FROM probation_roles WHERE user_id=?", (str(after.id),))
+        conn.commit()
 
-💥🎊 축하 폭격 시작!!! 🎊💥
-👇 아래 버튼으로 축하해주세요 👇
-
-✨🎆✨🎆✨🎆✨🎆✨🎆
-""",
-                color=0xff69b4
-            )
-
-            # 🔥 이 두 줄도 반드시 안쪽
-            embed.set_thumbnail(url=member.display_avatar.url)
-            embed.set_footer(text="🎁 버튼 눌러서 축하해보세요!")
-
-            msg = await channel.send(embed=embed, view=BirthdayView())
-
-            cursor.execute("INSERT INTO birthday_messages VALUES (?,?)",(msg.id,uid))
-            conn.commit()
-
-    # ================== 생일 종료 처리 ==================
-
-    yesterday = (now - timedelta(days=1)).strftime("%m-%d")
-
-    cursor.execute("SELECT user_id FROM birthdays WHERE date=?", (yesterday,))
-    users = cursor.fetchall()
-
-    for (uid,) in users:
-        member = guild.get_member(int(uid))
-        if not member:
-            continue
-
-        role = guild.get_role(BIRTHDAY_ROLE_ID)
-
-        # 역할 제거
-        if role and role in member.roles:
-            await member.remove_roles(role)
-
-        # 닉네임에서 🎂 제거
-        try:
-            if "🎂" in member.display_name:
-                await member.edit(nick=member.display_name.replace(" 🎂", ""))
-        except:
-            pass
-
-# ================== 퇴장로그 ==================
+# ================== 서버 퇴장 로그 ==================
 @bot.event
 async def on_member_remove(member: discord.Member):
     if member.guild.id != GUILD_ID:
@@ -577,7 +519,125 @@ async def on_member_remove(member: discord.Member):
 
     await channel.send(embed=embed)
 
+# ================== 신입 역할 7일 경과 체크 ==================
+@tasks.loop(hours=1)
+async def probation_role_check_loop():
+    guild = bot.get_guild(GUILD_ID)
+    if guild is None:
+        return
 
+    channel = bot.get_channel(RULE_LOG_CHANNEL_ID)
+    if channel is None:
+        return
+
+    probation_role = guild.get_role(NEW_MEMBER_ROLE_ID)
+    if probation_role is None:
+        return
+
+    now = get_kst_now()
+    due_time = now - timedelta(days=7)
+
+    cursor.execute("SELECT user_id, assigned_at FROM probation_roles WHERE notified=0")
+    rows = cursor.fetchall()
+
+    for user_id, assigned_at_raw in rows:
+        assigned_at = dt_from_db(assigned_at_raw)
+        if assigned_at > due_time:
+            continue
+
+        member = guild.get_member(int(user_id))
+        if member is None or probation_role not in member.roles:
+            cursor.execute("DELETE FROM probation_roles WHERE user_id=?", (user_id,))
+            conn.commit()
+            continue
+
+        joined_text = "알 수 없음"
+        if member.joined_at is not None:
+            joined_text = member.joined_at.astimezone(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S KST")
+
+        embed = discord.Embed(
+            title="⏰ 신입 역할 7일 경과 알림",
+            description="출석률과 평판을 확인한 뒤 신입 역할 제거 여부를 검토해주세요.",
+            color=0xF1C40F,
+            timestamp=now,
+        )
+        embed.add_field(name="닉네임", value=member.display_name, inline=False)
+        embed.add_field(name="계정명", value=str(member), inline=False)
+        embed.add_field(name="유저 ID", value=str(member.id), inline=False)
+        embed.add_field(name="서버 입장일", value=joined_text, inline=False)
+        embed.add_field(name="신입 역할 부여 시각", value=assigned_at.strftime("%Y-%m-%d %H:%M:%S KST"), inline=False)
+        embed.add_field(
+            name="확인 안내",
+            value=f"{member.mention}\n출석과 평판 확인 후 역할을 조정해주세요.",
+            inline=False,
+        )
+
+        if member.display_avatar:
+            embed.set_thumbnail(url=member.display_avatar.url)
+
+        await channel.send(content=member.mention, embed=embed)
+
+        cursor.execute("UPDATE probation_roles SET notified=1 WHERE user_id=?", (user_id,))
+        conn.commit()
+
+# ================== 생일 루프 ==================
+@tasks.loop(minutes=1)
+async def birthday_loop():
+    now = get_kst_now()
+    guild = bot.get_guild(GUILD_ID)
+    if now.strftime("%H:%M") == "00:00":
+        guild = bot.get_guild(GUILD_ID)
+        channel = bot.get_channel(CHANNEL_ID)
+
+        cursor.execute("SELECT user_id FROM birthdays WHERE date=?", (now.strftime("%m-%d"),))
+        for (uid,) in cursor.fetchall():
+            member = guild.get_member(int(uid))
+            if not member:
+                continue
+
+            embed = discord.Embed(
+                title="🎂 오늘의 주인공 등장!",
+                description=f"""
+✨🎆✨🎆✨🎆✨🎆✨🎆
+
+🎂🎉 오늘은 {member.mention}님의 생일입니다!!! 🎉🎂
+
+💥🎊 축하 폭격 시작!!! 🎊💥
+👇 아래 버튼으로 축하해주세요 👇
+
+✨🎆✨🎆✨🎆✨🎆✨🎆
+""",
+                color=0xff69b4
+            )
+
+            embed.set_thumbnail(url=member.display_avatar.url)
+            embed.set_footer(text="🎁 버튼 눌러서 축하해보세요!")
+
+            msg = await channel.send(embed=embed, view=BirthdayView())
+
+            cursor.execute("INSERT INTO birthday_messages VALUES (?,?)", (msg.id, uid))
+            conn.commit()
+
+    yesterday = (now - timedelta(days=1)).strftime("%m-%d")
+
+    cursor.execute("SELECT user_id FROM birthdays WHERE date=?", (yesterday,))
+    users = cursor.fetchall()
+
+    for (uid,) in users:
+        member = guild.get_member(int(uid))
+        if not member:
+            continue
+
+        role = guild.get_role(BIRTHDAY_ROLE_ID)
+
+        if role and role in member.roles:
+            await member.remove_roles(role)
+
+        try:
+            if "🎂" in member.display_name:
+                await member.edit(nick=member.display_name.replace(" 🎂", ""))
+        except:
+            pass
 
 # ================== READY ==================
 @bot.event
@@ -594,7 +654,13 @@ async def on_ready():
     bot.add_view(UpgradePanelView())
     bot.add_view(TimeRoleView())
 
-    birthday_loop.start()
+    await backfill_probation_members()
+
+    if not birthday_loop.is_running():
+        birthday_loop.start()
+
+    if not probation_role_check_loop.is_running():
+        probation_role_check_loop.start()
 
     print("봇 실행 완료")
 
