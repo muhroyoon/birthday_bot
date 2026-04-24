@@ -14,7 +14,6 @@ TOKEN = os.getenv("TOKEN")
 
 GUILD_ID = 1377672440276058214
 CHANNEL_ID = 1377672440783704219
-NOTICE_CHANNEL_ID = 1397125455454273578
 UPGRADE_LOG_CHANNEL_ID = 1490954873192185999
 LEAVE_LOG_CHANNEL_ID = 1397126595092811848
 
@@ -39,7 +38,6 @@ cursor.execute("CREATE TABLE IF NOT EXISTS congrats(message_id TEXT, user_id TEX
 cursor.execute("CREATE TABLE IF NOT EXISTS congrats_count(user_id TEXT PRIMARY KEY, count INTEGER)")
 cursor.execute("CREATE TABLE IF NOT EXISTS announced(user_id TEXT, date TEXT)")
 cursor.execute("CREATE TABLE IF NOT EXISTS scheduled_notices(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, send_time TEXT)")
-cursor.execute("CREATE TABLE IF NOT EXISTS notice_reactions(message_id TEXT, user_id TEXT, type TEXT)")
 cursor.execute("CREATE TABLE IF NOT EXISTS rule_confirm(message_id TEXT, user_id TEXT)")
 cursor.execute("CREATE TABLE IF NOT EXISTS birthday_messages(message_id TEXT PRIMARY KEY, user_id TEXT)")
 cursor.execute("CREATE TABLE IF NOT EXISTS probation_roles(user_id TEXT PRIMARY KEY, assigned_at TEXT, notified INTEGER DEFAULT 0)")
@@ -87,7 +85,6 @@ class BirthdayView(discord.ui.View):
 
     @discord.ui.button(label="🎁 축하하기 (0)", style=discord.ButtonStyle.green, custom_id="birthday_congrats")
     async def congrats(self, interaction: discord.Interaction, button: discord.ui.Button):
-
         cursor.execute("SELECT * FROM congrats WHERE message_id=? AND user_id=?", (interaction.message.id, interaction.user.id))
         if cursor.fetchone():
             await interaction.response.send_message("이미 축하했습니다 🎂", ephemeral=True)
@@ -119,7 +116,6 @@ class BirthdayView(discord.ui.View):
                     embed.add_field(name="💌 메시지", value="서버에서 따뜻한 축하가 도착했어요!", inline=False)
                     embed.set_thumbnail(url=interaction.user.display_avatar.url)
                     embed.set_footer(text="🎊 행복한 생일 보내세요!")
-
                     await member.send(embed=embed)
                 except:
                     pass
@@ -183,7 +179,6 @@ class RuleConfirmView(discord.ui.View):
 
     @discord.ui.button(label="✅ 규칙 확인 (0)", style=discord.ButtonStyle.success, custom_id="rule_confirm")
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-
         cursor.execute(
             "SELECT * FROM rule_confirm WHERE message_id=? AND user_id=?",
             (interaction.message.id, interaction.user.id)
@@ -218,7 +213,6 @@ class UpgradePanelView(discord.ui.View):
 
     @discord.ui.button(label="등업신청", style=discord.ButtonStyle.success, custom_id="upgrade_apply")
     async def apply(self, interaction: discord.Interaction, button: discord.ui.Button):
-
         guild = interaction.guild
         user = interaction.user
 
@@ -281,7 +275,6 @@ class UpgradeTicketView(discord.ui.View):
 
     @discord.ui.button(label="클랜원등업", style=discord.ButtonStyle.primary, custom_id="upgrade_clan")
     async def clan(self, interaction: discord.Interaction, button: discord.ui.Button):
-
         if not self.is_admin(interaction):
             await interaction.response.send_message("관리자만 사용할 수 있습니다.", ephemeral=True)
             return
@@ -311,7 +304,6 @@ class UpgradeTicketView(discord.ui.View):
 
     @discord.ui.button(label="게스트등업", style=discord.ButtonStyle.secondary, custom_id="upgrade_guest")
     async def guest(self, interaction: discord.Interaction, button: discord.ui.Button):
-
         if not self.is_admin(interaction):
             await interaction.response.send_message("관리자만 사용할 수 있습니다.", ephemeral=True)
             return
@@ -341,7 +333,6 @@ class UpgradeTicketView(discord.ui.View):
 
     @discord.ui.button(label="티켓삭제", style=discord.ButtonStyle.danger, custom_id="ticket_delete")
     async def delete(self, interaction: discord.Interaction, button: discord.ui.Button):
-
         if not self.is_admin(interaction):
             await interaction.response.send_message("관리자만 사용할 수 있습니다.", ephemeral=True)
             return
@@ -432,24 +423,18 @@ async def birthday_list(interaction: discord.Interaction):
 @bot.tree.command(name="규칙버튼")
 @app_commands.checks.has_permissions(administrator=True)
 async def rule_button(interaction: discord.Interaction):
-
     embed = discord.Embed(
         description="""원활한 게임을 위해 클랜 규칙을 정독해 주세요!!
 확인 후 아래 버튼을 눌러주세요!""",
         color=0x2ecc71
     )
 
-    await interaction.channel.send(
-        embed=embed,
-        view=RuleConfirmView()
-    )
-
+    await interaction.channel.send(embed=embed, view=RuleConfirmView())
     await interaction.response.send_message("규칙 버튼 생성 완료", ephemeral=True)
 
 @bot.tree.command(name="등업패널")
 @app_commands.checks.has_permissions(administrator=True)
 async def upgrade_panel(interaction: discord.Interaction):
-
     embed = discord.Embed(
         description="""HICKS 클랜 서버 등업 신청 채널입니다!
 
@@ -467,7 +452,6 @@ async def upgrade_panel(interaction: discord.Interaction):
 
 @bot.tree.command(name="시간설정패널")
 async def time_panel(interaction: discord.Interaction):
-
     embed = discord.Embed(
         title="플레이 시간대 설정",
         description="원하는 시간대를 선택해주세요!\n중복 선택 가능합니다.",
@@ -585,8 +569,8 @@ async def probation_role_check_loop():
 async def birthday_loop():
     now = get_kst_now()
     guild = bot.get_guild(GUILD_ID)
+
     if now.strftime("%H:%M") == "00:00":
-        guild = bot.get_guild(GUILD_ID)
         channel = bot.get_channel(CHANNEL_ID)
 
         cursor.execute("SELECT user_id FROM birthdays WHERE date=?", (now.strftime("%m-%d"),))
@@ -649,7 +633,6 @@ async def on_ready():
     await bot.tree.sync(guild=guild)
 
     bot.add_view(BirthdayView())
-    bot.add_view(NoticeView())
     bot.add_view(RuleConfirmView())
     bot.add_view(UpgradePanelView())
     bot.add_view(TimeRoleView())
