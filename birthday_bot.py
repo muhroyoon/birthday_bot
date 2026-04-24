@@ -10,6 +10,21 @@ from zoneinfo import ZoneInfo
 def get_kst_now():
     return datetime.now(ZoneInfo("Asia/Seoul"))
 
+def normalize_birthday(date_str: str) -> str:
+    value = date_str.strip().replace("/", "-").replace(".", "-")
+    parts = value.split("-")
+
+    if len(parts) != 2:
+        raise ValueError("생일 형식은 MM-DD 로 입력해주세요.")
+
+    month = int(parts[0])
+    day = int(parts[1])
+
+    if not (1 <= month <= 12 and 1 <= day <= 31):
+        raise ValueError("올바른 날짜를 입력해주세요.")
+
+    return f"{month:02d}-{day:02d}"
+
 TOKEN = os.getenv("TOKEN")
 
 GUILD_ID = 1377672440276058214
@@ -401,7 +416,13 @@ class TimeRoleView(discord.ui.View):
 # ================== 명령어 ==================
 @bot.tree.command(name="생일등록")
 async def add_birthday(interaction: discord.Interaction, member: discord.Member, date: str):
-    cursor.execute("INSERT OR REPLACE INTO birthdays VALUES (?,?)", (member.id, date))
+    try:
+        normalized_date = normalize_birthday(date)
+    except ValueError as e:
+        await interaction.response.send_message(str(e), ephemeral=True)
+        return
+
+    cursor.execute("INSERT OR REPLACE INTO birthdays VALUES (?,?)", (member.id, normalized_date))
     conn.commit()
     await interaction.response.send_message("등록 완료", ephemeral=True)
 
@@ -415,7 +436,20 @@ async def remove_birthday(interaction: discord.Interaction, member: discord.Memb
 async def birthday_list(interaction: discord.Interaction):
     cursor.execute("SELECT * FROM birthdays")
     data = cursor.fetchall()
-    result = [(interaction.guild.get_member(int(uid)), date) for uid, date in data if interaction.guild.get_member(int(uid))]
+
+    result = []
+    for uid, date in data:
+        member = interaction.guild.get_member(int(uid))
+        if not member:
+            continue
+
+        try:
+            normalized_date = normalize_birthday(date)
+        except ValueError:
+            continue
+
+        result.append((member, normalized_date))
+
     result.sort(key=lambda x: tuple(map(int, x[1].split("-"))))
     view = BirthdayListView(result)
     await interaction.response.send_message(embed=view.get_embed(), view=view)
