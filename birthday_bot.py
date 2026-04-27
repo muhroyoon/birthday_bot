@@ -288,6 +288,17 @@ class UpgradeTicketView(discord.ui.View):
             embed.timestamp = datetime.now()
             await log_channel.send(embed=embed)
 
+    async def send_welcome_dm(self):
+        try:
+            await self.user.send(
+                f"""안녕하세요 {self.user.mention}님! 저희 HICKS에 오신 걸 환영합니다!
+저희 서버를 알기 쉽게 <#1498220498155208784> 여기에 정리해 두었어요!!
+궁금하신 점이 있거나 불편하신 점이 있으시면 언제든 관리자에게 문의 부탁드립니다!
+즐겜하세요!!"""
+            )
+        except:
+            pass
+
     @discord.ui.button(label="클랜원등업", style=discord.ButtonStyle.primary, custom_id="upgrade_clan")
     async def clan(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.is_admin(interaction):
@@ -296,6 +307,7 @@ class UpgradeTicketView(discord.ui.View):
 
         role = interaction.guild.get_role(1409208539548876801)
         await self.user.add_roles(role)
+        await self.send_welcome_dm()
 
         await self.send_log(interaction, "클랜원 등업")
 
@@ -325,6 +337,7 @@ class UpgradeTicketView(discord.ui.View):
 
         role = interaction.guild.get_role(1478317433683968041)
         await self.user.add_roles(role)
+        await self.send_welcome_dm()
 
         await self.send_log(interaction, "게스트 등업")
 
