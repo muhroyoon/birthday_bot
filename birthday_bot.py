@@ -546,7 +546,7 @@ class CoinFlipView(discord.ui.View):
 
 
 # ================== 명령어 ==================
-@bot.tree.command(name="생일등록")
+@bot.tree.command(name="생일등록", description="유저의 생일을 등록합니다.")
 @app_commands.describe(member="생일을 등록할 유저", date="MM-DD 형식으로 입력")
 async def add_birthday(interaction: discord.Interaction, member: discord.Member, date: str):
     try:
@@ -560,14 +560,14 @@ async def add_birthday(interaction: discord.Interaction, member: discord.Member,
     await interaction.response.send_message("등록 완료", ephemeral=True)
 
 
-@bot.tree.command(name="생일삭제")
+@bot.tree.command(name="생일삭제", description="유저의 생일 정보를 삭제합니다.")
 async def remove_birthday(interaction: discord.Interaction, member: discord.Member):
     cursor.execute("DELETE FROM birthdays WHERE user_id=?", (str(member.id),))
     conn.commit()
     await interaction.response.send_message("삭제 완료", ephemeral=True)
 
 
-@bot.tree.command(name="생일목록")
+@bot.tree.command(name="생일목록", description="등록된 생일 목록을 확인합니다.")
 async def birthday_list(interaction: discord.Interaction):
     cursor.execute("SELECT * FROM birthdays")
     data = cursor.fetchall()
@@ -590,7 +590,7 @@ async def birthday_list(interaction: discord.Interaction):
     await interaction.response.send_message(embed=view.get_embed(), view=view)
 
 
-@bot.tree.command(name="규칙버튼")
+@bot.tree.command(name="규칙버튼", description="규칙 확인 버튼 메시지를 생성합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def rule_button(interaction: discord.Interaction):
     embed = discord.Embed(
@@ -601,7 +601,7 @@ async def rule_button(interaction: discord.Interaction):
     await interaction.response.send_message("규칙 버튼 생성 완료", ephemeral=True)
 
 
-@bot.tree.command(name="등업패널")
+@bot.tree.command(name="등업패널", description="등업 신청 패널을 생성합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def upgrade_panel(interaction: discord.Interaction):
     embed = discord.Embed(
@@ -619,7 +619,7 @@ async def upgrade_panel(interaction: discord.Interaction):
     await interaction.response.send_message("등업 패널 생성 완료", ephemeral=True)
 
 
-@bot.tree.command(name="시간설정패널")
+@bot.tree.command(name="시간설정패널", description="시간대 역할 선택 패널을 생성합니다.")
 async def time_panel(interaction: discord.Interaction):
     embed = discord.Embed(
         title="플레이 시간대 설정",
@@ -630,7 +630,7 @@ async def time_panel(interaction: discord.Interaction):
     await interaction.response.send_message("시간 설정 패널 생성 완료", ephemeral=True)
 
 
-@bot.tree.command(name="돈줘")
+@bot.tree.command(name="돈줘", description="하루에 한 번 지원금 10,000원을 받습니다.")
 async def daily_money(interaction: discord.Interaction):
     today = get_kst_now().strftime("%Y-%m-%d")
     cursor.execute("SELECT last_claim_date FROM daily_claims WHERE user_id=?", (str(interaction.user.id),))
@@ -654,13 +654,13 @@ async def daily_money(interaction: discord.Interaction):
     )
 
 
-@bot.tree.command(name="잔액")
+@bot.tree.command(name="잔액", description="현재 내 보유 금액을 확인합니다.")
 async def balance(interaction: discord.Interaction):
     amount = get_balance(interaction.user.id)
     await interaction.response.send_message(f"{interaction.user.mention}님의 현재 잔액은 `{format_money(amount)}`입니다.")
 
 
-@bot.tree.command(name="랭킹")
+@bot.tree.command(name="랭킹", description="서버 자산 랭킹 상위 10명을 확인합니다.")
 async def ranking(interaction: discord.Interaction):
     cursor.execute("SELECT user_id, balance FROM balances ORDER BY balance DESC, user_id ASC LIMIT 10")
     rows = cursor.fetchall()
@@ -680,7 +680,7 @@ async def ranking(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="송금")
+@bot.tree.command(name="송금", description="다른 유저에게 돈을 송금합니다.")
 @app_commands.describe(member="송금 받을 유저", amount="보낼 금액")
 async def transfer(interaction: discord.Interaction, member: discord.Member, amount: int):
     if member.bot:
@@ -708,7 +708,29 @@ async def transfer(interaction: discord.Interaction, member: discord.Member, amo
     )
 
 
-@bot.tree.command(name="슬롯")
+@bot.tree.command(name="돈지급", description="서버 주인이 특정 유저에게 돈을 지급합니다.")
+@app_commands.describe(member="돈을 받을 유저", amount="지급할 금액")
+async def grant_money(interaction: discord.Interaction, member: discord.Member, amount: int):
+    if interaction.guild is None or interaction.user.id != interaction.guild.owner_id:
+        await interaction.response.send_message("이 명령어는 서버 주인만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    if member.bot:
+        await interaction.response.send_message("봇에게는 지급할 수 없습니다.", ephemeral=True)
+        return
+
+    if amount <= 0:
+        await interaction.response.send_message("지급 금액은 1원 이상이어야 합니다.", ephemeral=True)
+        return
+
+    add_balance(member.id, amount)
+    await interaction.response.send_message(
+        f"{member.mention}님에게 `{format_money(amount)}`을 지급했습니다.\n"
+        f"{member.mention}님의 현재 잔액: `{format_money(get_balance(member.id))}`"
+    )
+
+
+@bot.tree.command(name="슬롯", description="입력한 금액으로 슬롯머신을 돌립니다.")
 @app_commands.describe(amount="배팅 금액")
 async def slot(interaction: discord.Interaction, amount: int):
     if amount < MIN_BET:
@@ -767,7 +789,7 @@ async def slot(interaction: discord.Interaction, amount: int):
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="동전")
+@bot.tree.command(name="동전", description="입력한 금액으로 동전 앞뒤 맞추기를 합니다.")
 @app_commands.describe(amount="배팅 금액")
 async def coin(interaction: discord.Interaction, amount: int):
     if amount < MIN_BET:
