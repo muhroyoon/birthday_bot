@@ -87,6 +87,15 @@ cursor.execute(
     )
     """
 )
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS welcome_messages(
+        role_id TEXT PRIMARY KEY,
+        content TEXT NOT NULL
+    )
+    """
+)
+
 
 conn.commit()
 
@@ -170,6 +179,38 @@ async def refresh_sticky_message(channel: discord.TextChannel):
 
     new_message = await channel.send(sticky["content"])
     set_sticky_message(channel.id, sticky["content"], new_message.id)
+
+def set_welcome_message(role_id: int, content: str):
+    cursor.execute(
+        """
+        INSERT OR REPLACE INTO welcome_messages(role_id, content)
+        VALUES (?, ?)
+        """,
+        (str(role_id), content),
+    )
+    conn.commit()
+
+
+def get_welcome_message(role_id: int):
+    cursor.execute(
+        "SELECT content FROM welcome_messages WHERE role_id=?",
+        (str(role_id),),
+    )
+    row = cursor.fetchone()
+    return row[0] if row else None
+
+
+def get_all_welcome_messages():
+    cursor.execute("SELECT role_id, content FROM welcome_messages ORDER BY role_id ASC")
+    return cursor.fetchall()
+
+
+def delete_welcome_message(role_id: int):
+    cursor.execute(
+        "DELETE FROM welcome_messages WHERE role_id=?",
+        (str(role_id),),
+    )
+    conn.commit()
 
 
 # ================== 돈 관리 ==================
@@ -1339,18 +1380,13 @@ async def recruit(interaction: discord.Interaction, message: str):
         mention_here=True,
         max_players=MAX_PLAYERS,
     )
-
-
 @bot.tree.command(name="종겜구인", description="원하는 게임으로 구인 글 작성")
 async def general_recruit(interaction: discord.Interaction):
     await interaction.response.send_modal(GeneralRecruitModal())
-
 @bot.tree.command(name="고정메시지", description="현재 채널에 항상 하단에 유지될 메시지를 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def sticky_message(interaction: discord.Interaction):
     await interaction.response.send_modal(StickyMessageModal())
-
-
 @bot.tree.command(name="고정해제", description="현재 채널의 고정메시지를 해제합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def sticky_clear(interaction: discord.Interaction):
@@ -1368,8 +1404,6 @@ async def sticky_clear(interaction: discord.Interaction):
 
     clear_sticky_message(interaction.channel.id)
     await interaction.response.send_message("현재 채널의 고정메시지를 해제했습니다.", ephemeral=True)
-
-
 @bot.tree.command(name="고정확인", description="현재 채널의 고정메시지 내용을 확인합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def sticky_check(interaction: discord.Interaction):
@@ -1383,7 +1417,23 @@ async def sticky_check(interaction: discord.Interaction):
     embed.add_field(name="내용", value=existing["content"], inline=False)
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
-
+@bot.tree.command(name="세팅환영메시지채널", description="현재 채널을 환영메시지 송출 채널로 설정합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def set_welcome_message_channel(interaction: discord.Interaction):
+    set_setting("welcome_message_channel_id", str(interaction.channel.id))
+    await interaction.response.send_message(
+        f"환영메시지 채널을 {interaction.channel.mention} 으로 설정했습니다.",
+        ephemeral=True,
+    )
+@bot.tree.command(name="환영메시지", description="특정 역할에 대한 환영메시지를 설정합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+@app_commands.describe(role="환영메시지를 연결할 역할", content="해당 역할 유저에게 보낼 환영 메시지")
+async def welcome_message(interaction: discord.Interaction, role: discord.Role, content: str):
+    set_welcome_message(role.id, content)
+    await interaction.response.send_message(
+        f"{role.mention} 역할의 환영메시지를 저장했습니다.",
+        ephemeral=True,
+    )
 
 # ================== 이벤트 ==================
 @bot.event
@@ -1401,6 +1451,29 @@ async def on_member_update(before: discord.Member, after: discord.Member):
     if NEW_MEMBER_ROLE_ID in before_role_ids and NEW_MEMBER_ROLE_ID not in after_role_ids:
         cursor.execute("DELETE FROM probation_roles WHERE user_id=?", (str(after.id),))
         conn.commit()
+            added_role_ids = after_role_ids - before_role_ids
+
+    if added_role_ids:
+        welcome_message_channel_id = get_setting_channel_id("welcome_message_channel_id")
+        if welcome_message_channel_id is not None:
+            welcome_channel = after.guild.get_channel(welcome_message_channel_id)
+
+            if welcome_channel is not None:
+                for role_id in added_role_ids:
+                    content = get_welcome_message(role_id)
+                    if not content:
+                        continue
+
+                    role = after.guild.get_role(role_id)
+                    rendered = content.replace("{user}", after.mention)
+
+                    if role is not None:
+                        rendered = rendered.replace("{role}", role.mention)
+                    else:
+                        rendered = rendered.replace("{role}", "역할")
+
+                    await welcome_channel.send(rendered)
+
 
 
 @bot.event
