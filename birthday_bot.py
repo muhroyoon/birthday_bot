@@ -78,6 +78,15 @@ cursor.execute(
 cursor.execute("CREATE TABLE IF NOT EXISTS balances(user_id TEXT PRIMARY KEY, balance INTEGER NOT NULL DEFAULT 0)")
 cursor.execute("CREATE TABLE IF NOT EXISTS daily_claims(user_id TEXT PRIMARY KEY, last_claim_date TEXT)")
 cursor.execute("CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT)")
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS sticky_messages(
+        channel_id TEXT PRIMARY KEY,
+        content TEXT NOT NULL,
+        message_id TEXT
+    )
+    """
+)
 
 conn.commit()
 
@@ -106,6 +115,61 @@ def get_setting_channel_id(key: str):
         return int(value)
     except ValueError:
         return None
+
+def set_sticky_message(channel_id: int, content: str, message_id: int | None = None):
+    cursor.execute(
+        """
+        INSERT OR REPLACE INTO sticky_messages(channel_id, content, message_id)
+        VALUES (?, ?, ?)
+        """,
+        (str(channel_id), content, str(message_id) if message_id else None),
+    )
+    conn.commit()
+
+
+def get_sticky_message(channel_id: int):
+    cursor.execute(
+        "SELECT content, message_id FROM sticky_messages WHERE channel_id=?",
+        (str(channel_id),),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+
+    content, message_id = row
+    return {
+        "content": content,
+        "message_id": int(message_id) if message_id else None,
+    }
+
+
+def clear_sticky_message(channel_id: int):
+    cursor.execute(
+        "DELETE FROM sticky_messages WHERE channel_id=?",
+        (str(channel_id),),
+    )
+    conn.commit()
+
+
+async def refresh_sticky_message(channel: discord.TextChannel):
+    sticky = get_sticky_message(channel.id)
+    if not sticky:
+        return
+
+    old_message_id = sticky.get("message_id")
+    if old_message_id:
+        try:
+            old_message = await channel.fetch_message(old_message_id)
+            await old_message.delete()
+        except discord.NotFound:
+            pass
+        except discord.Forbidden:
+            return
+        except discord.HTTPException:
+            return
+
+    new_message = await channel.send(sticky["content"])
+    set_sticky_message(channel.id, sticky["content"], new_message.id)
 
 
 # ================== 돈 관리 ==================
@@ -1252,6 +1316,60 @@ async def recruit(interaction: discord.Interaction, message: str):
 async def general_recruit(interaction: discord.Interaction):
     await interaction.response.send_modal(GeneralRecruitModal())
 
+@bot.tree.command(name="고정메시지", description="현재 채널에 항상 하단에 유지될 메시지를 설정합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+@app_commands.describe(content="항상 하단에 유지할 메시지 내용")
+async def sticky_message(interaction: discord.Interaction, content: str):
+    existing = get_sticky_message(interaction.channel.id)
+    if existing and existing.get("message_id"):
+        try:
+            old_message = await interaction.channel.fetch_message(existing["message_id"])
+            await old_message.delete()
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            pass
+
+    sticky_msg = await interaction.channel.send(content)
+    set_sticky_message(interaction.channel.id, content, sticky_msg.id)
+
+    await interaction.response.send_message(
+        f"{interaction.channel.mention} 채널의 고정메시지를 설정했습니다.",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="고정해제", description="현재 채널의 고정메시지를 해제합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def sticky_clear(interaction: discord.Interaction):
+    existing = get_sticky_message(interaction.channel.id)
+    if not existing:
+        await interaction.response.send_message("이 채널에는 설정된 고정메시지가 없습니다.", ephemeral=True)
+        return
+
+    if existing.get("message_id"):
+        try:
+            old_message = await interaction.channel.fetch_message(existing["message_id"])
+            await old_message.delete()
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            pass
+
+    clear_sticky_message(interaction.channel.id)
+    await interaction.response.send_message("현재 채널의 고정메시지를 해제했습니다.", ephemeral=True)
+
+
+@bot.tree.command(name="고정확인", description="현재 채널의 고정메시지 내용을 확인합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def sticky_check(interaction: discord.Interaction):
+    existing = get_sticky_message(interaction.channel.id)
+    if not existing:
+        await interaction.response.send_message("이 채널에는 설정된 고정메시지가 없습니다.", ephemeral=True)
+        return
+
+    embed = discord.Embed(title="고정메시지 확인", color=0x5865F2)
+    embed.add_field(name="채널", value=interaction.channel.mention, inline=False)
+    embed.add_field(name="내용", value=existing["content"], inline=False)
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
 
 # ================== 이벤트 ==================
 @bot.event
@@ -1346,6 +1464,29 @@ async def on_voice_state_update(member, before, after):
             continue
 
         await view.update_embed()
+
+@bot.event
+async def on_message(message: discord.Message):
+    if message.author.bot:
+        await bot.process_commands(message)
+        return
+
+    if message.guild is None:
+        await bot.process_commands(message)
+        return
+
+    sticky = get_sticky_message(message.channel.id)
+    if sticky:
+        if sticky.get("message_id") and message.id == sticky["message_id"]:
+            await bot.process_commands(message)
+            return
+
+        try:
+            await refresh_sticky_message(message.channel)
+        except Exception:
+            pass
+
+    await bot.process_commands(message)
 
 
 # ================== 반복 작업 ==================
