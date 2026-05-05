@@ -683,6 +683,93 @@ class CoinFlipView(discord.ui.View):
     async def tails(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.finish(interaction, "뒤")
 
+# ================== 룰렛 게임 VIEW ==================
+class RouletteView(discord.ui.View):
+    def __init__(self, user_id: int, bet_amount: int):
+        super().__init__(timeout=60)
+        self.user_id = user_id
+        self.bet_amount = bet_amount
+        self.resolved = False
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("이 버튼은 명령어를 사용한 사람만 누를 수 있습니다.", ephemeral=True)
+            return False
+        return True
+
+    def spin_result(self) -> str:
+        return random.choices(
+            ["빨강", "검정", "초록"],
+            weights=[45, 30, 15],
+            k=1,
+        )[0]
+        
+    def get_payout(self, choice: str) -> int:
+        if choice == "빨강":
+            return self.bet_amount * 2
+        if choice == "검정":
+            return self.bet_amount * 3
+        if choice == "초록":
+            return self.bet_amount * 6
+        return 0
+
+    async def finish(self, interaction: discord.Interaction, choice: str):
+        if self.resolved:
+            await interaction.response.send_message("이미 결과가 확정되었습니다.", ephemeral=True)
+            return
+
+        self.resolved = True
+        result = self.spin_result()
+        win = choice == result
+
+        if win:
+            payout = self.get_payout(choice)
+            add_balance(self.user_id, payout)
+            description = (
+                f"선택: **{choice}**\n"
+                f"결과: **{result}**\n"
+                f"축하합니다! `{format_money(payout)}`을 획득했습니다."
+            )
+            color = 0x2ECC71
+        else:
+            description = (
+                f"선택: **{choice}**\n"
+                f"결과: **{result}**\n"
+                f"아쉽네요... `{format_money(self.bet_amount)}`을 잃었습니다."
+            )
+            color = 0xE74C3C
+
+        for item in self.children:
+            item.disabled = True
+
+        balance = get_balance(self.user_id)
+        embed = discord.Embed(title="🎡 룰렛 결과", description=description, color=color)
+        embed.add_field(name="현재 잔액", value=format_money(balance), inline=False)
+
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def on_timeout(self):
+        if self.resolved:
+            return
+
+        self.resolved = True
+        add_balance(self.user_id, self.bet_amount)
+
+        for item in self.children:
+            item.disabled = True
+
+    @discord.ui.button(label="빨강", style=discord.ButtonStyle.danger)
+    async def red(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.finish(interaction, "빨강")
+
+    @discord.ui.button(label="검정", style=discord.ButtonStyle.secondary)
+    async def black(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.finish(interaction, "검정")
+
+    @discord.ui.button(label="초록", style=discord.ButtonStyle.success)
+    async def green(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.finish(interaction, "초록")
+
 
 # ================== 팀 나누기 VIEW ==================
 class TeamSelectView(discord.ui.View):
@@ -1434,6 +1521,41 @@ async def welcome_message(interaction: discord.Interaction, role: discord.Role, 
         f"{role.mention} 역할의 환영메시지를 저장했습니다.",
         ephemeral=True,
     )
+@bot.tree.command(name="룰렛", description="룰렛에 배팅하고 색상을 선택합니다.")
+@app_commands.describe(amount="배팅 금액")
+async def roulette(interaction: discord.Interaction, amount: int):
+    if amount < MIN_BET:
+        await interaction.response.send_message(
+            f"최소 배팅 금액은 `{format_money(MIN_BET)}`입니다.",
+            ephemeral=True,
+        )
+        return
+
+    if not can_afford(interaction.user.id, amount):
+        await interaction.response.send_message("잔액이 부족합니다.", ephemeral=True)
+        return
+
+    add_balance(interaction.user.id, -amount)
+
+    embed = discord.Embed(
+        title="🎡 룰렛",
+        description=(
+            f"배팅 금액: `{format_money(amount)}`\n\n"
+            "색상을 선택하세요.\n\n"
+            "🔴 빨강: 당첨 시 2배\n"
+            "⚫ 검정: 당첨 시 3배\n"
+            "🟢 초록: 당첨 시 6배\n\n"
+            "아래 버튼 중 하나를 눌러 선택해주세요."
+        ),
+        color=0xF1C40F,
+    )
+
+    await interaction.response.send_message(
+        embed=embed,
+        view=RouletteView(interaction.user.id, amount),
+    )
+
+
 
 # ================== 이벤트 ==================
 @bot.event
