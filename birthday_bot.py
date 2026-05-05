@@ -40,27 +40,24 @@ def dt_from_db(value: str) -> datetime:
 TOKEN = os.getenv("TOKEN")
 
 GUILD_ID = 1377672440276058214
-CHANNEL_ID = 1377672440783704219
-UPGRADE_LOG_CHANNEL_ID = 1490954873192185999
-LEAVE_LOG_CHANNEL_ID = 1397126595092811848
 
 RULE_ROLE_ID = 1486079820160041131
-RULE_LOG_CHANNEL_ID = 1397124964246622238
-
 BIRTHDAY_ROLE_ID = 1482668657178972300
 NEW_MEMBER_ROLE_ID = 1481662617859657790
-
-WELCOME_GUIDE_CHANNEL_ID = 1498220498155208784
 
 DAILY_REWARD = 10000
 MIN_BET = 100
 COIN_FLIP_TIMEOUT = 60
 
+MAX_PLAYERS = 4
+
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
+intents.voice_states = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
+active_recruits = {}
 
 # ================== DB ==================
 conn = sqlite3.connect("/data/birthday.db")
@@ -80,8 +77,36 @@ cursor.execute(
 )
 cursor.execute("CREATE TABLE IF NOT EXISTS balances(user_id TEXT PRIMARY KEY, balance INTEGER NOT NULL DEFAULT 0)")
 cursor.execute("CREATE TABLE IF NOT EXISTS daily_claims(user_id TEXT PRIMARY KEY, last_claim_date TEXT)")
+cursor.execute("CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT)")
 
 conn.commit()
+
+
+# ================== 설정 ==================
+def set_setting(key: str, value: str):
+    cursor.execute(
+        "INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)",
+        (key, value),
+    )
+    conn.commit()
+
+
+def get_setting(key: str):
+    cursor.execute("SELECT value FROM settings WHERE key=?", (key,))
+    row = cursor.fetchone()
+    return row[0] if row else None
+
+
+def get_setting_channel_id(key: str):
+    value = get_setting(key)
+    if value is None:
+        return None
+
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
 
 # ================== 돈 관리 ==================
 def ensure_wallet(user_id: int):
@@ -275,9 +300,11 @@ class RuleConfirmView(discord.ui.View):
 
         await self.update_count(interaction.message)
 
-        log_channel = interaction.guild.get_channel(RULE_LOG_CHANNEL_ID)
-        if log_channel:
-            await log_channel.send(f"✅ {interaction.user.mention} 님이 규칙 확인")
+        rule_log_channel_id = get_setting_channel_id("rule_log_channel_id")
+        if rule_log_channel_id is not None:
+            log_channel = interaction.guild.get_channel(rule_log_channel_id)
+            if log_channel:
+                await log_channel.send(f"✅ {interaction.user.mention} 님이 규칙 확인")
 
         await interaction.response.send_message("🎉 규칙 확인 완료!", ephemeral=True)
 
@@ -342,7 +369,11 @@ class UpgradeTicketView(discord.ui.View):
         await message.edit(view=self)
 
     async def send_log(self, interaction, action):
-        log_channel = interaction.guild.get_channel(UPGRADE_LOG_CHANNEL_ID)
+        upgrade_log_channel_id = get_setting_channel_id("upgrade_log_channel_id")
+        if upgrade_log_channel_id is None:
+            return
+
+        log_channel = interaction.guild.get_channel(upgrade_log_channel_id)
         if log_channel:
             embed = discord.Embed(title="📋 등업 로그", color=0x3498DB)
             embed.add_field(name="대상", value=self.user.mention, inline=True)
@@ -353,9 +384,12 @@ class UpgradeTicketView(discord.ui.View):
 
     async def send_welcome_dm(self):
         try:
+            welcome_guide_channel_id = get_setting("welcome_guide_channel_id")
+            welcome_guide_text = f"<#{welcome_guide_channel_id}>" if welcome_guide_channel_id else "가입 안내 채널"
+
             await self.user.send(
                 f"""안녕하세요 {self.user.mention}님! 저희 HICKS에 오신 걸 환영합니다!
-저희 서버를 알기 쉽게 <#{WELCOME_GUIDE_CHANNEL_ID}> 여기에 정리해 두었어요!!
+저희 서버를 알기 쉽게 {welcome_guide_text} 여기에 정리해 두었어요!!
 궁금하신 점이 있거나 불편하신 점이 있으시면 언제든 관리자에게 문의 부탁드립니다!
 즐겜하세요!!"""
             )
@@ -545,7 +579,360 @@ class CoinFlipView(discord.ui.View):
         await self.finish(interaction, "뒤")
 
 
+# ================== 팀 나누기 VIEW ==================
+class TeamSelectView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def create_team(self, interaction: discord.Interaction, team_size: int):
+        if interaction.user.voice is None:
+            await interaction.response.send_message("❌ 음성채널에 있어야 합니다.", ephemeral=True)
+            return
+
+        channel = interaction.user.voice.channel
+        members = channel.members
+
+        players = [
+            member.display_name
+            for member in members
+            if "[📺관전중]" not in member.display_name and not member.bot
+        ]
+
+        if len(players) < 2:
+            await interaction.response.send_message("플레이어가 부족합니다.", ephemeral=True)
+            return
+
+        random.shuffle(players)
+        teams = [players[i:i + team_size] for i in range(0, len(players), team_size)]
+
+        embed = discord.Embed(
+            title="🎮 랜덤 팀 결과",
+            description=f"채널: {channel.name}",
+            color=0x2ECC71,
+        )
+
+        for index, team in enumerate(teams, start=1):
+            embed.add_field(name=f"팀 {index}", value="\n".join(team), inline=False)
+
+        await interaction.response.send_message(embed=embed)
+
+    @discord.ui.button(label="2명 팀", style=discord.ButtonStyle.primary)
+    async def team2(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.create_team(interaction, 2)
+
+    @discord.ui.button(label="3명 팀", style=discord.ButtonStyle.primary)
+    async def team3(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.create_team(interaction, 3)
+
+    @discord.ui.button(label="4명 팀", style=discord.ButtonStyle.success)
+    async def team4(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.create_team(interaction, 4)
+
+    @discord.ui.button(label="5명 팀", style=discord.ButtonStyle.secondary)
+    async def team5(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.create_team(interaction, 5)
+
+
+# ================== 구인 유틸 ==================
+def count_members(channel):
+    players = 0
+    spectators = 0
+
+    for member in channel.members:
+        if member.bot:
+            continue
+
+        if "[📺관전중]" in member.display_name:
+            spectators += 1
+        else:
+            players += 1
+
+    return players, spectators
+
+
+def get_color(remain):
+    if remain <= 0:
+        return 0xFF0000
+    if remain == 1:
+        return 0xFFCC00
+    return 0x00FF00
+
+
+def get_recruit_color(players, max_players):
+    if max_players is None:
+        return 0x00FF00
+
+    remain = max_players - players
+    return get_color(remain)
+
+
+def build_description(host, voice_channel, players, spectators, message_content, max_players=None):
+    lines = [
+        f"👤 모집자 : {host.mention}",
+        f"🔊 채널 : {voice_channel.name}",
+        "",
+    ]
+
+    if max_players is None:
+        lines.append(f"👥 참여 인원 : {players}명")
+        lines.append(f"📺 관전자 : {spectators}")
+    else:
+        remain = max_players - players
+        lines.append(f"👥 참여 인원 : {players} / {max_players}")
+        lines.append(f"📺 관전자 : {spectators}")
+        lines.append("")
+        lines.append(f"🪑 남은 자리 : {remain}")
+
+    lines.extend(["", f"💬 {message_content}"])
+    return "\n".join(lines)
+
+
+class RecruitView(discord.ui.View):
+    def __init__(self, channel, host, game_name, message_content, max_players=None):
+        super().__init__(timeout=None)
+        self.channel = channel
+        self.host = host
+        self.game_name = game_name
+        self.message_content = message_content
+        self.max_players = max_players
+        self.message = None
+
+    async def update_embed(self):
+        players, spectators = count_members(self.channel)
+
+        embed = self.message.embeds[0]
+        embed.title = f"🎮 {self.game_name} 모집중!!"
+        embed.color = get_recruit_color(players, self.max_players)
+        embed.description = build_description(
+            self.host,
+            self.channel,
+            players,
+            spectators,
+            self.message_content,
+            self.max_players,
+        )
+
+        await self.message.edit(embed=embed, view=self)
+
+        if self.max_players is not None and players >= self.max_players:
+            await self.auto_close()
+
+    async def auto_close(self):
+        embed = self.message.embeds[0]
+        embed.title = f"🎮 {self.game_name} 모집 종료"
+        embed.color = 0xFF0000
+
+        for item in self.children:
+            item.disabled = True
+
+        await self.message.edit(embed=embed, view=self)
+
+        if self.channel.id in active_recruits:
+            del active_recruits[self.channel.id]
+
+    @discord.ui.button(label="참가하기", style=discord.ButtonStyle.green)
+    async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.voice and interaction.user.voice.channel == self.channel:
+            await interaction.response.send_message("이미 해당 음성채널에 참여 중입니다.", ephemeral=True)
+            return
+
+        permissions = self.channel.permissions_for(interaction.guild.me)
+        can_move = permissions.move_members and permissions.connect
+
+        if interaction.user.voice and can_move:
+            try:
+                await interaction.user.move_to(self.channel)
+                await interaction.response.send_message(
+                    f"{self.channel.mention} 음성채널로 이동했습니다.",
+                    ephemeral=True,
+                )
+                return
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+
+        invite = await self.channel.create_invite(max_age=300, max_uses=1)
+        await interaction.response.send_message(
+            f"바로 이동 권한이 없어 초대 링크를 드릴게요: {invite.url}",
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="모집종료", style=discord.ButtonStyle.red)
+    async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user != self.host:
+            await interaction.response.send_message("모집자만 종료할 수 있습니다.", ephemeral=True)
+            return
+
+        await interaction.response.defer()
+        await self.auto_close()
+
+
+class GeneralRecruitModal(discord.ui.Modal, title="종겜 구인"):
+    game_name = discord.ui.TextInput(
+        label="게임 이름",
+        placeholder="예: 롤, 발로란트, 마크",
+        max_length=100,
+    )
+    message_content = discord.ui.TextInput(
+        label="하고 싶은 말",
+        placeholder="예: 2판만 가볍게 하실 분",
+        style=discord.TextStyle.paragraph,
+        max_length=500,
+        required=False,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not interaction.user.voice:
+            await interaction.response.send_message("음성채널 먼저 들어가세요.", ephemeral=True)
+            return
+
+        voice_channel = interaction.user.voice.channel
+        message_text = str(self.message_content).strip() or " "
+
+        await create_recruit_post(
+            interaction=interaction,
+            text_channel=interaction.channel,
+            voice_channel=voice_channel,
+            host=interaction.user,
+            game_name=str(self.game_name).strip(),
+            message_content=message_text,
+            mention_here=False,
+            max_players=None,
+        )
+
+
+async def create_recruit_post(
+    interaction: discord.Interaction,
+    text_channel: discord.TextChannel,
+    voice_channel: discord.VoiceChannel,
+    host: discord.Member,
+    game_name: str,
+    message_content: str,
+    mention_here: bool,
+    max_players=None,
+):
+    players, spectators = count_members(voice_channel)
+
+    embed = discord.Embed(
+        title=f"🎮 {game_name} 모집중!!",
+        description=build_description(
+            host,
+            voice_channel,
+            players,
+            spectators,
+            message_content,
+            max_players,
+        ),
+        color=get_recruit_color(players, max_players),
+    )
+
+    view = RecruitView(
+        voice_channel,
+        host,
+        game_name,
+        message_content,
+        max_players=max_players,
+    )
+    content = "@here" if mention_here else None
+
+    await interaction.response.send_message(content=content, embed=embed, view=view)
+    msg = await interaction.original_response()
+    view.message = msg
+
+    active_recruits[voice_channel.id] = {
+        "message_id": msg.id,
+        "host_id": host.id,
+        "text_channel_id": text_channel.id,
+        "game_name": game_name,
+        "message_content": message_content,
+        "max_players": max_players,
+    }
+
+
 # ================== 명령어 ==================
+@bot.tree.command(name="세팅생일알림", description="현재 채널을 생일 알림 채널로 설정합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def set_birthday_channel(interaction: discord.Interaction):
+    set_setting("birthday_channel_id", str(interaction.channel.id))
+    await interaction.response.send_message(
+        f"생일 알림 채널을 {interaction.channel.mention} 으로 설정했습니다.",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="세팅등업로그", description="현재 채널을 등업 로그 채널로 설정합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def set_upgrade_log_channel(interaction: discord.Interaction):
+    set_setting("upgrade_log_channel_id", str(interaction.channel.id))
+    await interaction.response.send_message(
+        f"등업 로그 채널을 {interaction.channel.mention} 으로 설정했습니다.",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="세팅퇴장로그", description="현재 채널을 퇴장 로그 채널로 설정합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def set_leave_log_channel(interaction: discord.Interaction):
+    set_setting("leave_log_channel_id", str(interaction.channel.id))
+    await interaction.response.send_message(
+        f"퇴장 로그 채널을 {interaction.channel.mention} 으로 설정했습니다.",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="세팅규칙로그", description="현재 채널을 규칙/신입 알림 채널로 설정합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def set_rule_log_channel(interaction: discord.Interaction):
+    set_setting("rule_log_channel_id", str(interaction.channel.id))
+    await interaction.response.send_message(
+        f"규칙 로그 채널을 {interaction.channel.mention} 으로 설정했습니다.",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="세팅구인채널", description="현재 채널을 구인 채널로 설정합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def set_recruit_channel(interaction: discord.Interaction):
+    set_setting("recruit_channel_id", str(interaction.channel.id))
+    await interaction.response.send_message(
+        f"구인 채널을 {interaction.channel.mention} 으로 설정했습니다.",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="세팅가입안내", description="현재 채널을 가입 안내 채널로 설정합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def set_welcome_guide_channel(interaction: discord.Interaction):
+    set_setting("welcome_guide_channel_id", str(interaction.channel.id))
+    await interaction.response.send_message(
+        f"가입 안내 채널을 {interaction.channel.mention} 으로 설정했습니다.",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="설정확인", description="현재 설정된 채널들을 확인합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def show_settings(interaction: discord.Interaction):
+    birthday_channel_id = get_setting("birthday_channel_id")
+    upgrade_log_channel_id = get_setting("upgrade_log_channel_id")
+    leave_log_channel_id = get_setting("leave_log_channel_id")
+    rule_log_channel_id = get_setting("rule_log_channel_id")
+    recruit_channel_id = get_setting("recruit_channel_id")
+    welcome_guide_channel_id = get_setting("welcome_guide_channel_id")
+
+    def fmt(channel_id):
+        return f"<#{channel_id}>" if channel_id else "미설정"
+
+    embed = discord.Embed(title="서버 채널 설정", color=0x5865F2)
+    embed.add_field(name="생일 알림", value=fmt(birthday_channel_id), inline=False)
+    embed.add_field(name="등업 로그", value=fmt(upgrade_log_channel_id), inline=False)
+    embed.add_field(name="퇴장 로그", value=fmt(leave_log_channel_id), inline=False)
+    embed.add_field(name="규칙 로그", value=fmt(rule_log_channel_id), inline=False)
+    embed.add_field(name="구인 채널", value=fmt(recruit_channel_id), inline=False)
+    embed.add_field(name="가입 안내", value=fmt(welcome_guide_channel_id), inline=False)
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 @bot.tree.command(name="생일등록", description="유저의 생일을 등록합니다.")
 @app_commands.describe(member="생일을 등록할 유저", date="MM-DD 형식으로 입력")
 async def add_birthday(interaction: discord.Interaction, member: discord.Member, date: str):
@@ -561,6 +948,7 @@ async def add_birthday(interaction: discord.Interaction, member: discord.Member,
 
 
 @bot.tree.command(name="생일삭제", description="유저의 생일 정보를 삭제합니다.")
+@app_commands.describe(member="생일 정보를 삭제할 유저")
 async def remove_birthday(interaction: discord.Interaction, member: discord.Member):
     cursor.execute("DELETE FROM birthdays WHERE user_id=?", (str(member.id),))
     conn.commit()
@@ -795,7 +1183,6 @@ async def slot(interaction: discord.Interaction, amount: int):
     await interaction.response.send_message(embed=embed)
 
 
-
 @bot.tree.command(name="동전", description="입력한 금액으로 동전 앞뒤 맞추기를 합니다.")
 @app_commands.describe(amount="배팅 금액")
 async def coin(interaction: discord.Interaction, amount: int):
@@ -821,7 +1208,52 @@ async def coin(interaction: discord.Interaction, amount: int):
     await interaction.response.send_message(embed=embed, view=CoinFlipView(interaction.user.id, amount))
 
 
-# ================== 신입 역할 자동 기록 ==================
+@bot.tree.command(name="팀", description="랜덤 팀 생성")
+async def team(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="👥 팀 생성",
+        description="팀 인원을 선택하세요",
+        color=0x3498DB,
+    )
+    await interaction.response.send_message(embed=embed, view=TeamSelectView())
+
+
+@bot.tree.command(name="구인", description="배그 구인")
+@app_commands.describe(message="하고 싶은 말")
+async def recruit(interaction: discord.Interaction, message: str):
+    recruit_channel_id = get_setting_channel_id("recruit_channel_id")
+    if recruit_channel_id is None:
+        await interaction.response.send_message("구인 채널이 아직 설정되지 않았습니다.", ephemeral=True)
+        return
+
+    if interaction.channel.id != recruit_channel_id:
+        await interaction.response.send_message("구인 채널에서만 사용 가능합니다.", ephemeral=True)
+        return
+
+    if not interaction.user.voice:
+        await interaction.response.send_message("음성채널 먼저 들어가세요.", ephemeral=True)
+        return
+
+    voice_channel = interaction.user.voice.channel
+
+    await create_recruit_post(
+        interaction=interaction,
+        text_channel=interaction.channel,
+        voice_channel=voice_channel,
+        host=interaction.user,
+        game_name="PUBG",
+        message_content=message,
+        mention_here=True,
+        max_players=MAX_PLAYERS,
+    )
+
+
+@bot.tree.command(name="종겜구인", description="원하는 게임으로 구인 글 작성")
+async def general_recruit(interaction: discord.Interaction):
+    await interaction.response.send_modal(GeneralRecruitModal())
+
+
+# ================== 이벤트 ==================
 @bot.event
 async def on_member_update(before: discord.Member, after: discord.Member):
     before_role_ids = {role.id for role in before.roles}
@@ -839,13 +1271,16 @@ async def on_member_update(before: discord.Member, after: discord.Member):
         conn.commit()
 
 
-# ================== 서버 퇴장 로그 ==================
 @bot.event
 async def on_member_remove(member: discord.Member):
     if member.guild.id != GUILD_ID:
         return
 
-    channel = bot.get_channel(LEAVE_LOG_CHANNEL_ID)
+    leave_log_channel_id = get_setting_channel_id("leave_log_channel_id")
+    if leave_log_channel_id is None:
+        return
+
+    channel = bot.get_channel(leave_log_channel_id)
     if channel is None:
         return
 
@@ -861,14 +1296,70 @@ async def on_member_remove(member: discord.Member):
     await channel.send(embed=embed)
 
 
-# ================== 신입 역할 7일 경과 체크 ==================
+@bot.event
+async def on_voice_state_update(member, before, after):
+    channels = []
+    if before.channel:
+        channels.append(before.channel)
+    if after.channel and after.channel not in channels:
+        channels.append(after.channel)
+
+    for channel in channels:
+        if channel.id not in active_recruits:
+            continue
+
+        data = active_recruits[channel.id]
+        text_channel = channel.guild.get_channel(data["text_channel_id"])
+
+        if text_channel is None:
+            continue
+
+        try:
+            msg = await text_channel.fetch_message(data["message_id"])
+        except Exception:
+            continue
+
+        host_member = member.guild.get_member(data["host_id"])
+        if host_member is None:
+            view = RecruitView(
+                channel,
+                member,
+                data["game_name"],
+                data["message_content"],
+                max_players=data.get("max_players"),
+            )
+            view.message = msg
+            await view.auto_close()
+            continue
+
+        view = RecruitView(
+            channel,
+            host_member,
+            data["game_name"],
+            data["message_content"],
+            max_players=data.get("max_players"),
+        )
+        view.message = msg
+
+        if view.host not in channel.members:
+            await view.auto_close()
+            continue
+
+        await view.update_embed()
+
+
+# ================== 반복 작업 ==================
 @tasks.loop(hours=1)
 async def probation_role_check_loop():
     guild = bot.get_guild(GUILD_ID)
     if guild is None:
         return
 
-    channel = bot.get_channel(RULE_LOG_CHANNEL_ID)
+    rule_log_channel_id = get_setting_channel_id("rule_log_channel_id")
+    if rule_log_channel_id is None:
+        return
+
+    channel = bot.get_channel(rule_log_channel_id)
     if channel is None:
         return
 
@@ -922,7 +1413,6 @@ async def probation_role_check_loop():
         conn.commit()
 
 
-# ================== 생일 루프 ==================
 @tasks.loop(minutes=1)
 async def birthday_loop():
     now = get_kst_now()
@@ -931,7 +1421,14 @@ async def birthday_loop():
         return
 
     if now.strftime("%H:%M") == "00:00":
-        channel = bot.get_channel(CHANNEL_ID)
+        birthday_channel_id = get_setting_channel_id("birthday_channel_id")
+        if birthday_channel_id is None:
+            return
+
+        channel = bot.get_channel(birthday_channel_id)
+        if channel is None:
+            return
+
         cursor.execute("SELECT user_id FROM birthdays WHERE date=?", (now.strftime("%m-%d"),))
         for (uid,) in cursor.fetchall():
             member = guild.get_member(int(uid))
@@ -989,6 +1486,7 @@ async def on_ready():
     bot.add_view(RuleConfirmView())
     bot.add_view(UpgradePanelView())
     bot.add_view(TimeRoleView())
+    bot.add_view(TeamSelectView())
 
     await backfill_probation_members()
 
@@ -998,7 +1496,7 @@ async def on_ready():
     if not probation_role_check_loop.is_running():
         probation_role_check_loop.start()
 
-    print("봇 실행 완료")
+    print("통합 봇 실행 완료")
 
 
 bot.run(TOKEN)
