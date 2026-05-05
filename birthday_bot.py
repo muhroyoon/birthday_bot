@@ -744,7 +744,12 @@ async def slot(interaction: discord.Interaction, amount: int):
     add_balance(interaction.user.id, -amount)
 
     symbols = ["🍒", "🍋", "🍉", "⭐", "💎", "7️⃣"]
-    result = [random.choice(symbols) for _ in range(3)]
+
+    first = random.choice(symbols)
+    second = first if random.random() < 0.45 else random.choice(symbols)
+    third = first if random.random() < 0.35 else random.choice(symbols)
+
+    result = [first, second, third]
 
     multiplier = 0
     if len(set(result)) == 1:
@@ -762,6 +767,7 @@ async def slot(interaction: discord.Interaction, amount: int):
         add_balance(interaction.user.id, winnings)
 
     balance_now = get_balance(interaction.user.id)
+
     if multiplier == 0:
         desc = (
             f"`{' | '.join(result)}`\n\n"
@@ -787,6 +793,7 @@ async def slot(interaction: discord.Interaction, amount: int):
 
     embed = discord.Embed(title="🎰 슬롯 결과", description=desc, color=color)
     await interaction.response.send_message(embed=embed)
+
 
 
 @bot.tree.command(name="동전", description="입력한 금액으로 동전 앞뒤 맞추기를 합니다.")
