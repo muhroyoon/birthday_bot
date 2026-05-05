@@ -1486,7 +1486,6 @@ async def on_ready():
     bot.add_view(RuleConfirmView())
     bot.add_view(UpgradePanelView())
     bot.add_view(TimeRoleView())
-    bot.add_view(TeamSelectView())
 
     await backfill_probation_members()
 
@@ -1496,7 +1495,8 @@ async def on_ready():
     if not probation_role_check_loop.is_running():
         probation_role_check_loop.start()
 
-    print("통합 봇 실행 완료")
+    print("HICKS_마리봇 실행 완료")
+
 
 
 bot.run(TOKEN)
