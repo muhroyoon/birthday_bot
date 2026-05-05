@@ -696,6 +696,35 @@ class TeamSelectView(discord.ui.View):
     async def team5(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.create_team(interaction, 5)
 
+# ================== 고정메시지 VIEW ==================
+class StickyMessageModal(discord.ui.Modal, title="고정메시지 설정"):
+    content = discord.ui.TextInput(
+        label="고정할 메시지 내용",
+        placeholder="여기에 여러 줄로 입력하세요.",
+        style=discord.TextStyle.paragraph,
+        max_length=2000,
+        required=True,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        content = str(self.content).strip()
+        existing = get_sticky_message(interaction.channel.id)
+
+        if existing and existing.get("message_id"):
+            try:
+                old_message = await interaction.channel.fetch_message(existing["message_id"])
+                await old_message.delete()
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+
+        sticky_msg = await interaction.channel.send(content)
+        set_sticky_message(interaction.channel.id, content, sticky_msg.id)
+
+        await interaction.response.send_message(
+            f"{interaction.channel.mention} 채널의 고정메시지를 설정했습니다.",
+            ephemeral=True,
+        )
+
 
 # ================== 구인 유틸 ==================
 def count_members(channel):
@@ -1318,23 +1347,8 @@ async def general_recruit(interaction: discord.Interaction):
 
 @bot.tree.command(name="고정메시지", description="현재 채널에 항상 하단에 유지될 메시지를 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
-@app_commands.describe(content="항상 하단에 유지할 메시지 내용")
-async def sticky_message(interaction: discord.Interaction, content: str):
-    existing = get_sticky_message(interaction.channel.id)
-    if existing and existing.get("message_id"):
-        try:
-            old_message = await interaction.channel.fetch_message(existing["message_id"])
-            await old_message.delete()
-        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-            pass
-
-    sticky_msg = await interaction.channel.send(content)
-    set_sticky_message(interaction.channel.id, content, sticky_msg.id)
-
-    await interaction.response.send_message(
-        f"{interaction.channel.mention} 채널의 고정메시지를 설정했습니다.",
-        ephemeral=True,
-    )
+async def sticky_message(interaction: discord.Interaction):
+    await interaction.response.send_modal(StickyMessageModal())
 
 
 @bot.tree.command(name="고정해제", description="현재 채널의 고정메시지를 해제합니다.")
