@@ -1451,7 +1451,8 @@ async def on_member_update(before: discord.Member, after: discord.Member):
     if NEW_MEMBER_ROLE_ID in before_role_ids and NEW_MEMBER_ROLE_ID not in after_role_ids:
         cursor.execute("DELETE FROM probation_roles WHERE user_id=?", (str(after.id),))
         conn.commit()
-            added_role_ids = after_role_ids - before_role_ids
+
+    added_role_ids = after_role_ids - before_role_ids
 
     if added_role_ids:
         welcome_message_channel_id = get_setting_channel_id("welcome_message_channel_id")
@@ -1474,6 +1475,7 @@ async def on_member_update(before: discord.Member, after: discord.Member):
 
                     await welcome_channel.send(rendered)
 
+    
 
 
 @bot.event
