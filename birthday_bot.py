@@ -1268,8 +1268,8 @@ async def slot(interaction: discord.Interaction, amount: int):
     symbols = ["🍒", "🍋", "🍉", "⭐", "💎", "7️⃣"]
 
     first = random.choice(symbols)
-    second = first if random.random() < 0.45 else random.choice(symbols)
-    third = first if random.random() < 0.35 else random.choice(symbols)
+    second = first if random.random() < 0.18 else random.choice(symbols)
+    third = first if random.random() < 0.10 else random.choice(symbols)
 
     result = [first, second, third]
 
