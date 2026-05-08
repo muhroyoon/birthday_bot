@@ -1492,7 +1492,7 @@ async def time_panel(interaction: discord.Interaction):
     await interaction.response.send_message("시간 설정 패널 생성 완료", ephemeral=True)
 
 
-@bot.tree.command(name="돈줘", description="하루에 한 번 지원금 10,000원을 받습니다.")
+@bot.tree.command(name="상생지원금", description="하루에 한 번 상생지원금 10,000원을 받습니다.")
 async def daily_money(interaction: discord.Interaction):
     today = get_kst_now().strftime("%Y-%m-%d")
     cursor.execute("SELECT last_claim_date FROM daily_claims WHERE user_id=?", (str(interaction.user.id),))
@@ -1510,7 +1510,7 @@ async def daily_money(interaction: discord.Interaction):
     conn.commit()
 
     await interaction.response.send_message(
-        f"오늘의 지원금 `{format_money(DAILY_REWARD)}`을 받았습니다!\n현재 잔액: `{format_money(get_balance(interaction.user.id))}`"
+        f"오늘의 상생지원금 `{format_money(DAILY_REWARD)}`을 받았습니다!\n현재 잔액: `{format_money(get_balance(interaction.user.id))}`"
     )
 
 
@@ -1577,6 +1577,30 @@ async def grant_money(interaction: discord.Interaction, member: discord.Member, 
     add_balance(member.id, amount)
     await interaction.response.send_message(
         f"{member.mention}님에게 `{format_money(amount)}`을 지급했습니다.\n"
+        f"{member.mention}님의 현재 잔액: `{format_money(get_balance(member.id))}`"
+    )
+
+@bot.tree.command(name="돈삭제", description="서버 주인이 특정 유저의 돈을 차감합니다.")
+async def remove_money(interaction: discord.Interaction, member: discord.Member, amount: int):
+    if interaction.guild is None or interaction.user.id != interaction.guild.owner_id:
+        await interaction.response.send_message("이 명령어는 서버 주인만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    if member.bot:
+        await interaction.response.send_message("봇의 돈은 삭제할 수 없습니다.", ephemeral=True)
+        return
+
+    if amount <= 0:
+        await interaction.response.send_message("차감 금액은 1원 이상이어야 합니다.", ephemeral=True)
+        return
+
+    current_balance = get_balance(member.id)
+    deducted_amount = min(current_balance, amount)
+
+    add_balance(member.id, -deducted_amount)
+
+    await interaction.response.send_message(
+        f"{member.mention}님에게서 `{format_money(deducted_amount)}`을 차감했습니다.\n"
         f"{member.mention}님의 현재 잔액: `{format_money(get_balance(member.id))}`"
     )
 
