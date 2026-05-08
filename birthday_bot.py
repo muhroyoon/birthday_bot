@@ -879,11 +879,14 @@ class SupplyDropView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("이 버튼은 명령어를 사용한 사람만 누를 수 있습니다.", ephemeral=True)
+            await interaction.response.send_message(
+                "이 버튼은 명령어를 사용한 사람만 누를 수 있습니다.",
+                ephemeral=True,
+            )
             return False
         return True
 
-        def roll_result(self):
+    def roll_result(self):
         result = random.choices(
             [
                 ("빈 상자", 0.0, "📦 보급상자를 열었지만... 이미 누군가 싹 털어간 빈 상자였습니다."),
@@ -897,8 +900,6 @@ class SupplyDropView(discord.ui.View):
             k=1,
         )[0]
         return result
-
-
 
     async def open_supply(self, interaction: discord.Interaction):
         if self.resolved:
@@ -932,7 +933,11 @@ class SupplyDropView(discord.ui.View):
                 f"`{format_money(payout)}`을 획득했습니다."
             )
 
-        embed = discord.Embed(title="📦 보급 결과", description=desc, color=color)
+        embed = discord.Embed(
+            title="📦 보급상자 개봉 결과",
+            description=desc,
+            color=color,
+        )
         embed.add_field(name="현재 잔액", value=format_money(balance), inline=False)
 
         await interaction.response.edit_message(embed=embed, view=self)
@@ -950,6 +955,7 @@ class SupplyDropView(discord.ui.View):
     @discord.ui.button(label="📦 보급 열기", style=discord.ButtonStyle.primary)
     async def open_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.open_supply(interaction)
+
 
 
 class TeamSelectView(discord.ui.View):
