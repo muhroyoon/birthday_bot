@@ -1664,31 +1664,38 @@ async def coin(interaction: discord.Interaction, amount: int):
 @bot.tree.command(name="룰렛", description="룰렛에 배팅하고 색상을 선택합니다.")
 async def roulette(interaction: discord.Interaction, amount: int):
     if amount < MIN_BET:
-        await interaction.response.send_message(f"최소 배팅 금액은 `{format_money(MIN_BET)}`입니다.", ephemeral=True)
+        await interaction.response.send_message(
+            f"최소 배팅 금액은 `{format_money(MIN_BET)}`입니다.",
+            ephemeral=True,
+        )
         return
+
     if not can_afford(interaction.user.id, amount):
         await interaction.response.send_message("잔액이 부족합니다.", ephemeral=True)
         return
 
     add_balance(interaction.user.id, -amount)
+
     embed = discord.Embed(
         title="🎡 룰렛",
         description=(
-            description=(
-        f"배팅 금액: `{format_money(amount)}`\n\n"
-        "색상을 선택하세요.\n\n"
-        "🔴 빨강: 당첨 시 1.5배\n"
-        "🟡 노랑: 당첨 시 2배\n"
-        "🔵 파랑: 당첨 시 3배\n"
-        "⚫ 검정: 당첨 시 4.5배\n"
-        "🟢 초록: 당첨 시 6배\n\n"
-        "빨강은 가장 안전하고,\n"
-        "점점 확률은 낮아지지만 배당은 높아집니다.\n"
-    ),
-    
+            f"배팅 금액: `{format_money(amount)}`\n\n"
+            "색상을 선택하세요.\n\n"
+            "🔴 빨강: 당첨 시 1.5배\n"
+            "🟡 노랑: 당첨 시 2배\n"
+            "🔵 파랑: 당첨 시 3배\n"
+            "⚫ 검정: 당첨 시 4.5배\n"
+            "🟢 초록: 당첨 시 6배\n\n"
+            "빨강은 가장 안전하고,\n"
+            "점점 확률은 낮아지지만 배당은 높아집니다.\n"
+        ),
         color=0xF1C40F,
     )
-    await interaction.response.send_message(embed=embed, view=RouletteView(interaction.user.id, amount))
+
+    await interaction.response.send_message(
+        embed=embed,
+        view=RouletteView(interaction.user.id, amount),
+    )
 
 
 @bot.tree.command(name="팀", description="랜덤 팀 생성")
