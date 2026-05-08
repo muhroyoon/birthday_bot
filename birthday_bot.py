@@ -961,6 +961,22 @@ class GeneralRecruitModal(discord.ui.Modal, title="종겜 구인"):
         required=False,
     )
 
+async def on_submit(self, interaction: discord.Interaction):
+        if not interaction.user.voice:
+            await interaction.response.send_message("음성채널 먼저 들어가세요.", ephemeral=True)
+            return
+
+await create_recruit_post(
+            interaction=interaction,
+            text_channel=interaction.channel,
+            voice_channel=interaction.user.voice.channel,
+            host=interaction.user,
+            game_name=str(self.game_name).strip(),
+            message_content=str(self.message_content).strip() or " ",
+            mention_here=False,
+            max_players=None,
+        )
+
 class WelcomeDmModal(discord.ui.Modal, title="환영 DM 설정"):
     content = discord.ui.TextInput(
         label="환영 DM 문구",
@@ -973,25 +989,6 @@ class WelcomeDmModal(discord.ui.Modal, title="환영 DM 설정"):
     async def on_submit(self, interaction: discord.Interaction):
         set_template(interaction.guild.id, "welcome_dm", str(self.content).strip())
         await interaction.response.send_message("환영 DM 문구를 저장했습니다.", ephemeral=True)
-
-
-    
-    async def on_submit(self, interaction: discord.Interaction):
-        if not interaction.user.voice:
-            await interaction.response.send_message("음성채널 먼저 들어가세요.", ephemeral=True)
-            return
-
-        await create_recruit_post(
-            interaction=interaction,
-            text_channel=interaction.channel,
-            voice_channel=interaction.user.voice.channel,
-            host=interaction.user,
-            game_name=str(self.game_name).strip(),
-            message_content=str(self.message_content).strip() or " ",
-            mention_here=False,
-            max_players=None,
-        )
-
 
 class StickyMessageModal(discord.ui.Modal, title="고정메시지 설정"):
     content = discord.ui.TextInput(
