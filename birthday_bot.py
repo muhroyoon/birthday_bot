@@ -870,6 +870,85 @@ class RouletteView(discord.ui.View):
     async def green(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.finish(interaction, "초록")
 
+class SupplyDropView(discord.ui.View):
+    def __init__(self, user_id: int, bet_amount: int):
+        super().__init__(timeout=60)
+        self.user_id = user_id
+        self.bet_amount = bet_amount
+        self.resolved = False
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("이 버튼은 명령어를 사용한 사람만 누를 수 있습니다.", ephemeral=True)
+            return False
+        return True
+
+    def roll_result(self):
+        result = random.choices(
+            [
+                ("빈 상자", 0.0, "📦 보급상자를 열었지만... 이미 누군가 싹 털어간 빈 상자였습니다."),
+                ("1뚝", 0.8, "🪖 낡은 1레벨 헬멧 하나만 겨우 건졌습니다."),
+                ("2뚝", 1.0, "🪖 2레벨 헬멧을 챙겼습니다. 최소한 머리는 지킬 수 있겠네요."),
+                ("3뚝", 1.6, "✨ 3레벨 헬멧을 획득했습니다! 이번 교전은 자신 있어집니다."),
+                ("보급 총기 획득", 2.8, "🔫 보급 총기를 획득했습니다! 적들이 긴장하기 시작합니다."),
+                ("풀세트 보급 대박", 4.5, "🔥 3뚝, 3갑, 보급총기까지 전부 챙겼습니다! 완벽한 풀세트 보급 대박입니다!"),
+            ]
+
+            weights=[38, 24, 17, 10, 8, 3],
+            k=1,
+        )[0]
+        return result
+
+    async def open_supply(self, interaction: discord.Interaction):
+        if self.resolved:
+            await interaction.response.send_message("이미 보급 결과가 확정되었습니다.", ephemeral=True)
+            return
+
+        self.resolved = True
+        result_name, multiplier, flavor_text = self.roll_result()
+        payout = int(self.bet_amount * multiplier)
+
+        if payout > 0:
+            add_balance(self.user_id, payout)
+
+        for item in self.children:
+            item.disabled = True
+
+        balance = get_balance(self.user_id)
+
+        if multiplier == 0:
+            color = 0xE74C3C
+            desc = (
+                f"결과: **{result_name}**\n"
+                f"{flavor_text}\n\n"
+                f"`{format_money(self.bet_amount)}`을 잃었습니다."
+            )
+        else:
+            color = 0x2ECC71 if multiplier >= 1.6 else 0x3498DB
+            desc = (
+                f"결과: **{result_name}**\n"
+                f"{flavor_text}\n\n"
+                f"`{format_money(payout)}`을 획득했습니다."
+            )
+
+        embed = discord.Embed(title="📦 보급 결과", description=desc, color=color)
+        embed.add_field(name="현재 잔액", value=format_money(balance), inline=False)
+
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def on_timeout(self):
+        if self.resolved:
+            return
+
+        self.resolved = True
+        add_balance(self.user_id, self.bet_amount)
+
+        for item in self.children:
+            item.disabled = True
+
+    @discord.ui.button(label="📦 보급 열기", style=discord.ButtonStyle.primary)
+    async def open_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.open_supply(interaction)
 
 
 class TeamSelectView(discord.ui.View):
@@ -1756,6 +1835,46 @@ async def recruit(interaction: discord.Interaction, message: str):
 @bot.tree.command(name="종겜구인", description="원하는 게임으로 구인 글 작성")
 async def general_recruit(interaction: discord.Interaction):
     await interaction.response.send_modal(GeneralRecruitModal())
+
+@bot.tree.command(name="보급", description="배그 보급상자를 열어 결과에 따라 보상을 받습니다.")
+async def supply_drop(interaction: discord.Interaction, amount: int):
+    if amount < MIN_BET:
+        await interaction.response.send_message(
+            f"최소 배팅 금액은 `{format_money(MIN_BET)}`입니다.",
+            ephemeral=True,
+        )
+        return
+
+    if not can_afford(interaction.user.id, amount):
+        await interaction.response.send_message("잔액이 부족합니다.", ephemeral=True)
+        return
+
+    add_balance(interaction.user.id, -amount)
+
+    embed = discord.Embed(
+        title="📦 보급",
+        description=(
+        f"배팅 금액: `{format_money(amount)}`\n\n"
+        "✈️ 하늘에서 보급이 떨어지고 있습니다...\n"
+        "📦 상자를 열어 어떤 아이템을 챙길 수 있을지 확인하세요.\n\n"
+        "가능한 결과:\n"
+        "▫️ 빈 상자\n"
+        "▫️ 1뚝\n"
+        "▫️ 2뚝\n"
+        "▫️ 3뚝\n"
+        "▫️ 보급 총기 획득\n"
+        "▫️ 풀세트 보급 대박\n\n"
+        "버튼을 눌러 보급상자를 개봉하세요."
+    ),
+
+        color=0xF39C12,
+    )
+
+    await interaction.response.send_message(
+        embed=embed,
+        view=SupplyDropView(interaction.user.id, amount),
+    )
+
 
 
 @bot.event
