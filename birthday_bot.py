@@ -961,12 +961,12 @@ class GeneralRecruitModal(discord.ui.Modal, title="종겜 구인"):
         required=False,
     )
 
-async def on_submit(self, interaction: discord.Interaction):
+    async def on_submit(self, interaction: discord.Interaction):
         if not interaction.user.voice:
             await interaction.response.send_message("음성채널 먼저 들어가세요.", ephemeral=True)
             return
 
-await create_recruit_post(
+        await create_recruit_post(
             interaction=interaction,
             text_channel=interaction.channel,
             voice_channel=interaction.user.voice.channel,
@@ -976,6 +976,7 @@ await create_recruit_post(
             mention_here=False,
             max_players=None,
         )
+
 
 class WelcomeDmModal(discord.ui.Modal, title="환영 DM 설정"):
     content = discord.ui.TextInput(
