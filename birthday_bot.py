@@ -1876,7 +1876,15 @@ async def birthday_loop():
 
 
 @bot.event
+@bot.event
 async def on_ready():
+    for guild in bot.guilds:
+        try:
+            bot.tree.clear_commands(guild=guild)
+            await bot.tree.sync(guild=guild)
+        except Exception as e:
+            print(f"길드 명령어 초기화 실패 ({guild.id}): {e}")
+
     await bot.tree.sync()
 
     bot.add_view(BirthdayView())
@@ -1893,6 +1901,7 @@ async def on_ready():
         probation_role_check_loop.start()
 
     print("멀티서버 대응 마리봇 실행 완료")
+
 
 
 bot.run(TOKEN)
