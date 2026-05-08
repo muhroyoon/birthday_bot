@@ -961,6 +961,21 @@ class GeneralRecruitModal(discord.ui.Modal, title="종겜 구인"):
         required=False,
     )
 
+class WelcomeDmModal(discord.ui.Modal, title="환영 DM 설정"):
+    content = discord.ui.TextInput(
+        label="환영 DM 문구",
+        placeholder="여러 줄로 입력하세요. {user}, {guide_channel} 사용 가능",
+        style=discord.TextStyle.paragraph,
+        max_length=2000,
+        required=True,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        set_template(interaction.guild.id, "welcome_dm", str(self.content).strip())
+        await interaction.response.send_message("환영 DM 문구를 저장했습니다.", ephemeral=True)
+
+
+    
     async def on_submit(self, interaction: discord.Interaction):
         if not interaction.user.voice:
             await interaction.response.send_message("음성채널 먼저 들어가세요.", ephemeral=True)
@@ -1139,11 +1154,10 @@ async def set_time_role_command(interaction: discord.Interaction, slot_name: str
     await interaction.response.send_message(f"{TIME_SLOT_LABELS[slot_name]} 역할을 {role.mention} 으로 설정했습니다.", ephemeral=True)
 
 
-@bot.tree.command(name="세팅환영dm", description="등업 시 보낼 dm 문구를 설정합니다.")
+@bot.tree.command(name="세팅환영dm", description="등업 시 보낼 DM 문구를 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
-async def set_welcome_dm_template(interaction: discord.Interaction, content: str):
-    set_template(interaction.guild.id, "welcome_dm", content)
-    await interaction.response.send_message("환영 DM 문구를 저장했습니다.", ephemeral=True)
+async def set_welcome_dm_template(interaction: discord.Interaction):
+    await interaction.response.send_modal(WelcomeDmModal())
 
 
 @bot.tree.command(name="세팅규칙안내문", description="규칙 버튼 안내문을 설정합니다.")
