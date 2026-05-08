@@ -1139,7 +1139,7 @@ async def set_time_role_command(interaction: discord.Interaction, slot_name: str
     await interaction.response.send_message(f"{TIME_SLOT_LABELS[slot_name]} 역할을 {role.mention} 으로 설정했습니다.", ephemeral=True)
 
 
-@bot.tree.command(name="세팅환영DM", description="등업 시 보낼 DM 문구를 설정합니다.")
+@bot.tree.command(name="세팅환영dm", description="등업 시 보낼 dm 문구를 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_welcome_dm_template(interaction: discord.Interaction, content: str):
     set_template(interaction.guild.id, "welcome_dm", content)
