@@ -735,7 +735,7 @@ class CoinFlipView(discord.ui.View):
         win = choice == result
 
         if win:
-            payout = self.bet_amount * 2
+            payout = self.bet_amount * 1.8
             add_balance(self.user_id, payout)
             description = f"선택: **{choice}**\n결과: **{result}**\n축하합니다! `{format_money(payout)}`을 받았습니다."
             color = 0x2ECC71
@@ -783,6 +783,13 @@ class RouletteView(discord.ui.View):
 
     def spin_result(self) -> str:
         return random.choices(["빨강", "검정", "초록"], weights=[45, 30, 15], k=1)[0]
+    def spin_result(self) -> str:
+        return random.choices(
+            ["빨강", "노랑", "파랑", "검정", "초록"],
+            weights=[34, 25, 19, 13, 9],
+            k=1,
+        )[0]
+
 
     def get_payout(self, choice: str) -> int:
         if choice == "빨강":
@@ -792,6 +799,19 @@ class RouletteView(discord.ui.View):
         if choice == "초록":
             return self.bet_amount * 6
         return 0
+    def get_payout(self, choice: str) -> int:
+        if choice == "빨강":
+            return int(self.bet_amount * 1.5)
+        if choice == "노랑":
+            return self.bet_amount * 2
+        if choice == "파랑":
+            return self.bet_amount * 3
+        if choice == "검정":
+            return int(self.bet_amount * 4.5)
+        if choice == "초록":
+            return self.bet_amount * 6
+        return 0
+
 
     async def finish(self, interaction: discord.Interaction, choice: str):
         if self.resolved:
@@ -827,17 +847,29 @@ class RouletteView(discord.ui.View):
         for item in self.children:
             item.disabled = True
 
-    @discord.ui.button(label="빨강", style=discord.ButtonStyle.danger)
-    async def red(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.finish(interaction, "빨강")
-
-    @discord.ui.button(label="검정", style=discord.ButtonStyle.secondary)
-    async def black(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.finish(interaction, "검정")
-
     @discord.ui.button(label="초록", style=discord.ButtonStyle.success)
     async def green(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.finish(interaction, "초록")
+    @discord.ui.button(label="🔴 빨강", style=discord.ButtonStyle.danger)
+    async def red(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.finish(interaction, "빨강")
+
+    @discord.ui.button(label="🟡 노랑", style=discord.ButtonStyle.primary)
+    async def yellow(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.finish(interaction, "노랑")
+
+    @discord.ui.button(label="🔵 파랑", style=discord.ButtonStyle.primary)
+    async def blue(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.finish(interaction, "파랑")
+
+    @discord.ui.button(label="⚫ 검정", style=discord.ButtonStyle.secondary)
+    async def black(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.finish(interaction, "검정")
+
+    @discord.ui.button(label="🟢 초록", style=discord.ButtonStyle.success)
+    async def green(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.finish(interaction, "초록")
+
 
 
 class TeamSelectView(discord.ui.View):
@@ -1562,9 +1594,9 @@ async def slot(interaction: discord.Interaction, amount: int):
     symbols = ["🍒", "🍋", "🍉", "⭐", "💎", "7️⃣"]
 
     first = random.choice(symbols)
-    second = first if random.random() < 0.18 else random.choice(symbols)
-    third = first if random.random() < 0.10 else random.choice(symbols)
-    result = [first, second, third]
+    second = first if random.random() < 0.10 else random.choice(symbols)
+    third = first if random.random() < 0.05 else random.choice(symbols)
+
 
     multiplier = 0
     if len(set(result)) == 1:
@@ -1576,6 +1608,15 @@ async def slot(interaction: discord.Interaction, amount: int):
             multiplier = 4
     elif len(set(result)) == 2:
         multiplier = 1
+    multiplier = 0
+    if len(set(result)) == 1:
+        if result[0] == "7️⃣":
+            multiplier = 6
+        elif result[0] == "💎":
+            multiplier = 4
+        else:
+            multiplier = 3
+
 
     winnings = amount * multiplier
     if winnings > 0:
@@ -1612,6 +1653,7 @@ async def coin(interaction: discord.Interaction, amount: int):
         description=(
             f"배팅 금액: `{format_money(amount)}`\n"
             "아래 버튼에서 `앞` 또는 `뒤`를 선택해주세요.\n"
+            "당첨 시 1.8배를 지급합니다.\n"
             f"{COIN_FLIP_TIMEOUT}초 안에 선택하지 않으면 자동 취소되고 돈이 반환됩니다."
         ),
         color=0xF1C40F,
@@ -1632,15 +1674,18 @@ async def roulette(interaction: discord.Interaction, amount: int):
     embed = discord.Embed(
         title="🎡 룰렛",
         description=(
-            f"배팅 금액: `{format_money(amount)}`\n\n"
-            "색상을 선택하세요.\n\n"
-            "🔴 빨강: 당첨 시 2배\n"
-            "⚫ 검정: 당첨 시 3배\n"
-            "🟢 초록: 당첨 시 6배\n\n"
-            "빨강은 가장 안전하고,\n"
-            "검정은 중간 위험,\n"
-            "초록은 가장 낮은 확률 대신 가장 높은 배당을 가집니다.\n"
-        ),
+            description=(
+        f"배팅 금액: `{format_money(amount)}`\n\n"
+        "색상을 선택하세요.\n\n"
+        "🔴 빨강: 당첨 시 1.5배\n"
+        "🟡 노랑: 당첨 시 2배\n"
+        "🔵 파랑: 당첨 시 3배\n"
+        "⚫ 검정: 당첨 시 4.5배\n"
+        "🟢 초록: 당첨 시 6배\n\n"
+        "빨강은 가장 안전하고,\n"
+        "점점 확률은 낮아지지만 배당은 높아집니다.\n"
+    ),
+    
         color=0xF1C40F,
     )
     await interaction.response.send_message(embed=embed, view=RouletteView(interaction.user.id, amount))
