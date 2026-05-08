@@ -90,9 +90,6 @@ cursor.execute("CREATE TABLE IF NOT EXISTS birthdays(user_id TEXT PRIMARY KEY, d
 cursor.execute("CREATE TABLE IF NOT EXISTS congrats(message_id TEXT, user_id TEXT)")
 cursor.execute("CREATE TABLE IF NOT EXISTS congrats_count(user_id TEXT PRIMARY KEY, count INTEGER)")
 cursor.execute("CREATE TABLE IF NOT EXISTS birthday_messages(message_id TEXT PRIMARY KEY, user_id TEXT)")
-cursor.execute(
-    "CREATE TABLE IF NOT EXISTS probation_roles(guild_id TEXT NOT NULL, user_id TEXT NOT NULL, assigned_at TEXT, notified INTEGER DEFAULT 0, PRIMARY KEY (guild_id, user_id))"
-)
 cursor.execute("CREATE TABLE IF NOT EXISTS balances(user_id TEXT PRIMARY KEY, balance INTEGER NOT NULL DEFAULT 0)")
 cursor.execute("CREATE TABLE IF NOT EXISTS daily_claims(user_id TEXT PRIMARY KEY, last_claim_date TEXT)")
 cursor.execute(
@@ -104,14 +101,64 @@ cursor.execute(
 cursor.execute(
     "CREATE TABLE IF NOT EXISTS guild_time_roles(guild_id TEXT NOT NULL, slot_name TEXT NOT NULL, role_id TEXT NOT NULL, PRIMARY KEY (guild_id, slot_name))"
 )
+
+# ===== 기존 구버전 테이블 구조 점검 및 정리 =====
+cursor.execute("PRAGMA table_info(probation_roles)")
+probation_columns = [row[1] for row in cursor.fetchall()]
+if probation_columns and "guild_id" not in probation_columns:
+    cursor.execute("DROP TABLE probation_roles")
+    conn.commit()
+
+cursor.execute("PRAGMA table_info(welcome_messages)")
+welcome_columns = [row[1] for row in cursor.fetchall()]
+if welcome_columns and "guild_id" not in welcome_columns:
+    cursor.execute("DROP TABLE welcome_messages")
+    conn.commit()
+
+cursor.execute("PRAGMA table_info(sticky_messages)")
+sticky_columns = [row[1] for row in cursor.fetchall()]
+if sticky_columns and "guild_id" not in sticky_columns:
+    cursor.execute("DROP TABLE sticky_messages")
+    conn.commit()
+
+# ===== 새 멀티서버 구조 테이블 생성 =====
 cursor.execute(
-    "CREATE TABLE IF NOT EXISTS welcome_messages(guild_id TEXT NOT NULL, role_id TEXT NOT NULL, content TEXT NOT NULL, PRIMARY KEY (guild_id, role_id))"
+    """
+    CREATE TABLE IF NOT EXISTS probation_roles(
+        guild_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        assigned_at TEXT,
+        notified INTEGER DEFAULT 0,
+        PRIMARY KEY (guild_id, user_id)
+    )
+    """
 )
+
 cursor.execute(
-    "CREATE TABLE IF NOT EXISTS sticky_messages(guild_id TEXT NOT NULL, channel_id TEXT NOT NULL, content TEXT NOT NULL, message_id TEXT, PRIMARY KEY (guild_id, channel_id))"
+    """
+    CREATE TABLE IF NOT EXISTS welcome_messages(
+        guild_id TEXT NOT NULL,
+        role_id TEXT NOT NULL,
+        content TEXT NOT NULL,
+        PRIMARY KEY (guild_id, role_id)
+    )
+    """
+)
+
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS sticky_messages(
+        guild_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        content TEXT NOT NULL,
+        message_id TEXT,
+        PRIMARY KEY (guild_id, channel_id)
+    )
+    """
 )
 
 conn.commit()
+
 
 
 def set_guild_setting(guild_id: int, key: str, value: str):
