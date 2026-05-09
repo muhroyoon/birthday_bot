@@ -74,7 +74,6 @@ DEFAULT_PROBATION_NOTICE_TEXT = (
 )
 DEFAULT_PROBATION_DAYS = "7"
 
-
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
@@ -92,6 +91,7 @@ cursor.execute("CREATE TABLE IF NOT EXISTS congrats_count(user_id TEXT PRIMARY K
 cursor.execute("CREATE TABLE IF NOT EXISTS birthday_messages(message_id TEXT PRIMARY KEY, user_id TEXT)")
 cursor.execute("CREATE TABLE IF NOT EXISTS balances(user_id TEXT PRIMARY KEY, balance INTEGER NOT NULL DEFAULT 0)")
 cursor.execute("CREATE TABLE IF NOT EXISTS daily_claims(user_id TEXT PRIMARY KEY, last_claim_date TEXT)")
+cursor.execute("CREATE TABLE IF NOT EXISTS rule_confirm(message_id TEXT, user_id TEXT)")
 cursor.execute(
     "CREATE TABLE IF NOT EXISTS guild_settings(guild_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT, PRIMARY KEY (guild_id, key))"
 )
@@ -102,7 +102,6 @@ cursor.execute(
     "CREATE TABLE IF NOT EXISTS guild_time_roles(guild_id TEXT NOT NULL, slot_name TEXT NOT NULL, role_id TEXT NOT NULL, PRIMARY KEY (guild_id, slot_name))"
 )
 
-# ===== 기존 구버전 테이블 구조 점검 및 정리 =====
 cursor.execute("PRAGMA table_info(probation_roles)")
 probation_columns = [row[1] for row in cursor.fetchall()]
 if probation_columns and "guild_id" not in probation_columns:
@@ -121,7 +120,6 @@ if sticky_columns and "guild_id" not in sticky_columns:
     cursor.execute("DROP TABLE sticky_messages")
     conn.commit()
 
-# ===== 새 멀티서버 구조 테이블 생성 =====
 cursor.execute(
     """
     CREATE TABLE IF NOT EXISTS probation_roles(
@@ -157,8 +155,17 @@ cursor.execute(
     """
 )
 
-conn.commit()
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS waiting_rooms(
+        guild_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        PRIMARY KEY (guild_id, channel_id)
+    )
+    """
+)
 
+conn.commit()
 
 
 def set_guild_setting(guild_id: int, key: str, value: str):
@@ -182,7 +189,6 @@ def get_guild_setting_channel_id(guild_id: int, key: str):
     value = get_guild_setting(guild_id, key)
     if value is None:
         return None
-
     try:
         return int(value)
     except ValueError:
@@ -193,7 +199,6 @@ def get_guild_setting_role_id(guild_id: int, key: str):
     value = get_guild_setting(guild_id, key)
     if value is None:
         return None
-
     try:
         return int(value)
     except ValueError:
@@ -220,6 +225,7 @@ def get_template(guild_id: int, template_name: str):
 def get_template_with_default(guild_id: int, template_name: str, default_value: str):
     return get_template(guild_id, template_name) or default_value
 
+
 def get_setting_with_default(guild_id: int, key: str, default_value: str):
     value = get_guild_setting(guild_id, key)
     return value if value is not None else default_value
@@ -241,7 +247,6 @@ def get_time_role_id(guild_id: int, slot_name: str):
     row = cursor.fetchone()
     if not row:
         return None
-
     try:
         return int(row[0])
     except ValueError:
@@ -374,6 +379,45 @@ def can_afford(user_id: int, amount: int) -> bool:
 
 def format_money(amount: int) -> str:
     return f"{amount:,}원"
+
+
+def add_waiting_room(guild_id: int, channel_id: int):
+    cursor.execute(
+        "INSERT OR IGNORE INTO waiting_rooms(guild_id, channel_id) VALUES (?, ?)",
+        (str(guild_id), str(channel_id)),
+    )
+    conn.commit()
+
+
+def remove_waiting_room(guild_id: int, channel_id: int):
+    cursor.execute(
+        "DELETE FROM waiting_rooms WHERE guild_id=? AND channel_id=?",
+        (str(guild_id), str(channel_id)),
+    )
+    conn.commit()
+
+
+def get_waiting_rooms(guild_id: int):
+    cursor.execute(
+        "SELECT channel_id FROM waiting_rooms WHERE guild_id=? ORDER BY channel_id ASC",
+        (str(guild_id),),
+    )
+    rows = cursor.fetchall()
+    result = []
+    for (channel_id,) in rows:
+        try:
+            result.append(int(channel_id))
+        except ValueError:
+            continue
+    return result
+
+
+def is_waiting_room(guild_id: int, channel_id: int) -> bool:
+    cursor.execute(
+        "SELECT 1 FROM waiting_rooms WHERE guild_id=? AND channel_id=?",
+        (str(guild_id), str(channel_id)),
+    )
+    return cursor.fetchone() is not None
 
 
 async def backfill_probation_members():
@@ -735,7 +779,7 @@ class CoinFlipView(discord.ui.View):
         win = choice == result
 
         if win:
-            payout = self.bet_amount * 1.8
+            payout = int(self.bet_amount * 1.8)
             add_balance(self.user_id, payout)
             description = f"선택: **{choice}**\n결과: **{result}**\n축하합니다! `{format_money(payout)}`을 받았습니다."
             color = 0x2ECC71
@@ -782,23 +826,12 @@ class RouletteView(discord.ui.View):
         return True
 
     def spin_result(self) -> str:
-        return random.choices(["빨강", "검정", "초록"], weights=[45, 30, 15], k=1)[0]
-    def spin_result(self) -> str:
         return random.choices(
             ["빨강", "노랑", "파랑", "검정", "초록"],
             weights=[34, 25, 19, 13, 9],
             k=1,
         )[0]
 
-
-    def get_payout(self, choice: str) -> int:
-        if choice == "빨강":
-            return self.bet_amount * 2
-        if choice == "검정":
-            return self.bet_amount * 3
-        if choice == "초록":
-            return self.bet_amount * 6
-        return 0
     def get_payout(self, choice: str) -> int:
         if choice == "빨강":
             return int(self.bet_amount * 1.5)
@@ -811,7 +844,6 @@ class RouletteView(discord.ui.View):
         if choice == "초록":
             return self.bet_amount * 6
         return 0
-
 
     async def finish(self, interaction: discord.Interaction, choice: str):
         if self.resolved:
@@ -847,9 +879,6 @@ class RouletteView(discord.ui.View):
         for item in self.children:
             item.disabled = True
 
-    @discord.ui.button(label="초록", style=discord.ButtonStyle.success)
-    async def green(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.finish(interaction, "초록")
     @discord.ui.button(label="🔴 빨강", style=discord.ButtonStyle.danger)
     async def red(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.finish(interaction, "빨강")
@@ -869,6 +898,7 @@ class RouletteView(discord.ui.View):
     @discord.ui.button(label="🟢 초록", style=discord.ButtonStyle.success)
     async def green(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.finish(interaction, "초록")
+
 
 class SupplyDropView(discord.ui.View):
     def __init__(self, user_id: int, bet_amount: int):
@@ -955,7 +985,6 @@ class SupplyDropView(discord.ui.View):
     @discord.ui.button(label="📦 보급 열기", style=discord.ButtonStyle.primary)
     async def open_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.open_supply(interaction)
-
 
 
 class TeamSelectView(discord.ui.View):
@@ -1156,6 +1185,7 @@ class WelcomeDmModal(discord.ui.Modal, title="환영 DM 설정"):
         set_template(interaction.guild.id, "welcome_dm", str(self.content).strip())
         await interaction.response.send_message("환영 DM 문구를 저장했습니다.", ephemeral=True)
 
+
 class StickyMessageModal(discord.ui.Modal, title="고정메시지 설정"):
     content = discord.ui.TextInput(
         label="고정할 메시지 내용",
@@ -1343,6 +1373,7 @@ async def set_probation_notice_template(interaction: discord.Interaction, conten
     set_template(interaction.guild.id, "probation_notice_text", content)
     await interaction.response.send_message("신입 알림 문구를 저장했습니다.", ephemeral=True)
 
+
 @bot.tree.command(name="세팅신입경과일", description="신입 역할 경과 알림 일수를 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_probation_days(interaction: discord.Interaction, days: int):
@@ -1355,6 +1386,7 @@ async def set_probation_days(interaction: discord.Interaction, days: int):
         f"신입 역할 경과일을 {days}일로 설정했습니다.",
         ephemeral=True,
     )
+
 
 @bot.tree.command(name="설정확인", description="현재 채널 설정을 확인합니다.")
 @app_commands.checks.has_permissions(administrator=True)
@@ -1666,6 +1698,7 @@ async def grant_money(interaction: discord.Interaction, member: discord.Member, 
         f"{member.mention}님의 현재 잔액: `{format_money(get_balance(member.id))}`"
     )
 
+
 @bot.tree.command(name="돈삭제", description="서버 주인이 특정 유저의 돈을 차감합니다.")
 async def remove_money(interaction: discord.Interaction, member: discord.Member, amount: int):
     if interaction.guild is None or interaction.user.id != interaction.guild.owner_id:
@@ -1682,7 +1715,6 @@ async def remove_money(interaction: discord.Interaction, member: discord.Member,
 
     current_balance = get_balance(member.id)
     deducted_amount = min(current_balance, amount)
-
     add_balance(member.id, -deducted_amount)
 
     await interaction.response.send_message(
@@ -1706,18 +1738,8 @@ async def slot(interaction: discord.Interaction, amount: int):
     first = random.choice(symbols)
     second = first if random.random() < 0.10 else random.choice(symbols)
     third = first if random.random() < 0.05 else random.choice(symbols)
+    result = [first, second, third]
 
-
-    multiplier = 0
-    if len(set(result)) == 1:
-        if result[0] == "7️⃣":
-            multiplier = 10
-        elif result[0] == "💎":
-            multiplier = 6
-        else:
-            multiplier = 4
-    elif len(set(result)) == 2:
-        multiplier = 1
     multiplier = 0
     if len(set(result)) == 1:
         if result[0] == "7️⃣":
@@ -1726,7 +1748,6 @@ async def slot(interaction: discord.Interaction, amount: int):
             multiplier = 4
         else:
             multiplier = 3
-
 
     winnings = amount * multiplier
     if winnings > 0:
@@ -1737,9 +1758,6 @@ async def slot(interaction: discord.Interaction, amount: int):
     if multiplier == 0:
         desc = f"`{' | '.join(result)}`\n\n아쉽네요... `{format_money(amount)}`을 잃었습니다.\n현재 잔액: `{format_money(balance_now)}`"
         color = 0xE74C3C
-    elif multiplier == 1:
-        desc = f"`{' | '.join(result)}`\n\n두 개가 맞아서 본전입니다.\n`{format_money(winnings)}`을 돌려받았습니다.\n현재 잔액: `{format_money(balance_now)}`"
-        color = 0x3498DB
     else:
         desc = f"`{' | '.join(result)}`\n\n대박! `{multiplier}배` 당첨으로 `{format_money(winnings)}`을 받았습니다.\n현재 잔액: `{format_money(balance_now)}`"
         color = 0x2ECC71
@@ -1808,6 +1826,39 @@ async def roulette(interaction: discord.Interaction, amount: int):
     )
 
 
+@bot.tree.command(name="세팅대기방추가", description="대기방 음성채널을 등록합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def add_waiting_room_command(interaction: discord.Interaction, channel: discord.VoiceChannel):
+    add_waiting_room(interaction.guild.id, channel.id)
+    await interaction.response.send_message(
+        f"{channel.mention} 채널을 대기방으로 등록했습니다.",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="세팅대기방삭제", description="등록된 대기방을 제거합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def remove_waiting_room_command(interaction: discord.Interaction, channel: discord.VoiceChannel):
+    remove_waiting_room(interaction.guild.id, channel.id)
+    await interaction.response.send_message(
+        f"{channel.mention} 채널을 대기방에서 제거했습니다.",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="대기방목록", description="현재 등록된 대기방 목록을 확인합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def list_waiting_rooms(interaction: discord.Interaction):
+    room_ids = get_waiting_rooms(interaction.guild.id)
+    if not room_ids:
+        await interaction.response.send_message("등록된 대기방이 없습니다.", ephemeral=True)
+        return
+
+    lines = [f"<#{room_id}>" for room_id in room_ids]
+    embed = discord.Embed(title="등록된 대기방 목록", description="\n".join(lines), color=0x3498DB)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 @bot.tree.command(name="팀", description="랜덤 팀 생성")
 async def team(interaction: discord.Interaction):
     embed = discord.Embed(title="👥 팀 생성", description="팀 인원을 선택하세요", color=0x3498DB)
@@ -1843,6 +1894,7 @@ async def recruit(interaction: discord.Interaction, message: str):
 async def general_recruit(interaction: discord.Interaction):
     await interaction.response.send_modal(GeneralRecruitModal())
 
+
 @bot.tree.command(name="보급", description="배그 보급상자를 열어 결과에 따라 보상을 받습니다.")
 async def supply_drop(interaction: discord.Interaction, amount: int):
     if amount < MIN_BET:
@@ -1861,19 +1913,18 @@ async def supply_drop(interaction: discord.Interaction, amount: int):
     embed = discord.Embed(
         title="📦 보급",
         description=(
-        f"배팅 금액: `{format_money(amount)}`\n\n"
-        "✈️ 하늘에서 보급이 떨어지고 있습니다...\n"
-        "📦 상자를 열어 어떤 아이템을 챙길 수 있을지 확인하세요.\n\n"
-        "가능한 결과:\n"
-        "▫️ 빈 상자\n"
-        "▫️ 1뚝\n"
-        "▫️ 2뚝\n"
-        "▫️ 3뚝\n"
-        "▫️ 보급 총기 획득\n"
-        "▫️ 풀세트 보급 대박\n\n"
-        "버튼을 눌러 보급상자를 개봉하세요."
-    ),
-
+            f"배팅 금액: `{format_money(amount)}`\n\n"
+            "✈️ 하늘에서 보급이 떨어지고 있습니다...\n"
+            "📦 상자를 열어 어떤 아이템을 챙길 수 있을지 확인하세요.\n\n"
+            "가능한 결과:\n"
+            "▫️ 빈 상자\n"
+            "▫️ 1뚝\n"
+            "▫️ 2뚝\n"
+            "▫️ 3뚝\n"
+            "▫️ 보급 총기 획득\n"
+            "▫️ 풀세트 보급 대박\n\n"
+            "버튼을 눌러 보급상자를 개봉하세요."
+        ),
         color=0xF39C12,
     )
 
@@ -1881,7 +1932,6 @@ async def supply_drop(interaction: discord.Interaction, amount: int):
         embed=embed,
         view=SupplyDropView(interaction.user.id, amount),
     )
-
 
 
 @bot.event
@@ -1946,6 +1996,17 @@ async def on_member_remove(member: discord.Member):
 @bot.event
 async def on_voice_state_update(member, before, after):
     channels = []
+
+    if after.channel and (before.channel is None or before.channel.id != after.channel.id):
+        if is_waiting_room(member.guild.id, after.channel.id):
+            recruit_channel_id = get_guild_setting_channel_id(member.guild.id, "recruit_channel_id")
+            if recruit_channel_id is not None:
+                recruit_channel = member.guild.get_channel(recruit_channel_id)
+                if recruit_channel is not None:
+                    await recruit_channel.send(
+                        f"📢 {member.mention}님이 대기방 {after.channel.mention}에 들어왔습니다."
+                    )
+
     if before.channel:
         channels.append(before.channel)
     if after.channel and after.channel not in channels:
@@ -2024,7 +2085,6 @@ async def probation_role_check_loop():
         probation_days = int(get_setting_with_default(guild.id, "probation_days", DEFAULT_PROBATION_DAYS))
         due_time = now - timedelta(days=probation_days)
 
-
         cursor.execute(
             "SELECT user_id, assigned_at FROM probation_roles WHERE guild_id=? AND notified=0",
             (str(guild.id),),
@@ -2049,7 +2109,12 @@ async def probation_role_check_loop():
             if member.joined_at is not None:
                 joined_text = member.joined_at.astimezone(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S KST")
 
-            embed = discord.Embed(title=f"⏰ 신입 역할 {probation_days}일 경과 알림", description=notice_text, color=0xF1C40F, timestamp=now)
+            embed = discord.Embed(
+                title=f"⏰ 신입 역할 {probation_days}일 경과 알림",
+                description=notice_text,
+                color=0xF1C40F,
+                timestamp=now,
+            )
             embed.add_field(name="닉네임", value=member.display_name, inline=False)
             embed.add_field(name="계정명", value=str(member), inline=False)
             embed.add_field(name="유저 ID", value=str(member.id), inline=False)
@@ -2125,7 +2190,6 @@ async def birthday_loop():
 
 
 @bot.event
-@bot.event
 async def on_ready():
     for guild in bot.guilds:
         try:
@@ -2150,7 +2214,6 @@ async def on_ready():
         probation_role_check_loop.start()
 
     print("멀티서버 대응 마리봇 실행 완료")
-
 
 
 bot.run(TOKEN)
