@@ -2004,8 +2004,9 @@ async def on_voice_state_update(member, before, after):
                 recruit_channel = member.guild.get_channel(recruit_channel_id)
                 if recruit_channel is not None:
                     await recruit_channel.send(
-                        f"📢 {member.mention}님이 대기방 {after.channel.mention}에 들어왔습니다."
+                        content=f"@here 📢 {member.mention}님이 대기방 {after.channel.mention}에 들어왔습니다."
                     )
+
 
     if before.channel:
         channels.append(before.channel)
