@@ -1680,23 +1680,52 @@ async def transfer(interaction: discord.Interaction, member: discord.Member, amo
     )
 
 
-@bot.tree.command(name="돈지급", description="서버 주인이 특정 유저에게 돈을 지급합니다.")
-async def grant_money(interaction: discord.Interaction, member: discord.Member, amount: int):
+@bot.tree.command(name="돈지급", description="서버 주인이 여러 유저에게 같은 금액을 지급합니다.")
+async def grant_money(interaction: discord.Interaction, targets: str, amount: int):
     if interaction.guild is None or interaction.user.id != interaction.guild.owner_id:
         await interaction.response.send_message("이 명령어는 서버 주인만 사용할 수 있습니다.", ephemeral=True)
         return
-    if member.bot:
-        await interaction.response.send_message("봇에게는 지급할 수 없습니다.", ephemeral=True)
-        return
+
     if amount <= 0:
         await interaction.response.send_message("지급 금액은 1원 이상이어야 합니다.", ephemeral=True)
         return
 
-    add_balance(member.id, amount)
-    await interaction.response.send_message(
-        f"{member.mention}님에게 `{format_money(amount)}`을 지급했습니다.\n"
-        f"{member.mention}님의 현재 잔액: `{format_money(get_balance(member.id))}`"
-    )
+    raw_ids = []
+    for token in targets.replace(",", " ").split():
+        cleaned = token.strip().replace("<@", "").replace("!", "").replace(">", "")
+        if cleaned.isdigit():
+            raw_ids.append(int(cleaned))
+
+    if not raw_ids:
+        await interaction.response.send_message("대상을 한 명 이상 입력해주세요. 예: `@유저1 @유저2 @유저3`", ephemeral=True)
+        return
+
+    success_members = []
+    skipped_members = []
+
+    for user_id in dict.fromkeys(raw_ids):
+        member = interaction.guild.get_member(user_id)
+        if member is None or member.bot:
+            skipped_members.append(str(user_id))
+            continue
+
+        add_balance(member.id, amount)
+        success_members.append(member.mention)
+
+    if not success_members:
+        await interaction.response.send_message("지급 가능한 유저가 없습니다.", ephemeral=True)
+        return
+
+    lines = [
+        f"총 {len(success_members)}명에게 각각 `{format_money(amount)}`을 지급했습니다.",
+        f"대상: {', '.join(success_members)}",
+    ]
+
+    if skipped_members:
+        lines.append(f"제외됨: {', '.join(skipped_members)}")
+
+    await interaction.response.send_message("\n".join(lines))
+
 
 
 @bot.tree.command(name="돈삭제", description="서버 주인이 특정 유저의 돈을 차감합니다.")
