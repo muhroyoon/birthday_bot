@@ -165,6 +165,18 @@ cursor.execute(
     """
 )
 
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS nickname_panels(
+        guild_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        message_id TEXT NOT NULL PRIMARY KEY,
+        menu_name TEXT NOT NULL,
+        prefixes TEXT NOT NULL
+    )
+    """
+)
+
 conn.commit()
 
 
@@ -418,6 +430,53 @@ def is_waiting_room(guild_id: int, channel_id: int) -> bool:
         (str(guild_id), str(channel_id)),
     )
     return cursor.fetchone() is not None
+
+def save_nickname_panel(guild_id: int, channel_id: int, message_id: int, menu_name: str, prefixes: list[str]):
+    cursor.execute(
+        """
+        INSERT OR REPLACE INTO nickname_panels(guild_id, channel_id, message_id, menu_name, prefixes)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (str(guild_id), str(channel_id), str(message_id), menu_name, "|".join(prefixes)),
+    )
+    conn.commit()
+
+
+def get_all_nickname_panels():
+    cursor.execute(
+        "SELECT guild_id, channel_id, message_id, menu_name, prefixes FROM nickname_panels"
+    )
+    return cursor.fetchall()
+
+
+def delete_nickname_panel(message_id: int):
+    cursor.execute(
+        "DELETE FROM nickname_panels WHERE message_id=?",
+        (str(message_id),),
+    )
+    conn.commit()
+
+def apply_prefix_to_nickname(current_name: str, selected_prefix: str, managed_prefixes: list[str]) -> str:
+    base_name = current_name.strip()
+
+    for prefix in managed_prefixes:
+        token = f"[{prefix}]"
+        if base_name.startswith(token):
+            base_name = base_name[len(token):].strip()
+            break
+
+    return f"[{selected_prefix}] {base_name}"
+
+
+def reset_prefix_from_nickname(current_name: str, managed_prefixes: list[str]) -> str:
+    base_name = current_name.strip()
+
+    for prefix in managed_prefixes:
+        token = f"[{prefix}]"
+        if base_name.startswith(token):
+            return base_name[len(token):].strip()
+
+    return base_name
 
 
 async def backfill_probation_members():
@@ -1015,6 +1074,86 @@ class TeamSelectView(discord.ui.View):
             embed.add_field(name=f"팀 {index}", value="\n".join(team), inline=False)
 
         await interaction.response.send_message(embed=embed)
+
+    class NicknamePrefixApplyButton(discord.ui.Button):
+    def __init__(self, prefix: str, managed_prefixes: list[str], panel_key: str):
+        super().__init__(
+            label=f"{prefix}적용",
+            style=discord.ButtonStyle.primary,
+            custom_id=f"nickname_prefix_apply:{panel_key}:{prefix}",
+        )
+        self.prefix = prefix
+        self.managed_prefixes = managed_prefixes
+
+    async def callback(self, interaction: discord.Interaction):
+        member = interaction.user
+        new_nick = apply_prefix_to_nickname(
+            member.display_name,
+            self.prefix,
+            self.managed_prefixes,
+        )
+
+        try:
+            await member.edit(nick=new_nick)
+        except discord.Forbidden:
+            await interaction.response.send_message("닉네임을 변경할 권한이 없습니다.", ephemeral=True)
+            return
+        except discord.HTTPException:
+            await interaction.response.send_message("닉네임 변경 중 오류가 발생했습니다.", ephemeral=True)
+            return
+
+        await interaction.response.send_message(
+            f"닉네임 앞에 `[{self.prefix}]` 접두사를 적용했습니다.",
+            ephemeral=True,
+        )
+
+
+class NicknamePrefixResetButton(discord.ui.Button):
+    def __init__(self, managed_prefixes: list[str], panel_key: str):
+        super().__init__(
+            label="원래대로",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"nickname_prefix_reset:{panel_key}",
+        )
+        self.managed_prefixes = managed_prefixes
+
+    async def callback(self, interaction: discord.Interaction):
+        member = interaction.user
+        new_nick = reset_prefix_from_nickname(
+            member.display_name,
+            self.managed_prefixes,
+        )
+
+        try:
+            await member.edit(nick=new_nick)
+        except discord.Forbidden:
+            await interaction.response.send_message("닉네임을 변경할 권한이 없습니다.", ephemeral=True)
+            return
+        except discord.HTTPException:
+            await interaction.response.send_message("닉네임 변경 중 오류가 발생했습니다.", ephemeral=True)
+            return
+
+        await interaction.response.send_message(
+            "닉네임을 원래대로 되돌렸습니다.",
+            ephemeral=True,
+        )
+
+
+class NicknamePrefixView(discord.ui.View):
+    def __init__(self, guild_id: int, channel_id: int, message_id: int, prefixes: list[str]):
+        super().__init__(timeout=None)
+        self.guild_id = guild_id
+        self.channel_id = channel_id
+        self.message_id = message_id
+        self.prefixes = prefixes
+
+        panel_key = f"{guild_id}:{channel_id}:{message_id}"
+
+        for prefix in prefixes:
+            self.add_item(NicknamePrefixApplyButton(prefix, prefixes, panel_key))
+
+        self.add_item(NicknamePrefixResetButton(prefixes, panel_key))
+
 
     @discord.ui.button(label="2명 팀", style=discord.ButtonStyle.primary)
     async def team2(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -2054,6 +2193,50 @@ async def inquiry_panel(interaction: discord.Interaction):
     await interaction.channel.send(embed=embed, view=InquiryPanelView())
     await interaction.response.send_message("문의 패널 생성 완료", ephemeral=True)
 
+@bot.tree.command(name="닉네임패널생성", description="닉네임 접두사 적용 패널을 생성합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def create_nickname_panel(
+    interaction: discord.Interaction,
+    channel: discord.TextChannel,
+    menu_name: str,
+    prefixes: str,
+):
+    prefix_list = [item.strip() for item in prefixes.split(",") if item.strip()]
+
+    if not prefix_list:
+        await interaction.response.send_message(
+            "접두사를 하나 이상 입력해주세요. 예: `📺관전중,🔴빨코,🟢초코`",
+            ephemeral=True,
+        )
+        return
+
+    if len(prefix_list) > 24:
+        await interaction.response.send_message(
+            "접두사는 최대 24개까지만 설정할 수 있습니다.",
+            ephemeral=True,
+        )
+        return
+
+    embed = discord.Embed(
+        title=menu_name,
+        description="원하는 접두사를 선택해주세요.",
+        color=0x5865F2,
+    )
+
+    await interaction.response.send_message("닉네임 패널을 생성하는 중입니다.", ephemeral=True)
+
+    panel_message = await channel.send(embed=embed)
+    view = NicknamePrefixView(interaction.guild.id, channel.id, panel_message.id, prefix_list)
+    await panel_message.edit(view=view)
+
+    save_nickname_panel(
+        interaction.guild.id,
+        channel.id,
+        panel_message.id,
+        menu_name,
+        prefix_list,
+    )
+
 
 @bot.event
 async def on_member_update(before: discord.Member, after: discord.Member):
@@ -2327,6 +2510,47 @@ async def on_ready():
     bot.add_view(UpgradePanelView())
     bot.add_view(TimeRoleView())
     bot.add_view(InquiryPanelView())
+    
+    await restore_nickname_panels()    
+
+async def restore_nickname_panels():
+    rows = get_all_nickname_panels()
+
+    for guild_id, channel_id, message_id, menu_name, prefixes_raw in rows:
+        try:
+            guild_id_int = int(guild_id)
+            channel_id_int = int(channel_id)
+            message_id_int = int(message_id)
+            prefixes = [item for item in prefixes_raw.split("|") if item]
+        except ValueError:
+            delete_nickname_panel(int(message_id))
+            continue
+
+        guild = bot.get_guild(guild_id_int)
+        if guild is None:
+            continue
+
+        channel = guild.get_channel(channel_id_int)
+        if channel is None:
+            continue
+
+        try:
+            await channel.fetch_message(message_id_int)
+        except discord.NotFound:
+            delete_nickname_panel(message_id_int)
+            continue
+        except (discord.Forbidden, discord.HTTPException):
+            continue
+
+        bot.add_view(
+            NicknamePrefixView(
+                guild_id_int,
+                channel_id_int,
+                message_id_int,
+                prefixes,
+            ),
+            message_id=message_id_int,
+        )
 
 
     await backfill_probation_members()
