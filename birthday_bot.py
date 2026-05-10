@@ -1074,6 +1074,21 @@ class TeamSelectView(discord.ui.View):
             embed.add_field(name=f"팀 {index}", value="\n".join(team), inline=False)
 
         await interaction.response.send_message(embed=embed)
+            @discord.ui.button(label="2명 팀", style=discord.ButtonStyle.primary)
+    async def team2(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.create_team(interaction, 2)
+
+    @discord.ui.button(label="3명 팀", style=discord.ButtonStyle.primary)
+    async def team3(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.create_team(interaction, 3)
+
+    @discord.ui.button(label="4명 팀", style=discord.ButtonStyle.success)
+    async def team4(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.create_team(interaction, 4)
+
+    @discord.ui.button(label="5명 팀", style=discord.ButtonStyle.secondary)
+    async def team5(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.create_team(interaction, 5)
 
 class NicknamePrefixApplyButton(discord.ui.Button):
     def __init__(self, prefix: str, managed_prefixes: list[str], panel_key: str):
@@ -1153,24 +1168,6 @@ class NicknamePrefixView(discord.ui.View):
             self.add_item(NicknamePrefixApplyButton(prefix, prefixes, panel_key))
 
         self.add_item(NicknamePrefixResetButton(prefixes, panel_key))
-
-
-
-    @discord.ui.button(label="2명 팀", style=discord.ButtonStyle.primary)
-    async def team2(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.create_team(interaction, 2)
-
-    @discord.ui.button(label="3명 팀", style=discord.ButtonStyle.primary)
-    async def team3(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.create_team(interaction, 3)
-
-    @discord.ui.button(label="4명 팀", style=discord.ButtonStyle.success)
-    async def team4(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.create_team(interaction, 4)
-
-    @discord.ui.button(label="5명 팀", style=discord.ButtonStyle.secondary)
-    async def team5(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.create_team(interaction, 5)
 
 class InquiryManageView(discord.ui.View):
     def __init__(self, user: discord.Member, ticket_type: str):
