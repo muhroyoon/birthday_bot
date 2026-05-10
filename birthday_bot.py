@@ -392,6 +392,25 @@ def can_afford(user_id: int, amount: int) -> bool:
 def format_money(amount: int) -> str:
     return f"{amount:,}원"
 
+def get_spectator_prefixes(guild_id: int) -> list[str]:
+    raw = get_guild_setting(guild_id, "spectator_prefixes")
+    if not raw:
+        return ["📺관전중"]
+
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def is_spectator_member(member: discord.Member, guild_id: int) -> bool:
+    display_name = member.display_name.strip()
+
+    for prefix in get_spectator_prefixes(guild_id):
+        token = f"[{prefix}]"
+        if display_name.startswith(token):
+            return True
+
+    return False
+
+
 
 def add_waiting_room(guild_id: int, channel_id: int):
     cursor.execute(
@@ -1059,8 +1078,9 @@ class TeamSelectView(discord.ui.View):
         players = [
             member.display_name
             for member in channel.members
-            if "[📺관전중]" not in member.display_name and not member.bot
+            if not member.bot and not is_spectator_member(member, interaction.guild.id)
         ]
+
 
         if len(players) < 2:
             await interaction.response.send_message("플레이어가 부족합니다.", ephemeral=True)
@@ -1069,12 +1089,17 @@ class TeamSelectView(discord.ui.View):
         random.shuffle(players)
         teams = [players[i:i + team_size] for i in range(0, len(players), team_size)]
 
-        embed = discord.Embed(title="🎮 랜덤 팀 결과", description=f"채널: {channel.name}", color=0x2ECC71)
+        embed = discord.Embed(
+            title="🎮 랜덤 팀 결과",
+            description=f"채널: {channel.name}",
+            color=0x2ECC71,
+        )
         for index, team in enumerate(teams, start=1):
             embed.add_field(name=f"팀 {index}", value="\n".join(team), inline=False)
 
         await interaction.response.send_message(embed=embed)
-            @discord.ui.button(label="2명 팀", style=discord.ButtonStyle.primary)
+
+    @discord.ui.button(label="2명 팀", style=discord.ButtonStyle.primary)
     async def team2(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.create_team(interaction, 2)
 
@@ -1089,6 +1114,7 @@ class TeamSelectView(discord.ui.View):
     @discord.ui.button(label="5명 팀", style=discord.ButtonStyle.secondary)
     async def team5(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.create_team(interaction, 5)
+
 
 class NicknamePrefixApplyButton(discord.ui.Button):
     def __init__(self, prefix: str, managed_prefixes: list[str], panel_key: str):
@@ -1254,13 +1280,16 @@ class InquiryPanelView(discord.ui.View):
 def count_members(channel):
     players = 0
     spectators = 0
+
     for member in channel.members:
         if member.bot:
             continue
-        if "[📺관전중]" in member.display_name:
+
+        if is_spectator_member(member, channel.guild.id):
             spectators += 1
         else:
             players += 1
+
     return players, spectators
 
 
@@ -2111,6 +2140,34 @@ async def team(interaction: discord.Interaction):
     embed = discord.Embed(title="👥 팀 생성", description="팀 인원을 선택하세요", color=0x3498DB)
     await interaction.response.send_message(embed=embed, view=TeamSelectView())
 
+@bot.tree.command(name="팀섞기규칙설정", description="관전자 제외용 접두사를 설정합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+@app_commands.rename(prefixes="접두사들")
+@app_commands.describe(prefixes="쉼표로 구분해서 입력하세요. 예: 📺관전중,🚫휴식중")
+async def set_team_mix_rule(interaction: discord.Interaction, prefixes: str):
+    prefix_list = [item.strip() for item in prefixes.split(",") if item.strip()]
+
+    if not prefix_list:
+        await interaction.response.send_message(
+            "접두사를 하나 이상 입력해주세요. 예: `📺관전중,🚫휴식중`",
+            ephemeral=True,
+        )
+        return
+
+    set_guild_setting(interaction.guild.id, "spectator_prefixes", ",".join(prefix_list))
+    await interaction.response.send_message(
+        f"팀섞기 관전자 접두사를 설정했습니다: {', '.join(f'[{p}]' for p in prefix_list)}",
+        ephemeral=True,
+    )
+
+@bot.tree.command(name="팀섞기규칙확인", description="현재 관전자 제외 접두사를 확인합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def show_team_mix_rule(interaction: discord.Interaction):
+    prefixes = get_spectator_prefixes(interaction.guild.id)
+    await interaction.response.send_message(
+        f"현재 관전자 접두사: {', '.join(f'[{p}]' for p in prefixes)}",
+        ephemeral=True,
+    )
 
 @bot.tree.command(name="구인", description="배그 구인")
 async def recruit(interaction: discord.Interaction, message: str):
