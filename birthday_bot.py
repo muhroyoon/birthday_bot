@@ -1032,6 +1032,87 @@ class TeamSelectView(discord.ui.View):
     async def team5(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.create_team(interaction, 5)
 
+class InquiryManageView(discord.ui.View):
+    def __init__(self, user: discord.Member, ticket_type: str):
+        super().__init__(timeout=None)
+        self.user = user
+        self.ticket_type = ticket_type
+
+    def is_admin(self, interaction: discord.Interaction):
+        return interaction.user.guild_permissions.manage_channels or interaction.user.guild_permissions.administrator
+
+    @discord.ui.button(label="티켓보관", style=discord.ButtonStyle.secondary, custom_id="inquiry_archive")
+    async def archive_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.is_admin(interaction):
+            await interaction.response.send_message("관리자만 사용할 수 있습니다.", ephemeral=True)
+            return
+
+        await interaction.channel.set_permissions(self.user, send_messages=False)
+        await interaction.response.send_message("티켓을 보관했습니다. 작성자는 더 이상 메시지를 보낼 수 없습니다.")
+
+    @discord.ui.button(label="티켓삭제", style=discord.ButtonStyle.danger, custom_id="inquiry_delete")
+    async def delete_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.is_admin(interaction):
+            await interaction.response.send_message("관리자만 사용할 수 있습니다.", ephemeral=True)
+            return
+
+        await interaction.response.send_message("티켓을 삭제합니다.")
+        await interaction.channel.delete()
+
+
+class InquiryPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def create_ticket(self, interaction: discord.Interaction, ticket_type: str):
+        guild = interaction.guild
+        user = interaction.user
+
+        existing = discord.utils.get(
+            guild.channels,
+            name=f"{user.name}-{ticket_type}"
+        )
+        if existing:
+            await interaction.response.send_message(f"이미 {ticket_type} 티켓이 있습니다: {existing.mention}", ephemeral=True)
+            return
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True),
+        }
+
+        channel = await guild.create_text_channel(
+            name=f"{user.name}-{ticket_type}",
+            overwrites=overwrites,
+        )
+
+        embed = discord.Embed(
+            title=f"{ticket_type} 티켓",
+            description=f"{user.mention}님의 [{ticket_type}] 입니다.",
+            color=0x5865F2,
+        )
+
+        await channel.send(
+            content=user.mention,
+            embed=embed,
+            view=InquiryManageView(user, ticket_type),
+        )
+
+        await interaction.response.send_message(f"{channel.mention} 티켓이 생성되었습니다.", ephemeral=True)
+
+    @discord.ui.button(label="문의하기", style=discord.ButtonStyle.primary, custom_id="inquiry_open")
+    async def inquiry_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.create_ticket(interaction, "문의")
+
+    @discord.ui.button(label="신고하기", style=discord.ButtonStyle.danger, custom_id="report_open")
+    async def report_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.create_ticket(interaction, "신고")
+
+    @discord.ui.button(label="건의하기", style=discord.ButtonStyle.success, custom_id="suggest_open")
+    async def suggest_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.create_ticket(interaction, "건의")
+
 
 def count_members(channel):
     players = 0
@@ -1962,6 +2043,17 @@ async def supply_drop(interaction: discord.Interaction, amount: int):
         view=SupplyDropView(interaction.user.id, amount),
     )
 
+@bot.tree.command(name="문의패널", description="문의/신고/건의 티켓 패널을 생성합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def inquiry_panel(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="문의 안내",
+        description="문의하기 입니다. 아래 항목을 선택해 주세요.",
+        color=0x3498DB,
+    )
+    await interaction.channel.send(embed=embed, view=InquiryPanelView())
+    await interaction.response.send_message("문의 패널 생성 완료", ephemeral=True)
+
 
 @bot.event
 async def on_member_update(before: discord.Member, after: discord.Member):
@@ -2234,6 +2326,8 @@ async def on_ready():
     bot.add_view(RuleConfirmView())
     bot.add_view(UpgradePanelView())
     bot.add_view(TimeRoleView())
+    bot.add_view(InquiryPanelView())
+
 
     await backfill_probation_members()
 
