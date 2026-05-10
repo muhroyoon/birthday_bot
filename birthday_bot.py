@@ -1075,7 +1075,7 @@ class TeamSelectView(discord.ui.View):
 
         await interaction.response.send_message(embed=embed)
 
-    class NicknamePrefixApplyButton(discord.ui.Button):
+class NicknamePrefixApplyButton(discord.ui.Button):
     def __init__(self, prefix: str, managed_prefixes: list[str], panel_key: str):
         super().__init__(
             label=f"{prefix}적용",
@@ -1153,6 +1153,7 @@ class NicknamePrefixView(discord.ui.View):
             self.add_item(NicknamePrefixApplyButton(prefix, prefixes, panel_key))
 
         self.add_item(NicknamePrefixResetButton(prefixes, panel_key))
+
 
 
     @discord.ui.button(label="2명 팀", style=discord.ButtonStyle.primary)
