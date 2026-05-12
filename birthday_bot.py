@@ -3037,14 +3037,54 @@ async def repay_loan_command(interaction: discord.Interaction):
         )
         return
 
+    profile = get_credit_profile(interaction.user.id)
+    previous_grade_text = get_credit_grade_text(interaction.user.id)
+
     add_balance(interaction.user.id, -repayment_amount)
     repay_loan(active_loan["id"])
-    upgrade_credit_grade(interaction.user.id)
+
+    grade_up = False
+
+    if profile["is_blacklisted"]:
+        set_credit_blacklisted(interaction.user.id, False)
+        set_credit_grade(interaction.user.id, 6)
+        grade_up = True
+    else:
+        required_amount = get_loan_limit_by_grade(profile["grade"])
+        if active_loan["principal"] >= required_amount:
+            upgrade_credit_grade(interaction.user.id)
+            grade_up = True
+
+    current_grade_text = get_credit_grade_text(interaction.user.id)
 
     embed = discord.Embed(title="✅ 대출 상환 완료", color=0x2ECC71)
     embed.add_field(name="상환 금액", value=format_money(repayment_amount), inline=False)
-    embed.add_field(name="현재 신용등급", value=get_credit_grade_text(interaction.user.id), inline=False)
+    embed.add_field(name="상환 전 신용등급", value=previous_grade_text, inline=False)
+    embed.add_field(name="현재 신용등급", value=current_grade_text, inline=False)
     embed.add_field(name="현재 잔액", value=format_money(get_balance(interaction.user.id)), inline=False)
+
+    if profile["is_blacklisted"]:
+        embed.add_field(
+            name="등급 변동",
+            value="기존 대출을 모두 상환하여 신용불량자 상태가 해제되고 6등급으로 복귀했습니다.",
+            inline=False,
+        )
+    elif grade_up:
+        embed.add_field(
+            name="등급 변동",
+            value="현재 등급의 최대 한도 이상 대출을 정상 상환하여 신용등급이 1단계 상승했습니다.",
+            inline=False,
+        )
+    else:
+        required_amount = get_loan_limit_by_grade(profile["grade"])
+        embed.add_field(
+            name="등급 변동",
+            value=(
+                "대출은 정상 상환되었지만 신용등급은 유지되었습니다.\n"
+                f"등급 상승을 위해서는 현재 등급 기준 최대 한도인 `{format_money(required_amount)}` 이상 대출 후 상환해야 합니다."
+            ),
+            inline=False,
+        )
 
     await interaction.response.send_message(embed=embed)
 
