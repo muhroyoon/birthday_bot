@@ -44,6 +44,9 @@ MIN_BET = 100
 COIN_FLIP_TIMEOUT = 60
 ROULETTE_TIMEOUT = 60
 MAX_PLAYERS = 4
+ALL_IN_COST = 10000
+ALL_IN_GAME_NAME = "몰빵게임"
+GAME_HISTORY_LIMIT = 10
 
 TIME_SLOT_CHOICES = ["morning", "afternoon", "evening", "night", "dawn"]
 TIME_SLOT_LABELS = {
@@ -176,6 +179,44 @@ cursor.execute(
     )
     """
 )
+
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS all_in_entries(
+        entry_date TEXT NOT NULL,
+        guild_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        amount INTEGER NOT NULL,
+        PRIMARY KEY (entry_date, guild_id, user_id)
+    )
+    """
+)
+
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS game_history(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL,
+        game_name TEXT NOT NULL,
+        result_text TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )
+    """
+)
+
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS money_grant_logs(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL,
+        target_user_id TEXT NOT NULL,
+        giver_user_id TEXT NOT NULL,
+        amount INTEGER NOT NULL,
+        created_at TEXT NOT NULL
+    )
+    """
+)
+
 
 conn.commit()
 
@@ -475,6 +516,46 @@ def delete_nickname_panel(message_id: int):
     )
     conn.commit()
 
+async def restore_nickname_panels():
+    rows = get_all_nickname_panels()
+
+    for guild_id, channel_id, message_id, menu_name, prefixes_raw in rows:
+        try:
+            guild_id_int = int(guild_id)
+            channel_id_int = int(channel_id)
+            message_id_int = int(message_id)
+            prefixes = [item for item in prefixes_raw.split("|") if item]
+        except ValueError:
+            delete_nickname_panel(int(message_id))
+            continue
+
+        guild = bot.get_guild(guild_id_int)
+        if guild is None:
+            continue
+
+        channel = guild.get_channel(channel_id_int)
+        if channel is None:
+            continue
+
+        try:
+            await channel.fetch_message(message_id_int)
+        except discord.NotFound:
+            delete_nickname_panel(message_id_int)
+            continue
+        except (discord.Forbidden, discord.HTTPException):
+            continue
+
+        bot.add_view(
+            NicknamePrefixView(
+                guild_id_int,
+                channel_id_int,
+                message_id_int,
+                prefixes,
+            ),
+            message_id=message_id_int,
+        )
+
+
 def apply_prefix_to_nickname(current_name: str, selected_prefix: str, managed_prefixes: list[str]) -> str:
     base_name = current_name.strip()
 
@@ -496,6 +577,127 @@ def reset_prefix_from_nickname(current_name: str, managed_prefixes: list[str]) -
             return base_name[len(token):].strip()
 
     return base_name
+
+def get_today_kst_date_str() -> str:
+    return get_kst_now().strftime("%Y-%m-%d")
+
+
+def add_game_history(guild_id: int, game_name: str, result_text: str):
+    cursor.execute(
+        """
+        INSERT INTO game_history(guild_id, game_name, result_text, created_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (str(guild_id), game_name, result_text, dt_to_db(get_kst_now())),
+    )
+    conn.commit()
+
+
+def get_recent_game_history(guild_id: int, game_name: str, limit: int = 10):
+    cursor.execute(
+        """
+        SELECT result_text, created_at
+        FROM game_history
+        WHERE guild_id=? AND game_name=?
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (str(guild_id), game_name, limit),
+    )
+    return cursor.fetchall()
+
+
+def add_money_grant_log(guild_id: int, target_user_id: int, giver_user_id: int, amount: int):
+    cursor.execute(
+        """
+        INSERT INTO money_grant_logs(guild_id, target_user_id, giver_user_id, amount, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (str(guild_id), str(target_user_id), str(giver_user_id), amount, dt_to_db(get_kst_now())),
+    )
+    conn.commit()
+
+
+def get_money_grant_logs(guild_id: int, target_user_id: int, limit: int = 20):
+    cursor.execute(
+        """
+        SELECT giver_user_id, amount, created_at
+        FROM money_grant_logs
+        WHERE guild_id=? AND target_user_id=?
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (str(guild_id), str(target_user_id), limit),
+    )
+    return cursor.fetchall()
+
+
+def add_all_in_entry(entry_date: str, guild_id: int, user_id: int, amount: int):
+    cursor.execute(
+        """
+        INSERT OR REPLACE INTO all_in_entries(entry_date, guild_id, user_id, amount)
+        VALUES (?, ?, ?, ?)
+        """,
+        (entry_date, str(guild_id), str(user_id), amount),
+    )
+    conn.commit()
+
+
+def has_all_in_entry(entry_date: str, guild_id: int, user_id: int) -> bool:
+    cursor.execute(
+        """
+        SELECT 1 FROM all_in_entries
+        WHERE entry_date=? AND guild_id=? AND user_id=?
+        """,
+        (entry_date, str(guild_id), str(user_id)),
+    )
+    return cursor.fetchone() is not None
+
+
+def get_all_in_entries(entry_date: str, guild_id: int):
+    cursor.execute(
+        """
+        SELECT user_id, amount
+        FROM all_in_entries
+        WHERE entry_date=? AND guild_id=?
+        ORDER BY user_id ASC
+        """,
+        (entry_date, str(guild_id)),
+    )
+    return cursor.fetchall()
+
+
+def clear_all_in_entries(entry_date: str, guild_id: int):
+    cursor.execute(
+        """
+        DELETE FROM all_in_entries
+        WHERE entry_date=? AND guild_id=?
+        """,
+        (entry_date, str(guild_id)),
+    )
+    conn.commit()
+
+def get_pending_all_in_dates(guild_id: int, today_date: str):
+    cursor.execute(
+        """
+        SELECT DISTINCT entry_date
+        FROM all_in_entries
+        WHERE guild_id=? AND entry_date < ?
+        ORDER BY entry_date ASC
+        """,
+        (str(guild_id), today_date),
+    )
+    return [row[0] for row in cursor.fetchall()]
+
+
+GAME_LABELS = {
+    "슬롯": "슬롯",
+    "동전": "동전",
+    "룰렛": "룰렛",
+    "보급": "보급",
+    "몰빵게임": "몰빵게임",
+}
+
 
 
 async def backfill_probation_members():
@@ -871,7 +1073,15 @@ class CoinFlipView(discord.ui.View):
         balance = get_balance(self.user_id)
         embed = discord.Embed(title="🪙 동전 던지기 결과", description=description, color=color)
         embed.add_field(name="현재 잔액", value=format_money(balance), inline=False)
+
+        add_game_history(
+            interaction.guild.id,
+            "동전",
+            f"{interaction.user.display_name} - 선택:{choice} / 결과:{result} / {'당첨' if win else '꽝'}"
+        )
+
         await interaction.response.edit_message(embed=embed, view=self)
+
 
     async def on_timeout(self):
         if self.resolved:
@@ -947,7 +1157,15 @@ class RouletteView(discord.ui.View):
         balance = get_balance(self.user_id)
         embed = discord.Embed(title="🎡 룰렛 결과", description=description, color=color)
         embed.add_field(name="현재 잔액", value=format_money(balance), inline=False)
+
+        add_game_history(
+            interaction.guild.id,
+            "룰렛",
+            f"{interaction.user.display_name} - 선택:{choice} / 결과:{result} / {'당첨' if win else '꽝'}"
+        )
+
         await interaction.response.edit_message(embed=embed, view=self)
+
 
     async def on_timeout(self):
         if self.resolved:
@@ -1048,7 +1266,14 @@ class SupplyDropView(discord.ui.View):
         )
         embed.add_field(name="현재 잔액", value=format_money(balance), inline=False)
 
+        add_game_history(
+            interaction.guild.id,
+            "보급",
+            f"{interaction.user.display_name} - 결과:{result_name} / 배당:{multiplier}배"
+        )
+
         await interaction.response.edit_message(embed=embed, view=self)
+
 
     async def on_timeout(self):
         if self.resolved:
@@ -1275,6 +1500,56 @@ class InquiryPanelView(discord.ui.View):
     @discord.ui.button(label="건의하기", style=discord.ButtonStyle.success, custom_id="suggest_open")
     async def suggest_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.create_ticket(interaction, "건의")
+
+class HistoryGameSelectView(discord.ui.View):
+    def __init__(self, guild_id: int):
+        super().__init__(timeout=180)
+        self.guild_id = guild_id
+
+    async def show_history(self, interaction: discord.Interaction, game_name: str):
+        rows = get_recent_game_history(self.guild_id, game_name, GAME_HISTORY_LIMIT)
+
+        if not rows:
+            await interaction.response.send_message(
+                f"{game_name}의 최근 기록이 없습니다.",
+                ephemeral=True,
+            )
+            return
+
+        lines = []
+        for idx, (result_text, created_at) in enumerate(rows, start=1):
+            try:
+                dt = dt_from_db(created_at).strftime("%m-%d %H:%M")
+            except Exception:
+                dt = created_at
+            lines.append(f"{idx}. [{dt}] {result_text}")
+
+        embed = discord.Embed(
+            title=f"📜 {game_name} 최근 {min(len(rows), GAME_HISTORY_LIMIT)}게임",
+            description="\n".join(lines),
+            color=0x5865F2,
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="슬롯", style=discord.ButtonStyle.primary)
+    async def slot_history(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.show_history(interaction, "슬롯")
+
+    @discord.ui.button(label="동전", style=discord.ButtonStyle.primary)
+    async def coin_history(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.show_history(interaction, "동전")
+
+    @discord.ui.button(label="룰렛", style=discord.ButtonStyle.primary)
+    async def roulette_history(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.show_history(interaction, "룰렛")
+
+    @discord.ui.button(label="보급", style=discord.ButtonStyle.success)
+    async def supply_history(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.show_history(interaction, "보급")
+
+    @discord.ui.button(label="몰빵게임", style=discord.ButtonStyle.secondary)
+    async def all_in_history(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.show_history(interaction, "몰빵게임")
 
 
 def count_members(channel):
@@ -1927,10 +2202,23 @@ async def transfer(interaction: discord.Interaction, member: discord.Member, amo
     )
 
 
-@bot.tree.command(name="돈지급", description="서버 주인이 여러 유저에게 같은 금액을 지급합니다.")
+@bot.tree.command(name="돈지급", description="서버 관리자 이상이 여러 유저에게 같은 금액을 지급합니다.")
+@app_commands.rename(targets="대상들", amount="금액")
+@app_commands.describe(
+    targets="멘션 또는 ID를 공백/쉼표로 구분해서 입력",
+    amount="각 유저에게 지급할 금액",
+)
 async def grant_money(interaction: discord.Interaction, targets: str, amount: int):
-    if interaction.guild is None or interaction.user.id != interaction.guild.owner_id:
-        await interaction.response.send_message("이 명령어는 서버 주인만 사용할 수 있습니다.", ephemeral=True)
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    if not (
+        interaction.user.id == interaction.guild.owner_id
+        or interaction.user.guild_permissions.administrator
+        or interaction.user.guild_permissions.manage_guild
+    ):
+        await interaction.response.send_message("이 명령어는 서버 관리자 이상만 사용할 수 있습니다.", ephemeral=True)
         return
 
     if amount <= 0:
@@ -1944,7 +2232,10 @@ async def grant_money(interaction: discord.Interaction, targets: str, amount: in
             raw_ids.append(int(cleaned))
 
     if not raw_ids:
-        await interaction.response.send_message("대상을 한 명 이상 입력해주세요. 예: `@유저1 @유저2 @유저3`", ephemeral=True)
+        await interaction.response.send_message(
+            "대상을 한 명 이상 입력해주세요. 예: `@유저1 @유저2 @유저3`",
+            ephemeral=True,
+        )
         return
 
     success_members = []
@@ -1957,6 +2248,7 @@ async def grant_money(interaction: discord.Interaction, targets: str, amount: in
             continue
 
         add_balance(member.id, amount)
+        add_money_grant_log(interaction.guild.id, member.id, interaction.user.id, amount)
         success_members.append(member.mention)
 
     if not success_members:
@@ -1972,6 +2264,7 @@ async def grant_money(interaction: discord.Interaction, targets: str, amount: in
         lines.append(f"제외됨: {', '.join(skipped_members)}")
 
     await interaction.response.send_message("\n".join(lines))
+
 
 
 
@@ -2038,8 +2331,15 @@ async def slot(interaction: discord.Interaction, amount: int):
         desc = f"`{' | '.join(result)}`\n\n대박! `{multiplier}배` 당첨으로 `{format_money(winnings)}`을 받았습니다.\n현재 잔액: `{format_money(balance_now)}`"
         color = 0x2ECC71
 
+    add_game_history(
+        interaction.guild.id,
+        "슬롯",
+        f"{interaction.user.display_name} - {' | '.join(result)} - {('꽝' if multiplier == 0 else f'{multiplier}배')}"
+    )
+
     embed = discord.Embed(title="🎰 슬롯 결과", description=desc, color=color)
     await interaction.response.send_message(embed=embed)
+    
 
 
 @bot.tree.command(name="동전", description="입력한 금액으로 동전 앞뒤 맞추기를 합니다.")
@@ -2291,6 +2591,140 @@ async def create_nickname_panel(
         menu_name,
         prefix_list,
     )
+
+@bot.tree.command(name="확률표", description="현재 게임들의 확률과 배당을 확인합니다.")
+async def probability_table(interaction: discord.Interaction):
+    embed = discord.Embed(title="🎲 게임 확률표", color=0x3498DB)
+
+    embed.add_field(
+        name="슬롯",
+        value=(
+            "3개 동일 시 당첨\n"
+            "7️⃣ 7️⃣ 7️⃣ : 6배\n"
+            "💎 💎 💎 : 4배\n"
+            "기타 3개 동일 : 3배\n"
+            "그 외 : 꽝"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="동전",
+        value="앞/뒤 50% 확률\n당첨 시 1.8배",
+        inline=False,
+    )
+
+    embed.add_field(
+        name="룰렛",
+        value=(
+            "🔴 빨강 34% / 1.5배\n"
+            "🟡 노랑 25% / 2배\n"
+            "🔵 파랑 19% / 3배\n"
+            "⚫ 검정 13% / 4.5배\n"
+            "🟢 초록 9% / 6배"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="보급",
+        value=(
+            "빈 상자 38% / 0배\n"
+            "1뚝 24% / 0.8배\n"
+            "2뚝 17% / 1.0배\n"
+            "3뚝 10% / 1.6배\n"
+            "보급 총기 획득 8% / 2.8배\n"
+            "풀세트 보급 대박 3% / 4.5배"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="몰빵게임",
+        value=(
+            f"참가비 `{format_money(ALL_IN_COST)}`\n"
+            "하루 동안 참가한 사람 중 1명 무작위 추첨\n"
+            "그날 참가자들이 낸 금액 전부를 당첨자 1명이 가져갑니다."
+        ),
+        inline=False,
+    )
+
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="족보", description="최근 게임 결과를 확인합니다.")
+async def game_history_command(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="📜 족보",
+        description="확인할 게임을 선택해주세요.",
+        color=0x5865F2,
+    )
+    await interaction.response.send_message(
+        embed=embed,
+        view=HistoryGameSelectView(interaction.guild.id),
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="몰빵참여", description="오늘의 몰빵게임에 참여합니다.")
+async def join_all_in_game(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    today = get_today_kst_date_str()
+
+    if has_all_in_entry(today, interaction.guild.id, interaction.user.id):
+        await interaction.response.send_message("오늘은 이미 몰빵게임에 참여했습니다.", ephemeral=True)
+        return
+
+    if not can_afford(interaction.user.id, ALL_IN_COST):
+        await interaction.response.send_message(
+            f"몰빵게임 참가비 `{format_money(ALL_IN_COST)}`이 부족합니다.",
+            ephemeral=True,
+        )
+        return
+
+    add_balance(interaction.user.id, -ALL_IN_COST)
+    add_all_in_entry(today, interaction.guild.id, interaction.user.id, ALL_IN_COST)
+
+    entries = get_all_in_entries(today, interaction.guild.id)
+    pool_amount = sum(amount for _, amount in entries)
+
+    await interaction.response.send_message(
+        f"{interaction.user.mention}님이 오늘의 몰빵게임에 참여했습니다.\n"
+        f"참가비: `{format_money(ALL_IN_COST)}`\n"
+        f"현재 참가자 수: `{len(entries)}명`\n"
+        f"현재 누적 상금: `{format_money(pool_amount)}`"
+    )
+
+
+@bot.tree.command(name="돈지급내역", description="특정 인원의 돈지급 내역을 확인합니다.")
+@app_commands.rename(member="인원")
+@app_commands.describe(member="조회할 인원")
+async def money_grant_history(interaction: discord.Interaction, member: discord.Member):
+    rows = get_money_grant_logs(interaction.guild.id, member.id, 20)
+
+    if not rows:
+        await interaction.response.send_message("지급 내역이 없습니다.", ephemeral=True)
+        return
+
+    lines = []
+    for giver_user_id, amount, created_at in rows:
+        giver = interaction.guild.get_member(int(giver_user_id))
+        giver_name = giver.display_name if giver else f"알 수 없는 유저 ({giver_user_id})"
+        try:
+            created_text = dt_from_db(created_at).strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            created_text = created_at
+        lines.append(f"[{created_text}] {giver_name} -> {format_money(amount)}")
+
+    embed = discord.Embed(
+        title=f"💸 {member.display_name}님의 돈지급 내역",
+        description="\n".join(lines),
+        color=0xF1C40F,
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @bot.event
@@ -2548,6 +2982,68 @@ async def birthday_loop():
             except Exception:
                 pass
 
+@tasks.loop(minutes=1)
+async def all_in_game_loop():
+    today_date = get_today_kst_date_str()
+
+    for guild in bot.guilds:
+        pending_dates = get_pending_all_in_dates(guild.id, today_date)
+        if not pending_dates:
+            continue
+
+        for target_date in pending_dates:
+            rows = get_all_in_entries(target_date, guild.id)
+            if not rows:
+                continue
+
+            valid_members = []
+            total_amount = 0
+
+            for user_id, amount in rows:
+                total_amount += amount
+
+                member = guild.get_member(int(user_id))
+                if member is not None:
+                    valid_members.append(member)
+
+            if total_amount <= 0:
+                clear_all_in_entries(target_date, guild.id)
+                continue
+
+            if not valid_members:
+                clear_all_in_entries(target_date, guild.id)
+                continue
+
+            winner = random.choice(valid_members)
+            add_balance(winner.id, total_amount)
+
+            recruit_channel_id = get_guild_setting_channel_id(guild.id, "recruit_channel_id")
+            target_channel = guild.get_channel(recruit_channel_id) if recruit_channel_id else None
+
+            result_text = (
+                f"{target_date} - 참가자 {len(rows)}명 / "
+                f"유효 참가자 {len(valid_members)}명 / "
+                f"당첨자 {winner.display_name} / "
+                f"총 상금 {format_money(total_amount)}"
+            )
+            add_game_history(guild.id, ALL_IN_GAME_NAME, result_text)
+
+            if target_channel is not None:
+                embed = discord.Embed(
+                    title="💥 몰빵게임 결과",
+                    description=(
+                        f"날짜: `{target_date}`\n"
+                        f"전체 참가자 수: `{len(rows)}명`\n"
+                        f"추첨 가능 인원: `{len(valid_members)}명`\n"
+                        f"총 상금: `{format_money(total_amount)}`\n\n"
+                        f"🏆 당첨자: {winner.mention}"
+                    ),
+                    color=0xF1C40F,
+                )
+                await target_channel.send(embed=embed)
+
+            clear_all_in_entries(target_date, guild.id)
+
 
 @bot.event
 async def on_ready():
@@ -2565,49 +3061,8 @@ async def on_ready():
     bot.add_view(UpgradePanelView())
     bot.add_view(TimeRoleView())
     bot.add_view(InquiryPanelView())
-    
-    await restore_nickname_panels()    
 
-async def restore_nickname_panels():
-    rows = get_all_nickname_panels()
-
-    for guild_id, channel_id, message_id, menu_name, prefixes_raw in rows:
-        try:
-            guild_id_int = int(guild_id)
-            channel_id_int = int(channel_id)
-            message_id_int = int(message_id)
-            prefixes = [item for item in prefixes_raw.split("|") if item]
-        except ValueError:
-            delete_nickname_panel(int(message_id))
-            continue
-
-        guild = bot.get_guild(guild_id_int)
-        if guild is None:
-            continue
-
-        channel = guild.get_channel(channel_id_int)
-        if channel is None:
-            continue
-
-        try:
-            await channel.fetch_message(message_id_int)
-        except discord.NotFound:
-            delete_nickname_panel(message_id_int)
-            continue
-        except (discord.Forbidden, discord.HTTPException):
-            continue
-
-        bot.add_view(
-            NicknamePrefixView(
-                guild_id_int,
-                channel_id_int,
-                message_id_int,
-                prefixes,
-            ),
-            message_id=message_id_int,
-        )
-
-
+    await restore_nickname_panels()
     await backfill_probation_members()
 
     if not birthday_loop.is_running():
@@ -2615,6 +3070,9 @@ async def restore_nickname_panels():
 
     if not probation_role_check_loop.is_running():
         probation_role_check_loop.start()
+
+    if not all_in_game_loop.is_running():
+        all_in_game_loop.start()
 
     print("멀티서버 대응 마리봇 실행 완료")
 
