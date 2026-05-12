@@ -2537,11 +2537,12 @@ async def slot(interaction: discord.Interaction, amount: int):
     symbols = ["🍒", "🍋", "🍉", "⭐", "💎", "7️⃣"]
 
     first = random.choice(symbols)
-    second = first if random.random() < 0.18 else random.choice(symbols)
-    third = first if random.random() < 0.10 else random.choice(symbols)
+    second = first if random.random() < 0.05 else random.choice(symbols)
+    third = first if random.random() < 0.05 else random.choice(symbols)
     result = [first, second, third]
 
     multiplier = 0
+
     if len(set(result)) == 1:
         if result[0] == "7️⃣":
             multiplier = 12
@@ -2549,6 +2550,17 @@ async def slot(interaction: discord.Interaction, amount: int):
             multiplier = 8
         else:
             multiplier = 6
+    elif len(set(result)) == 2:
+        counts = {symbol: result.count(symbol) for symbol in set(result)}
+        pair_symbol = max(counts, key=counts.get)
+
+        if counts[pair_symbol] == 2:
+            if pair_symbol == "7️⃣":
+                multiplier = 1.6
+            elif pair_symbol == "💎":
+                multiplier = 1.3
+            else:
+                multiplier = 1.1
 
     winnings = int(amount * multiplier)
     if winnings > 0:
@@ -2559,9 +2571,12 @@ async def slot(interaction: discord.Interaction, amount: int):
     if multiplier == 0:
         desc = f"`{' | '.join(result)}`\n\n아쉽네요... `{format_money(amount)}`을 잃었습니다.\n현재 잔액: `{format_money(balance_now)}`"
         color = 0xE74C3C
-    else:
+    elif len(set(result)) == 1:
         desc = f"`{' | '.join(result)}`\n\n대박! `{multiplier}배` 당첨으로 `{format_money(winnings)}`을 받았습니다.\n현재 잔액: `{format_money(balance_now)}`"
         color = 0x2ECC71
+    else:
+        desc = f"`{' | '.join(result)}`\n\n2개 일치! `{multiplier}배` 보상으로 `{format_money(winnings)}`을 받았습니다.\n현재 잔액: `{format_money(balance_now)}`"
+        color = 0x3498DB
 
     add_game_history(
         interaction.guild.id,
@@ -2571,6 +2586,7 @@ async def slot(interaction: discord.Interaction, amount: int):
 
     embed = discord.Embed(title="🎰 슬롯 결과", description=desc, color=color)
     await interaction.response.send_message(embed=embed)
+
 
 
 @bot.tree.command(name="동전", description="입력한 금액으로 동전 앞뒤 맞추기를 합니다.")
@@ -2830,14 +2846,19 @@ async def probability_table(interaction: discord.Interaction):
     embed.add_field(
         name="슬롯",
         value=(
-            "아무 3개 동일: 약 7.92%\n"
-            "7️⃣ 7️⃣ 7️⃣ : 약 1.32% / 12배\n"
-            "💎 💎 💎 : 약 1.32% / 8배\n"
-            "기타 3개 동일 : 각각 약 1.32% / 6배\n"
-            "그 외 : 약 92.08% / 꽝"
+            "3개 동일: 약 4.34%\n"
+            "7️⃣ 7️⃣ 7️⃣ : 약 0.72% / 12배\n"
+            "💎 💎 💎 : 약 0.72% / 8배\n"
+            "기타 3개 동일 : 각각 약 0.72% / 6배\n\n"
+            "정확히 2개 일치: 약 45.52%\n"
+            "7️⃣ 7️⃣ : 약 7.59% / 1.6배\n"
+            "💎 💎 : 약 7.59% / 1.3배\n"
+            "기타 2개 일치 : 각각 약 7.59% / 1.1배\n\n"
+            "완전 꽝 : 약 50.14%"
         ),
         inline=False,
     )
+
 
     embed.add_field(
         name="동전",
