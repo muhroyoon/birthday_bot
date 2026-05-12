@@ -47,6 +47,27 @@ MAX_PLAYERS = 4
 ALL_IN_COST = 10000
 ALL_IN_GAME_NAME = "몰빵게임"
 GAME_HISTORY_LIMIT = 10
+INITIAL_CREDIT_GRADE = 5
+LOAN_REPAYMENT_DAYS = 2
+
+LOAN_GRADE_LIMITS = {
+    1: 10_000_000,
+    2: 8_000_000,
+    3: 6_000_000,
+    4: 4_000_000,
+    5: 2_000_000,
+    6: 1_000_000,
+}
+
+LOAN_GRADE_INTEREST = {
+    1: 10,
+    2: 15,
+    3: 20,
+    4: 25,
+    5: 30,
+    6: 35,
+}
+
 
 TIME_SLOT_CHOICES = ["morning", "afternoon", "evening", "night", "dawn"]
 TIME_SLOT_LABELS = {
@@ -213,6 +234,34 @@ cursor.execute(
         giver_user_id TEXT NOT NULL,
         amount INTEGER NOT NULL,
         created_at TEXT NOT NULL
+    )
+    """
+)
+
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS credit_profiles(
+        user_id TEXT PRIMARY KEY,
+        grade INTEGER NOT NULL DEFAULT 5,
+        is_blacklisted INTEGER NOT NULL DEFAULT 0
+    )
+    """
+)
+
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS loans(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        principal INTEGER NOT NULL,
+        interest_rate INTEGER NOT NULL,
+        total_repayment INTEGER NOT NULL,
+        borrowed_at TEXT NOT NULL,
+        due_at TEXT NOT NULL,
+        repaid_at TEXT,
+        status TEXT NOT NULL DEFAULT 'active',
+        delinquency_processed INTEGER NOT NULL DEFAULT 0
     )
     """
 )
@@ -676,6 +725,180 @@ def clear_all_in_entries(entry_date: str, guild_id: int):
         (entry_date, str(guild_id)),
     )
     conn.commit()
+
+def ensure_credit_profile(user_id: int):
+    cursor.execute(
+        """
+        INSERT OR IGNORE INTO credit_profiles(user_id, grade, is_blacklisted)
+        VALUES (?, ?, 0)
+        """,
+        (str(user_id), INITIAL_CREDIT_GRADE),
+    )
+    conn.commit()
+
+
+def get_credit_profile(user_id: int):
+    ensure_credit_profile(user_id)
+    cursor.execute(
+        "SELECT grade, is_blacklisted FROM credit_profiles WHERE user_id=?",
+        (str(user_id),),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return {"grade": INITIAL_CREDIT_GRADE, "is_blacklisted": False}
+
+    return {
+        "grade": int(row[0]),
+        "is_blacklisted": bool(row[1]),
+    }
+
+
+def set_credit_grade(user_id: int, grade: int):
+    ensure_credit_profile(user_id)
+    grade = max(1, min(6, grade))
+    cursor.execute(
+        "UPDATE credit_profiles SET grade=? WHERE user_id=?",
+        (grade, str(user_id)),
+    )
+    conn.commit()
+
+
+def set_credit_blacklisted(user_id: int, is_blacklisted: bool):
+    ensure_credit_profile(user_id)
+    cursor.execute(
+        "UPDATE credit_profiles SET is_blacklisted=? WHERE user_id=?",
+        (1 if is_blacklisted else 0, str(user_id)),
+    )
+    conn.commit()
+
+
+def upgrade_credit_grade(user_id: int):
+    profile = get_credit_profile(user_id)
+
+    if profile["is_blacklisted"]:
+        # 신용불량자 해제 시 6등급으로 복귀
+        set_credit_blacklisted(user_id, False)
+        set_credit_grade(user_id, 6)
+        return
+
+    set_credit_grade(user_id, profile["grade"] - 1)
+
+
+def downgrade_credit_grade(user_id: int):
+    profile = get_credit_profile(user_id)
+
+    if profile["grade"] >= 6:
+        set_credit_grade(user_id, 6)
+        set_credit_blacklisted(user_id, True)
+        return
+
+    set_credit_grade(user_id, profile["grade"] + 1)
+
+
+def get_credit_grade_text(user_id: int) -> str:
+    profile = get_credit_profile(user_id)
+    if profile["is_blacklisted"]:
+        return "신용불량자"
+    return f"{profile['grade']}등급"
+
+
+def get_loan_limit_by_grade(grade: int) -> int:
+    return LOAN_GRADE_LIMITS.get(grade, LOAN_GRADE_LIMITS[6])
+
+
+def get_loan_interest_by_grade(grade: int) -> int:
+    return LOAN_GRADE_INTEREST.get(grade, LOAN_GRADE_INTEREST[6])
+
+
+def calculate_total_repayment(principal: int, interest_rate: int) -> int:
+    return int(principal * (100 + interest_rate) / 100)
+
+
+def get_active_loan(user_id: int):
+    cursor.execute(
+        """
+        SELECT id, guild_id, principal, interest_rate, total_repayment, borrowed_at, due_at, status
+        FROM loans
+        WHERE user_id=? AND status IN ('active', 'overdue')
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (str(user_id),),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+
+    return {
+        "id": row[0],
+        "guild_id": row[1],
+        "principal": row[2],
+        "interest_rate": row[3],
+        "total_repayment": row[4],
+        "borrowed_at": row[5],
+        "due_at": row[6],
+        "status": row[7],
+    }
+
+
+def create_loan(guild_id: int, user_id: int, principal: int, interest_rate: int, total_repayment: int, borrowed_at: datetime, due_at: datetime):
+    cursor.execute(
+        """
+        INSERT INTO loans(
+            guild_id, user_id, principal, interest_rate, total_repayment,
+            borrowed_at, due_at, status, delinquency_processed
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 0)
+        """,
+        (
+            str(guild_id),
+            str(user_id),
+            principal,
+            interest_rate,
+            total_repayment,
+            dt_to_db(borrowed_at),
+            dt_to_db(due_at),
+        ),
+    )
+    conn.commit()
+
+
+def repay_loan(loan_id: int):
+    cursor.execute(
+        """
+        UPDATE loans
+        SET status='repaid', repaid_at=?, delinquency_processed=1
+        WHERE id=?
+        """,
+        (dt_to_db(get_kst_now()), loan_id),
+    )
+    conn.commit()
+
+
+def mark_loan_overdue(loan_id: int):
+    cursor.execute(
+        """
+        UPDATE loans
+        SET status='overdue', delinquency_processed=1
+        WHERE id=?
+        """,
+        (loan_id,),
+    )
+    conn.commit()
+
+
+def get_due_loans(now: datetime):
+    cursor.execute(
+        """
+        SELECT id, user_id, due_at
+        FROM loans
+        WHERE status='active' AND delinquency_processed=0 AND due_at<=?
+        ORDER BY id ASC
+        """,
+        (dt_to_db(now),),
+    )
+    return cursor.fetchall()
+
 
 def get_pending_all_in_dates(guild_id: int, today_date: str):
     cursor.execute(
@@ -2734,6 +2957,132 @@ async def money_grant_history(interaction: discord.Interaction, member: discord.
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
+@bot.tree.command(name="일수", description="현재 신용등급 기준으로 대출을 받습니다.")
+@app_commands.rename(amount="금액")
+async def loan_money(interaction: discord.Interaction, amount: int):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    if amount <= 0:
+        await interaction.response.send_message("대출 금액은 1원 이상이어야 합니다.", ephemeral=True)
+        return
+
+    profile = get_credit_profile(interaction.user.id)
+    active_loan = get_active_loan(interaction.user.id)
+
+    if active_loan is not None:
+        await interaction.response.send_message(
+            "이미 상환되지 않은 대출이 있습니다. `/중도상환`으로 먼저 갚아주세요.",
+            ephemeral=True,
+        )
+        return
+
+    if profile["is_blacklisted"]:
+        await interaction.response.send_message(
+            "현재 신용불량자 상태입니다. 기존 대출을 모두 상환하기 전까지 새 대출이 불가능합니다.",
+            ephemeral=True,
+        )
+        return
+
+    grade = profile["grade"]
+    max_amount = get_loan_limit_by_grade(grade)
+    interest_rate = get_loan_interest_by_grade(grade)
+
+    if amount > max_amount:
+        await interaction.response.send_message(
+            f"현재 {grade}등급의 최대 대출 가능 금액은 `{format_money(max_amount)}`입니다.",
+            ephemeral=True,
+        )
+        return
+
+    borrowed_at = get_kst_now()
+    due_at = borrowed_at + timedelta(days=LOAN_REPAYMENT_DAYS)
+    total_repayment = calculate_total_repayment(amount, interest_rate)
+
+    add_balance(interaction.user.id, amount)
+    create_loan(
+        interaction.guild.id,
+        interaction.user.id,
+        amount,
+        interest_rate,
+        total_repayment,
+        borrowed_at,
+        due_at,
+    )
+
+    embed = discord.Embed(title="💳 대출 실행 완료", color=0x3498DB)
+    embed.add_field(name="현재 신용등급", value=f"{grade}등급", inline=False)
+    embed.add_field(name="대출 금액", value=format_money(amount), inline=False)
+    embed.add_field(name="이자율", value=f"{interest_rate}%", inline=False)
+    embed.add_field(name="총 상환 금액", value=format_money(total_repayment), inline=False)
+    embed.add_field(name="상환 기한", value=due_at.strftime("%Y-%m-%d %H:%M:%S KST"), inline=False)
+    embed.add_field(name="현재 잔액", value=format_money(get_balance(interaction.user.id)), inline=False)
+
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="중도상환", description="현재 대출을 즉시 전액 상환합니다.")
+async def repay_loan_command(interaction: discord.Interaction):
+    active_loan = get_active_loan(interaction.user.id)
+    if active_loan is None:
+        await interaction.response.send_message("현재 상환할 대출이 없습니다.", ephemeral=True)
+        return
+
+    repayment_amount = active_loan["total_repayment"]
+    if not can_afford(interaction.user.id, repayment_amount):
+        await interaction.response.send_message(
+            f"상환 금액 `{format_money(repayment_amount)}`이 부족합니다.",
+            ephemeral=True,
+        )
+        return
+
+    add_balance(interaction.user.id, -repayment_amount)
+    repay_loan(active_loan["id"])
+    upgrade_credit_grade(interaction.user.id)
+
+    embed = discord.Embed(title="✅ 대출 상환 완료", color=0x2ECC71)
+    embed.add_field(name="상환 금액", value=format_money(repayment_amount), inline=False)
+    embed.add_field(name="현재 신용등급", value=get_credit_grade_text(interaction.user.id), inline=False)
+    embed.add_field(name="현재 잔액", value=format_money(get_balance(interaction.user.id)), inline=False)
+
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="내신용", description="현재 신용등급과 대출 상태를 확인합니다.")
+async def my_credit(interaction: discord.Interaction):
+    profile = get_credit_profile(interaction.user.id)
+    active_loan = get_active_loan(interaction.user.id)
+
+    if profile["is_blacklisted"]:
+        grade_text = "신용불량자"
+        max_amount_text = "대출 불가"
+        interest_text = "대출 불가"
+    else:
+        grade_text = f"{profile['grade']}등급"
+        max_amount_text = format_money(get_loan_limit_by_grade(profile["grade"]))
+        interest_text = f"{get_loan_interest_by_grade(profile['grade'])}%"
+
+    embed = discord.Embed(title="📄 내 신용 정보", color=0x5865F2)
+    embed.add_field(name="현재 신용등급", value=grade_text, inline=False)
+    embed.add_field(name="최대 대출 가능 금액", value=max_amount_text, inline=False)
+    embed.add_field(name="현재 대출 이자율", value=interest_text, inline=False)
+
+    if active_loan is None:
+        embed.add_field(name="현재 대출 상태", value="진행 중인 대출 없음", inline=False)
+    else:
+        embed.add_field(name="현재 대출 상태", value=active_loan["status"], inline=False)
+        embed.add_field(name="대출 원금", value=format_money(active_loan["principal"]), inline=False)
+        embed.add_field(name="총 상환 금액", value=format_money(active_loan["total_repayment"]), inline=False)
+        try:
+            due_text = dt_from_db(active_loan["due_at"]).strftime("%Y-%m-%d %H:%M:%S KST")
+        except Exception:
+            due_text = active_loan["due_at"]
+        embed.add_field(name="상환 기한", value=due_text, inline=False)
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 
 @bot.event
 async def on_member_update(before: discord.Member, after: discord.Member):
@@ -3052,6 +3401,16 @@ async def all_in_game_loop():
 
             clear_all_in_entries(target_date, guild.id)
 
+@tasks.loop(minutes=1)
+async def loan_due_check_loop():
+    now = get_kst_now()
+    rows = get_due_loans(now)
+
+    for loan_id, user_id, due_at in rows:
+        mark_loan_overdue(loan_id)
+        downgrade_credit_grade(int(user_id))
+
+
 
 @bot.event
 async def on_ready():
@@ -3081,6 +3440,10 @@ async def on_ready():
 
     if not all_in_game_loop.is_running():
         all_in_game_loop.start()
+        
+    if not loan_due_check_loop.is_running():
+        loan_due_check_loop.start()
+
 
     print("멀티서버 대응 마리봇 실행 완료")
 
