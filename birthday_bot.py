@@ -1806,6 +1806,14 @@ async def set_recruit_channel(interaction: discord.Interaction):
     set_guild_setting(interaction.guild.id, "recruit_channel_id", str(interaction.channel.id))
     await interaction.response.send_message(f"구인 채널을 {interaction.channel.mention} 으로 설정했습니다.", ephemeral=True)
 
+@bot.tree.command(name="세팅몰빵결과채널", description="현재 채널을 몰빵게임 결과 채널로 설정합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def set_all_in_result_channel(interaction: discord.Interaction):
+    set_guild_setting(interaction.guild.id, "all_in_result_channel_id", str(interaction.channel.id))
+    await interaction.response.send_message(
+        f"몰빵게임 결과 채널을 {interaction.channel.mention} 으로 설정했습니다.",
+        ephemeral=True,
+    )
 
 @bot.tree.command(name="세팅가입안내", description="현재 채널을 가입 안내 채널로 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
@@ -3017,8 +3025,8 @@ async def all_in_game_loop():
             winner = random.choice(valid_members)
             add_balance(winner.id, total_amount)
 
-            recruit_channel_id = get_guild_setting_channel_id(guild.id, "recruit_channel_id")
-            target_channel = guild.get_channel(recruit_channel_id) if recruit_channel_id else None
+            result_channel_id = get_guild_setting_channel_id(guild.id, "all_in_result_channel_id")
+            target_channel = guild.get_channel(result_channel_id) if result_channel_id else None
 
             result_text = (
                 f"{target_date} - 참가자 {len(rows)}명 / "
