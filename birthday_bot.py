@@ -1122,16 +1122,17 @@ class RouletteView(discord.ui.View):
 
     def get_payout(self, choice: str) -> int:
         if choice == "빨강":
-            return int(self.bet_amount * 1.5)
+            return int(self.bet_amount * 2.5)
         if choice == "노랑":
-            return self.bet_amount * 2
+            return int(self.bet_amount * 3.4)
         if choice == "파랑":
-            return self.bet_amount * 3
+            return int(self.bet_amount * 4.4)
         if choice == "검정":
-            return int(self.bet_amount * 4.5)
+            return int(self.bet_amount * 6.5)
         if choice == "초록":
-            return self.bet_amount * 6
+            return int(self.bet_amount * 9.5)
         return 0
+
 
     async def finish(self, interaction: discord.Interaction, choice: str):
         if self.resolved:
@@ -2313,20 +2314,20 @@ async def slot(interaction: discord.Interaction, amount: int):
     symbols = ["🍒", "🍋", "🍉", "⭐", "💎", "7️⃣"]
 
     first = random.choice(symbols)
-    second = first if random.random() < 0.10 else random.choice(symbols)
-    third = first if random.random() < 0.05 else random.choice(symbols)
+    second = first if random.random() < 0.18 else random.choice(symbols)
+    third = first if random.random() < 0.10 else random.choice(symbols)
     result = [first, second, third]
 
     multiplier = 0
     if len(set(result)) == 1:
         if result[0] == "7️⃣":
-            multiplier = 6
+            multiplier = 12
         elif result[0] == "💎":
-            multiplier = 4
+            multiplier = 8
         else:
-            multiplier = 3
+            multiplier = 6
 
-    winnings = amount * multiplier
+    winnings = int(amount * multiplier)
     if winnings > 0:
         add_balance(interaction.user.id, winnings)
 
@@ -2347,7 +2348,6 @@ async def slot(interaction: discord.Interaction, amount: int):
 
     embed = discord.Embed(title="🎰 슬롯 결과", description=desc, color=color)
     await interaction.response.send_message(embed=embed)
-    
 
 
 @bot.tree.command(name="동전", description="입력한 금액으로 동전 앞뒤 맞추기를 합니다.")
@@ -2393,11 +2393,11 @@ async def roulette(interaction: discord.Interaction, amount: int):
         description=(
             f"배팅 금액: `{format_money(amount)}`\n\n"
             "색상을 선택하세요.\n\n"
-            "🔴 빨강: 당첨 시 1.5배\n"
-            "🟡 노랑: 당첨 시 2배\n"
-            "🔵 파랑: 당첨 시 3배\n"
-            "⚫ 검정: 당첨 시 4.5배\n"
-            "🟢 초록: 당첨 시 6배\n\n"
+            "🔴 빨강: 당첨 시 2.5배\n"
+            "🟡 노랑: 당첨 시 3.4배\n"
+            "🔵 파랑: 당첨 시 4.4배\n"
+            "⚫ 검정: 당첨 시 6.5배\n"
+            "🟢 초록: 당첨 시 9.5배\n\n"
             "빨강은 가장 안전하고,\n"
             "점점 확률은 낮아지지만 배당은 높아집니다.\n"
         ),
@@ -2607,11 +2607,11 @@ async def probability_table(interaction: discord.Interaction):
     embed.add_field(
         name="슬롯",
         value=(
-            "3개 동일 시 당첨\n"
-            "7️⃣ 7️⃣ 7️⃣ : 6배\n"
-            "💎 💎 💎 : 4배\n"
-            "기타 3개 동일 : 3배\n"
-            "그 외 : 꽝"
+            "아무 3개 동일: 약 7.92%\n"
+            "7️⃣ 7️⃣ 7️⃣ : 약 1.32% / 12배\n"
+            "💎 💎 💎 : 약 1.32% / 8배\n"
+            "기타 3개 동일 : 각각 약 1.32% / 6배\n"
+            "그 외 : 약 92.08% / 꽝"
         ),
         inline=False,
     )
@@ -2625,11 +2625,11 @@ async def probability_table(interaction: discord.Interaction):
     embed.add_field(
         name="룰렛",
         value=(
-            "🔴 빨강 34% / 1.5배\n"
-            "🟡 노랑 25% / 2배\n"
-            "🔵 파랑 19% / 3배\n"
-            "⚫ 검정 13% / 4.5배\n"
-            "🟢 초록 9% / 6배"
+            "🔴 빨강 34% / 2.5배\n"
+            "🟡 노랑 25% / 3.4배\n"
+            "🔵 파랑 19% / 4.4배\n"
+            "⚫ 검정 13% / 6.5배\n"
+            "🟢 초록 9% / 9.5배"
         ),
         inline=False,
     )
