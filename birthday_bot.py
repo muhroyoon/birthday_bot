@@ -1139,17 +1139,17 @@ def roll_upgrade_result(level: int) -> str:
     )[0]
 
 def build_upgrade_embed(guild_id: int, user_id: int) -> discord.Embed:
-    ensure_base_weapon(guild_id, user_id)
-    inventory = get_weapon_inventory(guild_id, user_id)
+        ensure_base_weapon(guild_id, user_id)
+        inventory = get_weapon_inventory(guild_id, user_id)
 
-    current_level = inventory["weapon_level"]
-    current_name = get_weapon_name(current_level)
-    protection_count = inventory["protection_count"]
+        current_level = inventory["weapon_level"]
+        current_name = get_weapon_name(current_level)
+        protection_count = inventory["protection_count"]
 
-    embed = discord.Embed(title="🔧 무기 강화", color=0x5865F2)
-    embed.add_field(name="현재 무기", value=f"{current_level}강 {current_name}", inline=False)
-    embed.add_field(name="보유 보호권", value=f"{protection_count}장", inline=False)
-    embed.add_field(name="현재 잔액", value=format_money(get_balance(user_id)), inline=False)
+        embed = discord.Embed(title="🔧 무기 강화", color=0x5865F2)
+        embed.add_field(name="현재 무기", value=f"{current_level}강 {current_name}", inline=False)
+        embed.add_field(name="보유 보호권", value=f"{protection_count}장", inline=False)
+        embed.add_field(name="현재 잔액", value=format_money(get_balance(user_id)), inline=False)
 
     if current_level >= 21:
         embed.add_field(name="강화 상태", value="최대 강화 단계입니다.", inline=False)
