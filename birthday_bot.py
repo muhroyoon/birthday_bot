@@ -1139,31 +1139,67 @@ def roll_upgrade_result(level: int) -> str:
     )[0]
 
 def build_upgrade_embed(guild_id: int, user_id: int) -> discord.Embed:
-        ensure_base_weapon(guild_id, user_id)
-        inventory = get_weapon_inventory(guild_id, user_id)
+    ensure_base_weapon(guild_id, user_id)
+    inventory = get_weapon_inventory(guild_id, user_id)
 
-        current_level = inventory["weapon_level"]
-        current_name = get_weapon_name(current_level)
-        protection_count = inventory["protection_count"]
+    current_level = inventory["weapon_level"]
+    current_name = get_weapon_name(current_level)
+    protection_count = inventory["protection_count"]
 
-        embed = discord.Embed(title="🔧 무기 강화", color=0x5865F2)
-        embed.add_field(name="현재 무기", value=f"{current_level}강 {current_name}", inline=False)
-        embed.add_field(name="보유 보호권", value=f"{protection_count}장", inline=False)
-        embed.add_field(name="현재 잔액", value=format_money(get_balance(user_id)), inline=False)
+    embed = discord.Embed(title="🔧 무기 강화", color=0x5865F2)
+
+    embed.add_field(
+        name="현재 무기",
+        value=f"{current_level}강 {current_name}",
+        inline=False
+    )
+
+    embed.add_field(
+        name="보유 보호권",
+        value=f"{protection_count}장",
+        inline=False
+    )
+
+    embed.add_field(
+        name="현재 잔액",
+        value=format_money(get_balance(user_id)),
+        inline=False
+    )
 
     if current_level >= 21:
-        embed.add_field(name="강화 상태", value="최대 강화 단계입니다.", inline=False)
+        embed.add_field(
+            name="강화 상태",
+            value="최대 강화 단계입니다.",
+            inline=False
+        )
         return embed
 
     next_level = current_level + 1
     next_name = get_weapon_name(next_level)
+
     upgrade_cost = get_upgrade_cost(current_level)
     protection_cost = get_protection_cost(current_level)
+
     rates = WEAPON_UPGRADE_RATES[current_level]
 
-    embed.add_field(name="다음 무기", value=f"{next_level}강 {next_name}", inline=False)
-    embed.add_field(name="강화 비용", value=format_money(upgrade_cost), inline=False)
-    embed.add_field(name="보호권 가격", value=format_money(protection_cost), inline=False)
+    embed.add_field(
+        name="다음 무기",
+        value=f"{next_level}강 {next_name}",
+        inline=False
+    )
+
+    embed.add_field(
+        name="강화 비용",
+        value=format_money(upgrade_cost),
+        inline=False
+    )
+
+    embed.add_field(
+        name="보호권 가격",
+        value=format_money(protection_cost),
+        inline=False
+    )
+
     embed.add_field(
         name="강화 확률",
         value=(
@@ -1174,11 +1210,13 @@ def build_upgrade_embed(guild_id: int, user_id: int) -> discord.Embed:
         ),
         inline=False,
     )
+
     embed.add_field(
         name="안내",
         value="보호권은 강화 성공을 보장하지 않으며, 실패 시 하락과 파괴를 자동으로 방지합니다.",
         inline=False,
     )
+
     return embed
 
 
