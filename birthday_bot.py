@@ -1038,7 +1038,7 @@ def get_due_loans(now: datetime):
     )
     return cursor.fetchall()
 
-    def ensure_weapon_inventory(guild_id: int, user_id: int):
+def ensure_weapon_inventory(guild_id: int, user_id: int):
     cursor.execute(
         """
         INSERT OR IGNORE INTO weapon_inventory(guild_id, user_id, weapon_level, protection_count)
