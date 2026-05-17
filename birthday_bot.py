@@ -159,17 +159,17 @@ WEAPON_SELL_PRICES = {
     8: 125000,
     9: 180000,
     10: 255000,
-    11: 380000,
-    12: 560000,
-    13: 820000,
-    14: 1180000,
-    15: 1700000,
-    16: 2450000,
-    17: 3500000,
-    18: 5000000,
-    19: 7100000,
-    20: 10000000,
-    21: 14000000,
+    11: 360000,
+    12: 620000,
+    13: 900000,
+    14: 1280000,
+    15: 1800000,
+    16: 2500000,
+    17: 3450000,
+    18: 4750000,
+    19: 6500000,
+    20: 8900000,
+    21: 12100000,
 }
 
 WEAPON_UPGRADE_RATES = {
@@ -3847,7 +3847,7 @@ async def weapon_info_table(interaction: discord.Interaction):
         for level in range(start, end + 1):
             weapon_name = get_weapon_name(level)
             protection_cost = WEAPON_PROTECTION_COSTS.get(level)
-            sell_price = get_weapon_sell_price(level)
+            sell_price = WEAPON_SELL_PRICES.get(level, 0)
 
             if level <= 20:
                 cost = WEAPON_UPGRADE_COSTS.get(level)
