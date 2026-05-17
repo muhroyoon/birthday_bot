@@ -1734,14 +1734,12 @@ class RouletteView(discord.ui.View):
             return False
         return True
 
-def spin_result(self) -> str:
-    return random.choices(
-        ["빨강", "노랑", "파랑", "검정", "초록"],
-        weights=[35, 25, 19, 12, 9],
-        k=1,
-    )[0]
-
-
+    def spin_result(self) -> str:
+        return random.choices(
+            ["빨강", "노랑", "파랑", "검정", "초록"],
+            weights=[35, 25, 19, 12, 9],
+            k=1,
+        )[0]
 
     def get_payout(self, choice: str) -> int:
         if choice == "빨강":
@@ -1755,7 +1753,6 @@ def spin_result(self) -> str:
         if choice == "초록":
             return int(self.bet_amount * 9.5)
         return 0
-
 
     async def finish(self, interaction: discord.Interaction, choice: str):
         if self.resolved:
@@ -1790,7 +1787,6 @@ def spin_result(self) -> str:
 
         await interaction.response.edit_message(embed=embed, view=self)
 
-
     async def on_timeout(self):
         if self.resolved:
             return
@@ -1818,6 +1814,7 @@ def spin_result(self) -> str:
     @discord.ui.button(label="🟢 초록", style=discord.ButtonStyle.success)
     async def green(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.finish(interaction, "초록")
+
 
 
 class SupplyDropView(discord.ui.View):
