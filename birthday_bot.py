@@ -1734,12 +1734,13 @@ class RouletteView(discord.ui.View):
             return False
         return True
 
-    def spin_result(self) -> str:
+def spin_result(self) -> str:
     return random.choices(
         ["빨강", "노랑", "파랑", "검정", "초록"],
         weights=[35, 25, 19, 12, 9],
         k=1,
     )[0]
+
 
 
     def get_payout(self, choice: str) -> int:
@@ -3597,7 +3598,7 @@ async def probability_table(interaction: discord.Interaction):
         inline=False,
     )
 
-    eembed.add_field(
+    embed.add_field(
         name="룰렛",
         value=(
             "🔴 빨강 35% / 2.5배\n"
