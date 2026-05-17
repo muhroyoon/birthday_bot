@@ -3830,12 +3830,12 @@ async def weapon_status(interaction: discord.Interaction):
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-@bot.tree.command(name="강화확률표", description="1강부터 21강까지 강화 확률, 비용, 보호권 가격을 확인합니다.")
-async def weapon_upgrade_table(interaction: discord.Interaction):
+@bot.tree.command(name="강화정보", description="1강부터 21강까지 강화 비용, 확률, 보호권 가격, 판매 가격을 확인합니다.")
+async def weapon_info_table(interaction: discord.Interaction):
     ranges = [
-        (1, 7, "🔧 강화 확률표 (1강~7강)", 0x3498DB),
-        (8, 14, "🔧 강화 확률표 (8강~14강)", 0x5865F2),
-        (15, 21, "🔧 강화 확률표 (15강~21강)", 0x9B59B6),
+        (1, 7, "🔧 강화 정보표 (1강~7강)", 0x3498DB),
+        (8, 14, "🔧 강화 정보표 (8강~14강)", 0x5865F2),
+        (15, 21, "🔧 강화 정보표 (15강~21강)", 0x9B59B6),
     ]
 
     embeds = []
@@ -3847,6 +3847,7 @@ async def weapon_upgrade_table(interaction: discord.Interaction):
         for level in range(start, end + 1):
             weapon_name = get_weapon_name(level)
             protection_cost = WEAPON_PROTECTION_COSTS.get(level)
+            sell_price = get_weapon_sell_price(level)
 
             if level <= 20:
                 cost = WEAPON_UPGRADE_COSTS.get(level)
@@ -3859,13 +3860,15 @@ async def weapon_upgrade_table(interaction: discord.Interaction):
                     f"**{level}강 {weapon_name}**\n"
                     f"강화비용: `{format_money(cost)}`\n"
                     f"성공 {rates['success']}% / 하락 {rates['down']}% / 파괴 {rates['destroy']}% / 유지 {rates['keep']}%\n"
-                    f"보호권: `{format_money(protection_cost)}`"
+                    f"보호권: `{format_money(protection_cost)}`\n"
+                    f"판매가격: `{format_money(sell_price)}`"
                 )
             else:
                 lines.append(
                     f"**{level}강 {weapon_name}**\n"
                     f"최대 강화 단계\n"
-                    f"보호권: `{format_money(protection_cost)}`"
+                    f"보호권: `{format_money(protection_cost)}`\n"
+                    f"판매가격: `{format_money(sell_price)}`"
                 )
 
         embed.description = "\n\n".join(lines)
@@ -3873,30 +3876,6 @@ async def weapon_upgrade_table(interaction: discord.Interaction):
 
     await interaction.response.send_message(embeds=embeds, ephemeral=True)
 
-
-@bot.tree.command(name="무기판매가격표", description="1강부터 21강까지 무기 판매 가격을 확인합니다.")
-async def weapon_sell_price_table(interaction: discord.Interaction):
-    embed1 = discord.Embed(title="💰 무기 판매 가격표 (1강~10강)", color=0x2ECC71)
-    lines1 = []
-
-    for level in range(1, 11):
-        weapon_name = get_weapon_name(level)
-        sell_price = get_weapon_sell_price(level)
-        lines1.append(f"**{level}강 {weapon_name}** - `{format_money(sell_price)}`")
-
-    embed1.description = "\n".join(lines1)
-
-    embed2 = discord.Embed(title="💰 무기 판매 가격표 (11강~21강)", color=0x27AE60)
-    lines2 = []
-
-    for level in range(11, 22):
-        weapon_name = get_weapon_name(level)
-        sell_price = get_weapon_sell_price(level)
-        lines2.append(f"**{level}강 {weapon_name}** - `{format_money(sell_price)}`")
-
-    embed2.description = "\n".join(lines2)
-
-    await interaction.response.send_message(embeds=[embed1, embed2], ephemeral=True)
 
 @bot.tree.command(name="도박명령어", description="도박 및 재화 시스템 관련 명령어를 확인합니다.")
 async def gambling_commands(interaction: discord.Interaction):
@@ -3950,12 +3929,14 @@ async def gambling_commands(interaction: discord.Interaction):
         value=(
             "`/강화` - 무기 강화 패널 열기\n"
             "`/강화현황` - 현재 무기 / 보호권 확인\n"
-            "`/강화확률표` - 전체 강화 확률표 확인\n"
-            "`/무기판매` - 현재 무기 판매\n"
-            "`/무기판매가격표` - 전체 무기 판매 가격표 확인"
+            "`/강화정보` - 전체 강화 비용 / 확률 / 판매가 확인\n"
+            "`/무기판매` - 현재 무기 판매"
         ),
         inline=False,
     )
+
+
+
 
     embed.add_field(
         name="관리자 전용",
