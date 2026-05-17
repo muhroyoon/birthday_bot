@@ -1179,6 +1179,7 @@ def get_weapon_inventory(guild_id: int, user_id: int):
         "total_protection_spent": int(row[5]),
     }
 
+
 def add_upgrade_spent(guild_id: int, user_id: int, amount: int):
     ensure_weapon_inventory(guild_id, user_id)
     cursor.execute(
@@ -1243,13 +1244,15 @@ def ensure_weapon_inventory(guild_id: int, user_id: int):
         """
         INSERT OR IGNORE INTO weapon_inventory(
             guild_id, user_id, weapon_level,
-            low_protection_count, mid_protection_count, high_protection_count
+            low_protection_count, mid_protection_count, high_protection_count,
+            total_upgrade_spent, total_protection_spent
         )
-        VALUES (?, ?, 0, 0, 0, 0)
+        VALUES (?, ?, 0, 0, 0, 0, 0, 0)
         """,
         (str(guild_id), str(user_id)),
     )
     conn.commit()
+
 
 
 def get_weapon_inventory(guild_id: int, user_id: int):
