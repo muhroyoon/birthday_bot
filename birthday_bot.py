@@ -1700,11 +1700,12 @@ class RouletteView(discord.ui.View):
         return True
 
     def spin_result(self) -> str:
-        return random.choices(
-            ["빨강", "노랑", "파랑", "검정", "초록"],
-            weights=[34, 25, 19, 13, 9],
-            k=1,
-        )[0]
+    return random.choices(
+        ["빨강", "노랑", "파랑", "검정", "초록"],
+        weights=[35, 25, 19, 12, 9],
+        k=1,
+    )[0]
+
 
     def get_payout(self, choice: str) -> int:
         if choice == "빨강":
@@ -1803,7 +1804,7 @@ class SupplyDropView(discord.ui.View):
         result = random.choices(
             [
                 ("빈 상자", 0.0, "📦 보급상자를 열었지만... 이미 누군가 싹 털어간 빈 상자였습니다."),
-                ("1뚝", 0.8, "🪖 낡은 1레벨 헬멧 하나만 겨우 건졌습니다."),
+                ("1뚝", 0.9, "🪖 낡은 1레벨 헬멧 하나만 겨우 건졌습니다."),
                 ("2뚝", 1.0, "🪖 2레벨 헬멧을 챙겼습니다. 최소한 머리는 지킬 수 있겠네요."),
                 ("3뚝", 1.6, "✨ 3레벨 헬멧을 획득했습니다! 이번 교전은 자신 있어집니다."),
                 ("보급 총기 획득", 2.8, "🔫 보급 총기를 획득했습니다! 적들이 긴장하기 시작합니다."),
@@ -1813,6 +1814,7 @@ class SupplyDropView(discord.ui.View):
             k=1,
         )[0]
         return result
+
 
     async def open_supply(self, interaction: discord.Interaction):
         if self.resolved:
@@ -3247,11 +3249,14 @@ async def slot(interaction: discord.Interaction, amount: int):
 
         if counts[pair_symbol] == 2:
             if pair_symbol == "7️⃣":
-                multiplier = 1.6
+                multiplier = 1.7
             elif pair_symbol == "💎":
-                multiplier = 1.3
+                multiplier = 1.4
             else:
-                multiplier = 1.1
+                multiplier = 1.15
+
+
+    
 
     winnings = int(amount * multiplier)
     if winnings > 0:
@@ -3542,9 +3547,9 @@ async def probability_table(interaction: discord.Interaction):
             "💎 💎 💎 : 약 0.72% / 8배\n"
             "기타 3개 동일 : 각각 약 0.72% / 6배\n\n"
             "정확히 2개 일치: 약 45.52%\n"
-            "7️⃣ 7️⃣ : 약 7.59% / 1.6배\n"
-            "💎 💎 : 약 7.59% / 1.3배\n"
-            "기타 2개 일치 : 각각 약 7.59% / 1.1배\n\n"
+            "7️⃣ 7️⃣ : 약 7.59% / 1.7배\n"
+            "💎 💎 : 약 7.59% / 1.4배\n"
+            "기타 2개 일치 : 각각 약 7.59% / 1.15배\n\n"
             "완전 꽝 : 약 50.14%"
         ),
         inline=False,
@@ -3557,13 +3562,13 @@ async def probability_table(interaction: discord.Interaction):
         inline=False,
     )
 
-    embed.add_field(
+    eembed.add_field(
         name="룰렛",
         value=(
-            "🔴 빨강 34% / 2.5배\n"
+            "🔴 빨강 35% / 2.5배\n"
             "🟡 노랑 25% / 3.4배\n"
             "🔵 파랑 19% / 4.4배\n"
-            "⚫ 검정 13% / 6.5배\n"
+            "⚫ 검정 12% / 6.5배\n"
             "🟢 초록 9% / 9.5배"
         ),
         inline=False,
@@ -3573,7 +3578,7 @@ async def probability_table(interaction: discord.Interaction):
         name="보급",
         value=(
             "빈 상자 38% / 0배\n"
-            "1뚝 24% / 0.8배\n"
+            "1뚝 24% / 0.9배\n"
             "2뚝 17% / 1.0배\n"
             "3뚝 10% / 1.6배\n"
             "보급 총기 획득 8% / 2.8배\n"
