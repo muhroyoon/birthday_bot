@@ -3948,7 +3948,7 @@ async def gambling_commands(interaction: discord.Interaction):
         inline=False,
     )
 
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.send_message(embed=embed)
 
 
 @bot.event
