@@ -1253,35 +1253,6 @@ def ensure_weapon_inventory(guild_id: int, user_id: int):
     )
     conn.commit()
 
-
-
-def get_weapon_inventory(guild_id: int, user_id: int):
-    ensure_weapon_inventory(guild_id, user_id)
-    cursor.execute(
-        """
-        SELECT weapon_level, low_protection_count, mid_protection_count, high_protection_count
-        FROM weapon_inventory
-        WHERE guild_id=? AND user_id=?
-        """,
-        (str(guild_id), str(user_id)),
-    )
-    row = cursor.fetchone()
-    if not row:
-        return {
-            "weapon_level": 0,
-            "low_protection_count": 0,
-            "mid_protection_count": 0,
-            "high_protection_count": 0,
-        }
-
-    return {
-        "weapon_level": int(row[0]),
-        "low_protection_count": int(row[1]),
-        "mid_protection_count": int(row[2]),
-        "high_protection_count": int(row[3]),
-    }
-
-
 def add_protection_count(guild_id: int, user_id: int, tier: str, amount: int):
     ensure_weapon_inventory(guild_id, user_id)
     column = {
