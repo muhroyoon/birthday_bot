@@ -397,6 +397,17 @@ cursor.execute(
 
 cursor.execute(
     """
+    CREATE TABLE IF NOT EXISTS scrim_signups(
+        message_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        PRIMARY KEY (message_id, user_id)
+    )
+    """
+)
+
+
+cursor.execute(
+    """
     CREATE TABLE IF NOT EXISTS weapon_inventory(
         guild_id TEXT NOT NULL,
         user_id TEXT NOT NULL,
@@ -1219,6 +1230,37 @@ def build_upgrade_embed(guild_id: int, user_id: int) -> discord.Embed:
     )
 
     return embed
+
+def add_scrim_signup(message_id: int, user_id: int):
+    cursor.execute(
+        "INSERT OR IGNORE INTO scrim_signups(message_id, user_id) VALUES (?, ?)",
+        (str(message_id), str(user_id)),
+    )
+    conn.commit()
+
+def remove_scrim_signup(message_id: int, user_id: int):
+    cursor.execute(
+        "DELETE FROM scrim_signups WHERE message_id=? AND user_id=?",
+        (str(message_id), str(user_id)),
+    )
+    conn.commit()
+
+
+def has_scrim_signup(message_id: int, user_id: int) -> bool:
+    cursor.execute(
+        "SELECT 1 FROM scrim_signups WHERE message_id=? AND user_id=?",
+        (str(message_id), str(user_id)),
+    )
+    return cursor.fetchone() is not None
+
+
+def get_scrim_signups(message_id: int):
+    cursor.execute(
+        "SELECT user_id FROM scrim_signups WHERE message_id=? ORDER BY rowid ASC",
+        (str(message_id),),
+    )
+    return [row[0] for row in cursor.fetchall()]
+
 
 
 def get_pending_all_in_dates(guild_id: int, today_date: str):
@@ -2487,6 +2529,88 @@ class ProtectionPurchaseButton(discord.ui.Button):
             return
 
         await interaction.response.send_modal(ProtectionPurchaseModal(view.guild_id, view.user_id))
+
+
+class ScrimSignupView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def update_embed(self, message: discord.Message):
+        embed = message.embeds[0]
+        user_ids = get_scrim_signups(message.id)
+
+        if user_ids:
+            participants = []
+            for user_id in user_ids:
+                member = message.guild.get_member(int(user_id))
+                if member is not None:
+                    participants.append(member.mention)
+                else:
+                    participants.append(f"알 수 없는 유저 ({user_id})")
+
+            participant_text = "\n".join(
+                f"{idx}. {name}" for idx, name in enumerate(participants, start=1)
+            )
+        else:
+            participant_text = "아직 참여자가 없습니다."
+
+        if len(embed.fields) >= 1:
+            embed.set_field_at(0, name="참여자 목록", value=participant_text, inline=False)
+        else:
+            embed.add_field(name="참여자 목록", value=participant_text, inline=False)
+
+        for item in self.children:
+            if item.custom_id == "scrim_signup_button":
+                item.label = f"참여하기 ({len(user_ids)})"
+
+        await message.edit(embed=embed, view=self)
+
+    @discord.ui.button(label="참여하기 (0)", style=discord.ButtonStyle.success, custom_id="scrim_signup_button")
+    async def signup(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if has_scrim_signup(interaction.message.id, interaction.user.id):
+            await interaction.response.send_message("이미 참여한 상태입니다.", ephemeral=True)
+            return
+
+        add_scrim_signup(interaction.message.id, interaction.user.id)
+        await self.update_embed(interaction.message)
+        await interaction.response.send_message("내전 참여가 등록되었습니다.", ephemeral=True)
+
+    @discord.ui.button(label="참여취소", style=discord.ButtonStyle.danger, custom_id="scrim_cancel_button")
+    async def cancel_signup(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not has_scrim_signup(interaction.message.id, interaction.user.id):
+            await interaction.response.send_message("현재 참여한 상태가 아닙니다.", ephemeral=True)
+            return
+
+        remove_scrim_signup(interaction.message.id, interaction.user.id)
+        await self.update_embed(interaction.message)
+        await interaction.response.send_message("내전 참여가 취소되었습니다.", ephemeral=True)
+
+class ScrimNoticeModal(discord.ui.Modal, title="내전 공지 작성"):
+    title_input = discord.ui.TextInput(
+        label="제목",
+        placeholder="예: 오늘 저녁 9시 내전 모집",
+        max_length=100,
+        required=True,
+    )
+    body_input = discord.ui.TextInput(
+        label="본문",
+        placeholder="예: 참여하실 분은 아래 버튼을 눌러주세요.",
+        style=discord.TextStyle.paragraph,
+        max_length=2000,
+        required=True,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title=str(self.title_input).strip(),
+            description=str(self.body_input).strip(),
+            color=0x5865F2,
+        )
+        embed.add_field(name="참여자 목록", value="아직 참여자가 없습니다.", inline=False)
+
+        await interaction.channel.send(embed=embed, view=ScrimSignupView())
+        await interaction.response.send_message("내전 공지를 등록했습니다.", ephemeral=True)
+
 
 
 class WeaponUpgradeView(discord.ui.View):
@@ -3950,6 +4074,12 @@ async def gambling_commands(interaction: discord.Interaction):
 
     await interaction.response.send_message(embed=embed)
 
+@bot.tree.command(name="내전공지", description="참여 버튼이 있는 내전 공지를 작성합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def scrim_notice(interaction: discord.Interaction):
+    await interaction.response.send_modal(ScrimNoticeModal())
+
+
 
 @bot.event
 async def on_member_update(before: discord.Member, after: discord.Member):
@@ -4295,6 +4425,8 @@ async def on_ready():
     bot.add_view(UpgradePanelView())
     bot.add_view(TimeRoleView())
     bot.add_view(InquiryPanelView())
+    bot.add_view(ScrimSignupView())
+
 
     await restore_nickname_panels()
     await backfill_probation_members()
