@@ -405,6 +405,13 @@ cursor.execute(
     """
 )
 
+cursor.execute("PRAGMA table_info(credit_profiles)")
+credit_profile_columns = [row[1] for row in cursor.fetchall()]
+
+if "blacklisted_at" not in credit_profile_columns:
+    cursor.execute("ALTER TABLE credit_profiles ADD COLUMN blacklisted_at TEXT")
+    conn.commit()
+
 
 cursor.execute(
     """
@@ -891,17 +898,33 @@ def ensure_credit_profile(user_id: int):
 def get_credit_profile(user_id: int):
     ensure_credit_profile(user_id)
     cursor.execute(
-        "SELECT grade, is_blacklisted FROM credit_profiles WHERE user_id=?",
+        "SELECT grade, is_blacklisted, blacklisted_at FROM credit_profiles WHERE user_id=?",
         (str(user_id),),
     )
     row = cursor.fetchone()
     if not row:
-        return {"grade": INITIAL_CREDIT_GRADE, "is_blacklisted": False}
+        return {
+            "grade": INITIAL_CREDIT_GRADE,
+            "is_blacklisted": False,
+            "blacklisted_at": None,
+        }
 
     return {
         "grade": int(row[0]),
         "is_blacklisted": bool(row[1]),
+        "blacklisted_at": row[2],
     }
+
+def get_blacklisted_profiles():
+    cursor.execute(
+        """
+        SELECT user_id, grade, blacklisted_at
+        FROM credit_profiles
+        WHERE is_blacklisted=1
+        ORDER BY blacklisted_at ASC, user_id ASC
+        """
+    )
+    return cursor.fetchall()
 
 
 def set_credit_grade(user_id: int, grade: int):
@@ -1261,6 +1284,18 @@ def get_scrim_signups(message_id: int):
     )
     return [row[0] for row in cursor.fetchall()]
 
+def set_credit_blacklisted(user_id: int, is_blacklisted: bool):
+    ensure_credit_profile(user_id)
+    blacklisted_at = dt_to_db(get_kst_now()) if is_blacklisted else None
+    cursor.execute(
+        """
+        UPDATE credit_profiles
+        SET is_blacklisted=?, blacklisted_at=?
+        WHERE user_id=?
+        """,
+        (1 if is_blacklisted else 0, blacklisted_at, str(user_id)),
+    )
+    conn.commit()
 
 
 def get_pending_all_in_dates(guild_id: int, today_date: str):
@@ -4083,6 +4118,64 @@ async def gambling_commands(interaction: discord.Interaction):
 @app_commands.checks.has_permissions(administrator=True)
 async def scrim_notice(interaction: discord.Interaction):
     await interaction.response.send_modal(ScrimNoticeModal())
+
+@bot.tree.command(name="신용불량자등록", description="특정 인원을 신용불량자로 등록합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def blacklist_user(interaction: discord.Interaction, member: discord.Member):
+    set_credit_grade(member.id, 6)
+    set_credit_blacklisted(member.id, True)
+
+    await interaction.response.send_message(
+        f"{member.mention}님을 신용불량자로 등록했습니다.\n현재 신용등급: `신용불량자`",
+        ephemeral=True,
+    )
+
+@bot.tree.command(name="신용불량자목록", description="현재 등록된 신용불량자 목록을 확인합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def blacklist_list(interaction: discord.Interaction):
+    rows = get_blacklisted_profiles()
+
+    if not rows:
+        await interaction.response.send_message("현재 등록된 신용불량자가 없습니다.", ephemeral=True)
+        return
+
+    lines = []
+    for user_id, grade, blacklisted_at in rows:
+        member = interaction.guild.get_member(int(user_id)) if interaction.guild else None
+        name = member.display_name if member else f"알 수 없는 유저 ({user_id})"
+
+        if blacklisted_at:
+            try:
+                blacklisted_text = dt_from_db(blacklisted_at).strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                blacklisted_text = blacklisted_at
+        else:
+            blacklisted_text = "알 수 없음"
+
+        lines.append(
+            f"**{name}**\n"
+            f"등록일: `{blacklisted_text}`\n"
+            f"신용등급: `신용불량자`"
+        )
+
+    embed = discord.Embed(
+        title="📄 신용불량자 목록",
+        description="\n\n".join(lines),
+        color=0xE74C3C,
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="개인회생", description="특정 인원의 신용불량자 상태를 해제하고 6등급으로 조정합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def debt_recovery(interaction: discord.Interaction, member: discord.Member):
+    set_credit_grade(member.id, 6)
+    set_credit_blacklisted(member.id, False)
+
+    await interaction.response.send_message(
+        f"{member.mention}님의 신용불량자 상태를 해제하고 신용등급을 `6등급`으로 조정했습니다.",
+        ephemeral=True,
+    )
 
 
 
