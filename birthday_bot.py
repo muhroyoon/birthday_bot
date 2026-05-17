@@ -160,16 +160,16 @@ WEAPON_SELL_PRICES = {
     9: 180000,
     10: 255000,
     11: 360000,
-    12: 620000,
-    13: 900000,
-    14: 1280000,
-    15: 1800000,
-    16: 2500000,
-    17: 3450000,
-    18: 4750000,
-    19: 6500000,
-    20: 8900000,
-    21: 12100000,
+    12: 1200000,
+    13: 1650000,
+    14: 2250000,
+    15: 3000000,
+    16: 3950000,
+    17: 5200000,
+    18: 6800000,
+    19: 8900000,
+    20: 11600000,
+    21: 15100000,
 }
 
 WEAPON_UPGRADE_RATES = {
@@ -420,6 +420,38 @@ credit_profile_columns = [row[1] for row in cursor.fetchall()]
 if "blacklisted_at" not in credit_profile_columns:
     cursor.execute("ALTER TABLE credit_profiles ADD COLUMN blacklisted_at TEXT")
     conn.commit()
+
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS weapon_inventory(
+        guild_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        weapon_level INTEGER NOT NULL DEFAULT 0,
+        low_protection_count INTEGER NOT NULL DEFAULT 0,
+        mid_protection_count INTEGER NOT NULL DEFAULT 0,
+        high_protection_count INTEGER NOT NULL DEFAULT 0,
+        total_upgrade_spent INTEGER NOT NULL DEFAULT 0,
+        total_protection_spent INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (guild_id, user_id)
+    )
+    """
+)
+
+cursor.execute("PRAGMA table_info(weapon_inventory)")
+weapon_columns = [row[1] for row in cursor.fetchall()]
+
+if "low_protection_count" not in weapon_columns:
+    cursor.execute("ALTER TABLE weapon_inventory ADD COLUMN low_protection_count INTEGER NOT NULL DEFAULT 0")
+if "mid_protection_count" not in weapon_columns:
+    cursor.execute("ALTER TABLE weapon_inventory ADD COLUMN mid_protection_count INTEGER NOT NULL DEFAULT 0")
+if "high_protection_count" not in weapon_columns:
+    cursor.execute("ALTER TABLE weapon_inventory ADD COLUMN high_protection_count INTEGER NOT NULL DEFAULT 0")
+if "total_upgrade_spent" not in weapon_columns:
+    cursor.execute("ALTER TABLE weapon_inventory ADD COLUMN total_upgrade_spent INTEGER NOT NULL DEFAULT 0")
+if "total_protection_spent" not in weapon_columns:
+    cursor.execute("ALTER TABLE weapon_inventory ADD COLUMN total_protection_spent INTEGER NOT NULL DEFAULT 0")
+
+conn.commit()
 
 
 cursor.execute(
@@ -1098,19 +1130,30 @@ def get_due_loans(now: datetime):
 def ensure_weapon_inventory(guild_id: int, user_id: int):
     cursor.execute(
         """
-        INSERT OR IGNORE INTO weapon_inventory(guild_id, user_id, weapon_level, protection_count)
-        VALUES (?, ?, 0, 0)
+        INSERT OR IGNORE INTO weapon_inventory(
+            guild_id, user_id, weapon_level,
+            low_protection_count, mid_protection_count, high_protection_count,
+            total_upgrade_spent, total_protection_spent
+        )
+        VALUES (?, ?, 0, 0, 0, 0, 0, 0)
         """,
         (str(guild_id), str(user_id)),
     )
     conn.commit()
 
 
+
 def get_weapon_inventory(guild_id: int, user_id: int):
     ensure_weapon_inventory(guild_id, user_id)
     cursor.execute(
         """
-        SELECT weapon_level, protection_count
+        SELECT
+            weapon_level,
+            low_protection_count,
+            mid_protection_count,
+            high_protection_count,
+            total_upgrade_spent,
+            total_protection_spent
         FROM weapon_inventory
         WHERE guild_id=? AND user_id=?
         """,
@@ -1118,12 +1161,48 @@ def get_weapon_inventory(guild_id: int, user_id: int):
     )
     row = cursor.fetchone()
     if not row:
-        return {"weapon_level": 0, "protection_count": 0}
+        return {
+            "weapon_level": 0,
+            "low_protection_count": 0,
+            "mid_protection_count": 0,
+            "high_protection_count": 0,
+            "total_upgrade_spent": 0,
+            "total_protection_spent": 0,
+        }
 
     return {
         "weapon_level": int(row[0]),
-        "protection_count": int(row[1]),
+        "low_protection_count": int(row[1]),
+        "mid_protection_count": int(row[2]),
+        "high_protection_count": int(row[3]),
+        "total_upgrade_spent": int(row[4]),
+        "total_protection_spent": int(row[5]),
     }
+
+def add_upgrade_spent(guild_id: int, user_id: int, amount: int):
+    ensure_weapon_inventory(guild_id, user_id)
+    cursor.execute(
+        """
+        UPDATE weapon_inventory
+        SET total_upgrade_spent=total_upgrade_spent+?
+        WHERE guild_id=? AND user_id=?
+        """,
+        (amount, str(guild_id), str(user_id)),
+    )
+    conn.commit()
+
+
+def add_protection_spent(guild_id: int, user_id: int, amount: int):
+    ensure_weapon_inventory(guild_id, user_id)
+    cursor.execute(
+        """
+        UPDATE weapon_inventory
+        SET total_protection_spent=total_protection_spent+?
+        WHERE guild_id=? AND user_id=?
+        """,
+        (amount, str(guild_id), str(user_id)),
+    )
+    conn.commit()
 
 
 def set_weapon_level(guild_id: int, user_id: int, level: int):
@@ -1282,11 +1361,16 @@ def build_upgrade_embed(guild_id: int, user_id: int) -> discord.Embed:
 
     current_level = inventory["weapon_level"]
     current_name = get_weapon_name(current_level)
+    current_sell_price = get_weapon_sell_price(current_level)
     balance = get_balance(user_id)
 
     low_count = inventory["low_protection_count"]
     mid_count = inventory["mid_protection_count"]
     high_count = inventory["high_protection_count"]
+
+    total_upgrade_spent = inventory["total_upgrade_spent"]
+    total_protection_spent = inventory["total_protection_spent"]
+    total_invested = total_upgrade_spent + total_protection_spent
 
     embed = discord.Embed(
         title="🔧 무기 강화",
@@ -1296,7 +1380,20 @@ def build_upgrade_embed(guild_id: int, user_id: int) -> discord.Embed:
 
     embed.add_field(
         name="현재 무기",
-        value=f"`{current_level}강 {current_name}`",
+        value=(
+            f"`{current_level}강 {current_name}`\n"
+            f"판매 가격: `{format_money(current_sell_price)}`"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="누적 투자",
+        value=(
+            f"강화 누적: `{format_money(total_upgrade_spent)}`\n"
+            f"보호권 누적: `{format_money(total_protection_spent)}`\n"
+            f"총 투자: `{format_money(total_invested)}`"
+        ),
         inline=False,
     )
 
@@ -1372,6 +1469,7 @@ def build_upgrade_embed(guild_id: int, user_id: int) -> discord.Embed:
     )
 
     return embed
+
 
 
 def add_scrim_signup(message_id: int, user_id: int):
@@ -2586,7 +2684,9 @@ class ProtectionPurchaseModal(discord.ui.Modal, title="강화보호권 구매"):
             return
 
         add_balance(self.user_id, -total_cost)
+        add_protection_spent(self.guild_id, self.user_id, total_cost)
         add_protection_count(self.guild_id, self.user_id, tier, quantity)
+
 
         embed = build_upgrade_embed(self.guild_id, self.user_id)
         view = WeaponUpgradeView(self.guild_id, self.user_id)
@@ -2606,14 +2706,15 @@ class WeaponUpgradeButton(discord.ui.Button):
 
         inventory = get_weapon_inventory(view.guild_id, view.user_id)
         current_level = inventory["weapon_level"]
-        current_tier = get_protection_tier(current_level)
-        protection_count = get_protection_count_for_level(inventory, current_level)
-        
+
         if current_level <= 0:
             ensure_base_weapon(view.guild_id, view.user_id)
             inventory = get_weapon_inventory(view.guild_id, view.user_id)
             current_level = inventory["weapon_level"]
-            protection_count = inventory["protection_count"]
+
+        current_tier = get_protection_tier(current_level)
+        protection_count = get_protection_count_for_level(inventory, current_level)
+
 
         if current_level >= 21:
             await interaction.response.send_message("이미 최대 강화 단계입니다.", ephemeral=True)
@@ -2632,6 +2733,8 @@ class WeaponUpgradeButton(discord.ui.Button):
             return
 
         add_balance(view.user_id, -upgrade_cost)
+        add_upgrade_spent(view.guild_id, view.user_id, upgrade_cost)
+
 
         before_name = get_weapon_name(current_level)
         target_level = current_level + 1
@@ -2659,7 +2762,7 @@ class WeaponUpgradeButton(discord.ui.Button):
                 color = 0xE67E22
         elif result == "destroy":
             if protection_count > 0:
-                consume_protection_count(view.guild_id, view.user_id, 1)
+                consume_protection_count(view.guild_id, view.user_id, current_tier, 1)
                 used_protection = True
                 message_text = f"강화 실패! 보호권이 자동 사용되어 파괴가 방지되었습니다. 현재 무기: `{current_level}강 {before_name}`"
                 color = 0x3498DB
@@ -4102,6 +4205,10 @@ async def weapon_status(interaction: discord.Interaction):
     inventory = get_weapon_inventory(interaction.guild.id, interaction.user.id)
     current_level = inventory["weapon_level"]
 
+    total_upgrade_spent = inventory["total_upgrade_spent"]
+    total_protection_spent = inventory["total_protection_spent"]
+    total_invested = total_upgrade_spent + total_protection_spent
+
     embed = discord.Embed(title="📋 강화 현황", color=0x5865F2)
 
     if current_level <= 0:
@@ -4122,6 +4229,16 @@ async def weapon_status(interaction: discord.Interaction):
             f"저강 보호권: `{inventory['low_protection_count']}장`\n"
             f"중강 보호권: `{inventory['mid_protection_count']}장`\n"
             f"고강 보호권: `{inventory['high_protection_count']}장`"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="누적 투자",
+        value=(
+            f"강화 누적: `{format_money(total_upgrade_spent)}`\n"
+            f"보호권 누적: `{format_money(total_protection_spent)}`\n"
+            f"총 투자: `{format_money(total_invested)}`"
         ),
         inline=False,
     )
