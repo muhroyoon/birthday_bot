@@ -1218,6 +1218,20 @@ def set_weapon_level(guild_id: int, user_id: int, level: int):
     )
     conn.commit()
 
+def reset_weapon_progress(guild_id: int, user_id: int):
+    ensure_weapon_inventory(guild_id, user_id)
+    cursor.execute(
+        """
+        UPDATE weapon_inventory
+        SET weapon_level=0,
+            total_upgrade_spent=0,
+            total_protection_spent=0
+        WHERE guild_id=? AND user_id=?
+        """,
+        (str(guild_id), str(user_id)),
+    )
+    conn.commit()
+
 
 def get_protection_tier(level: int) -> str:
     if 1 <= level <= 7:
@@ -4161,7 +4175,7 @@ async def sell_weapon(interaction: discord.Interaction):
     sell_price = get_weapon_sell_price(current_level)
 
     add_balance(interaction.user.id, sell_price)
-    set_weapon_level(interaction.guild.id, interaction.user.id, 0)
+    reset_weapon_progress(interaction.guild.id, interaction.user.id)
 
     embed = discord.Embed(title="💰 무기 판매 완료", color=0x2ECC71)
     embed.add_field(name="판매 무기", value=f"{current_level}강 {weapon_name}", inline=False)
