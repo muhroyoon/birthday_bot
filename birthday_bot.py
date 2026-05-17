@@ -195,8 +195,17 @@ WEAPON_UPGRADE_RATES = {
     20: {"success": 10, "down": 45, "destroy": 33, "keep": 12},
 }
 
+PROTECTION_TIER_PRICES = {
+    "low": 100000,    # 1강~7강
+    "mid": 400000,    # 8강~14강
+    "high": 1200000,  # 15강~21강
+}
 
-
+PROTECTION_TIER_LABELS = {
+    "low": "저강 보호권",
+    "mid": "중강 보호권",
+    "high": "고강 보호권",
+}
 
 TIME_SLOT_CHOICES = ["morning", "afternoon", "evening", "night", "dawn"]
 TIME_SLOT_LABELS = {
@@ -419,13 +428,26 @@ cursor.execute(
         guild_id TEXT NOT NULL,
         user_id TEXT NOT NULL,
         weapon_level INTEGER NOT NULL DEFAULT 0,
-        protection_count INTEGER NOT NULL DEFAULT 0,
+        low_protection_count INTEGER NOT NULL DEFAULT 0,
+        mid_protection_count INTEGER NOT NULL DEFAULT 0,
+        high_protection_count INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (guild_id, user_id)
     )
     """
 )
 
+cursor.execute("PRAGMA table_info(weapon_inventory)")
+weapon_columns = [row[1] for row in cursor.fetchall()]
+
+if "low_protection_count" not in weapon_columns:
+    cursor.execute("ALTER TABLE weapon_inventory ADD COLUMN low_protection_count INTEGER NOT NULL DEFAULT 0")
+if "mid_protection_count" not in weapon_columns:
+    cursor.execute("ALTER TABLE weapon_inventory ADD COLUMN mid_protection_count INTEGER NOT NULL DEFAULT 0")
+if "high_protection_count" not in weapon_columns:
+    cursor.execute("ALTER TABLE weapon_inventory ADD COLUMN high_protection_count INTEGER NOT NULL DEFAULT 0")
+
 conn.commit()
+
 
 
 def set_guild_setting(guild_id: int, key: str, value: str):
@@ -1117,12 +1139,78 @@ def set_weapon_level(guild_id: int, user_id: int, level: int):
     conn.commit()
 
 
-def add_protection_count(guild_id: int, user_id: int, amount: int):
+def get_protection_tier(level: int) -> str:
+    if 1 <= level <= 7:
+        return "low"
+    if 8 <= level <= 14:
+        return "mid"
+    return "high"
+
+
+def get_protection_purchase_level(tier: str) -> int:
+    if tier == "low":
+        return 1
+    if tier == "mid":
+        return 8
+    return 15
+
+
+def get_protection_cost_by_tier(tier: str) -> int:
+    return PROTECTION_TIER_PRICES[tier]
+
+
+def ensure_weapon_inventory(guild_id: int, user_id: int):
+    cursor.execute(
+        """
+        INSERT OR IGNORE INTO weapon_inventory(
+            guild_id, user_id, weapon_level,
+            low_protection_count, mid_protection_count, high_protection_count
+        )
+        VALUES (?, ?, 0, 0, 0, 0)
+        """,
+        (str(guild_id), str(user_id)),
+    )
+    conn.commit()
+
+
+def get_weapon_inventory(guild_id: int, user_id: int):
     ensure_weapon_inventory(guild_id, user_id)
     cursor.execute(
         """
+        SELECT weapon_level, low_protection_count, mid_protection_count, high_protection_count
+        FROM weapon_inventory
+        WHERE guild_id=? AND user_id=?
+        """,
+        (str(guild_id), str(user_id)),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return {
+            "weapon_level": 0,
+            "low_protection_count": 0,
+            "mid_protection_count": 0,
+            "high_protection_count": 0,
+        }
+
+    return {
+        "weapon_level": int(row[0]),
+        "low_protection_count": int(row[1]),
+        "mid_protection_count": int(row[2]),
+        "high_protection_count": int(row[3]),
+    }
+
+
+def add_protection_count(guild_id: int, user_id: int, tier: str, amount: int):
+    ensure_weapon_inventory(guild_id, user_id)
+    column = {
+        "low": "low_protection_count",
+        "mid": "mid_protection_count",
+        "high": "high_protection_count",
+    }[tier]
+    cursor.execute(
+        f"""
         UPDATE weapon_inventory
-        SET protection_count=protection_count+?
+        SET {column}={column}+?
         WHERE guild_id=? AND user_id=?
         """,
         (amount, str(guild_id), str(user_id)),
@@ -1130,17 +1218,32 @@ def add_protection_count(guild_id: int, user_id: int, amount: int):
     conn.commit()
 
 
-def consume_protection_count(guild_id: int, user_id: int, amount: int = 1):
+def consume_protection_count(guild_id: int, user_id: int, tier: str, amount: int = 1):
     ensure_weapon_inventory(guild_id, user_id)
+    column = {
+        "low": "low_protection_count",
+        "mid": "mid_protection_count",
+        "high": "high_protection_count",
+    }[tier]
     cursor.execute(
-        """
+        f"""
         UPDATE weapon_inventory
-        SET protection_count=MAX(protection_count-?, 0)
+        SET {column}=MAX({column}-?, 0)
         WHERE guild_id=? AND user_id=?
         """,
         (amount, str(guild_id), str(user_id)),
     )
     conn.commit()
+
+
+def get_protection_count_for_level(inventory: dict, level: int) -> int:
+    tier = get_protection_tier(level)
+    if tier == "low":
+        return inventory["low_protection_count"]
+    if tier == "mid":
+        return inventory["mid_protection_count"]
+    return inventory["high_protection_count"]
+
 
 
 def ensure_base_weapon(guild_id: int, user_id: int):
@@ -1179,80 +1282,97 @@ def build_upgrade_embed(guild_id: int, user_id: int) -> discord.Embed:
 
     current_level = inventory["weapon_level"]
     current_name = get_weapon_name(current_level)
-    protection_count = inventory["protection_count"]
+    balance = get_balance(user_id)
 
-    embed = discord.Embed(title="🔧 무기 강화", color=0x5865F2)
+    low_count = inventory["low_protection_count"]
+    mid_count = inventory["mid_protection_count"]
+    high_count = inventory["high_protection_count"]
+
+    embed = discord.Embed(
+        title="🔧 무기 강화",
+        description="강화할 무기 정보를 확인하고 아래 버튼으로 진행해주세요.",
+        color=0x5865F2,
+    )
 
     embed.add_field(
         name="현재 무기",
-        value=f"{current_level}강 {current_name}",
-        inline=False
+        value=f"`{current_level}강 {current_name}`",
+        inline=False,
     )
 
     embed.add_field(
         name="보유 보호권",
-        value=f"{protection_count}장",
-        inline=False
+        value=(
+            f"저강: `{low_count}장`\n"
+            f"중강: `{mid_count}장`\n"
+            f"고강: `{high_count}장`"
+        ),
+        inline=True,
     )
 
     embed.add_field(
         name="현재 잔액",
-        value=format_money(get_balance(user_id)),
-        inline=False
+        value=f"`{format_money(balance)}`",
+        inline=True,
     )
 
     if current_level >= 21:
         embed.add_field(
             name="강화 상태",
             value="최대 강화 단계입니다.",
-            inline=False
+            inline=False,
         )
         return embed
 
     next_level = current_level + 1
     next_name = get_weapon_name(next_level)
-
     upgrade_cost = get_upgrade_cost(current_level)
-    protection_cost = get_protection_cost(current_level)
-
     rates = WEAPON_UPGRADE_RATES[current_level]
+
+    tier = get_protection_tier(current_level)
+    protection_label = PROTECTION_TIER_LABELS[tier]
+    protection_cost = get_protection_cost_by_tier(tier)
+    purchase_level = get_protection_purchase_level(tier)
 
     embed.add_field(
         name="다음 무기",
-        value=f"{next_level}강 {next_name}",
-        inline=False
+        value=f"`{next_level}강 {next_name}`",
+        inline=False,
     )
 
     embed.add_field(
-        name="강화 비용",
-        value=format_money(upgrade_cost),
-        inline=False
-    )
-
-    embed.add_field(
-        name="보호권 가격",
-        value=format_money(protection_cost),
-        inline=False
+        name="비용 정보",
+        value=(
+            f"강화 비용: `{format_money(upgrade_cost)}`\n"
+            f"{protection_label}: `{format_money(protection_cost)}`"
+        ),
+        inline=True,
     )
 
     embed.add_field(
         name="강화 확률",
         value=(
-            f"성공: {rates['success']}%\n"
-            f"하락: {rates['down']}%\n"
-            f"파괴: {rates['destroy']}%\n"
-            f"유지: {rates['keep']}%"
+            f"성공: `{rates['success']}%`\n"
+            f"하락: `{rates['down']}%`\n"
+            f"파괴: `{rates['destroy']}%`\n"
+            f"유지: `{rates['keep']}%`"
+        ),
+        inline=True,
+    )
+
+    embed.add_field(
+        name="보호권 안내",
+        value=(
+            f"현재 구간: `{protection_label}`\n"
+            f"구매 가능 단계: `{purchase_level}강`\n"
+            "보호권은 강화 성공을 보장하지 않으며,\n"
+            "실패 시 하락 / 파괴만 자동 방지합니다."
         ),
         inline=False,
     )
 
-    embed.add_field(
-        name="안내",
-        value="보호권은 강화 성공을 보장하지 않으며, 실패 시 하락과 파괴를 자동으로 방지합니다.",
-        inline=False,
-    )
-
     return embed
+
 
 def add_scrim_signup(message_id: int, user_id: int):
     cursor.execute(
@@ -2445,7 +2565,17 @@ class ProtectionPurchaseModal(discord.ui.Modal, title="강화보호권 구매"):
             await interaction.response.send_message("보유 중인 무기가 없습니다.", ephemeral=True)
             return
 
-        protection_cost = get_protection_cost(current_level)
+        tier = get_protection_tier(current_level)
+        purchase_level = get_protection_purchase_level(tier)
+
+        if current_level != purchase_level:
+            await interaction.response.send_message(
+                f"보호권은 `{purchase_level}강`일 때만 구매할 수 있습니다.",
+                ephemeral=True,
+            )
+            return
+
+        protection_cost = get_protection_cost_by_tier(tier)
         total_cost = protection_cost * quantity
 
         if not can_afford(self.user_id, total_cost):
@@ -2456,12 +2586,13 @@ class ProtectionPurchaseModal(discord.ui.Modal, title="강화보호권 구매"):
             return
 
         add_balance(self.user_id, -total_cost)
-        add_protection_count(self.guild_id, self.user_id, quantity)
+        add_protection_count(self.guild_id, self.user_id, tier, quantity)
 
         embed = build_upgrade_embed(self.guild_id, self.user_id)
         view = WeaponUpgradeView(self.guild_id, self.user_id)
 
         await interaction.response.edit_message(embed=embed, view=view)
+
 
 class WeaponUpgradeButton(discord.ui.Button):
     def __init__(self):
@@ -2475,8 +2606,9 @@ class WeaponUpgradeButton(discord.ui.Button):
 
         inventory = get_weapon_inventory(view.guild_id, view.user_id)
         current_level = inventory["weapon_level"]
-        protection_count = inventory["protection_count"]
-
+        current_tier = get_protection_tier(current_level)
+        protection_count = get_protection_count_for_level(inventory, current_level)
+        
         if current_level <= 0:
             ensure_base_weapon(view.guild_id, view.user_id)
             inventory = get_weapon_inventory(view.guild_id, view.user_id)
@@ -2516,7 +2648,7 @@ class WeaponUpgradeButton(discord.ui.Button):
             color = 0x2ECC71
         elif result == "down":
             if protection_count > 0:
-                consume_protection_count(view.guild_id, view.user_id, 1)
+                consume_protection_count(view.guild_id, view.user_id, current_tier, 1)
                 used_protection = True
                 message_text = f"강화 실패! 보호권이 자동 사용되어 하락이 방지되었습니다. 현재 무기: `{current_level}강 {before_name}`"
                 color = 0x3498DB
@@ -3961,7 +4093,6 @@ async def sell_weapon(interaction: discord.Interaction):
 
     await interaction.response.send_message(embed=embed)
 
-
 @bot.tree.command(name="강화현황", description="현재 보유 중인 무기와 보호권 수량을 확인합니다.")
 async def weapon_status(interaction: discord.Interaction):
     if interaction.guild is None:
@@ -3970,7 +4101,6 @@ async def weapon_status(interaction: discord.Interaction):
 
     inventory = get_weapon_inventory(interaction.guild.id, interaction.user.id)
     current_level = inventory["weapon_level"]
-    protection_count = inventory["protection_count"]
 
     embed = discord.Embed(title="📋 강화 현황", color=0x5865F2)
 
@@ -3983,14 +4113,23 @@ async def weapon_status(interaction: discord.Interaction):
 
         if current_level < 21:
             embed.add_field(name="다음 강화 비용", value=format_money(get_upgrade_cost(current_level)), inline=False)
-            embed.add_field(name="보호권 가격", value=format_money(get_protection_cost(current_level)), inline=False)
         else:
             embed.add_field(name="강화 상태", value="최대 강화 단계", inline=False)
 
-    embed.add_field(name="보유 보호권", value=f"{protection_count}장", inline=False)
+    embed.add_field(
+        name="보유 보호권",
+        value=(
+            f"저강 보호권: `{inventory['low_protection_count']}장`\n"
+            f"중강 보호권: `{inventory['mid_protection_count']}장`\n"
+            f"고강 보호권: `{inventory['high_protection_count']}장`"
+        ),
+        inline=False,
+    )
+
     embed.add_field(name="현재 잔액", value=format_money(get_balance(interaction.user.id)), inline=False)
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
 
 @bot.tree.command(name="강화정보", description="1강부터 21강까지 강화 비용, 확률, 보호권 가격, 판매 가격을 확인합니다.")
 async def weapon_info_table(interaction: discord.Interaction):
@@ -4008,7 +4147,8 @@ async def weapon_info_table(interaction: discord.Interaction):
 
         for level in range(start, end + 1):
             weapon_name = get_weapon_name(level)
-            protection_cost = WEAPON_PROTECTION_COSTS.get(level)
+            tier = get_protection_tier(level)
+            protection_cost = get_protection_cost_by_tier(tier)
             sell_price = WEAPON_SELL_PRICES.get(level, 0)
 
             if level <= 20:
