@@ -1241,7 +1241,7 @@ def claim_saving(saving_id: int):
 
 
 def calculate_labor_required_count(debt_amount: int) -> int:
-    return max(10, min(1000, debt_amount // 10_000))
+    return max(10, debt_amount // 10_000)
 
 
 def create_or_replace_labor_penalty(guild_id: int, user_id: int, debt_amount: int):
