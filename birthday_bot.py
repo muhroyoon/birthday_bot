@@ -1940,6 +1940,28 @@ class UpgradePanelView(discord.ui.View):
 
         await interaction.response.send_message(f"{channel.mention} 생성 완료!", ephemeral=True)
 
+class UpgradePanelTemplateModal(discord.ui.Modal):
+    def __init__(self, guild_id: int):
+        super().__init__(title="등업 패널 문구 설정")
+        self.guild_id = guild_id
+        self.content = discord.ui.TextInput(
+            label="등업 패널 문구",
+            placeholder="줄바꿈해서 입력해주세요.",
+            style=discord.TextStyle.paragraph,
+            max_length=2000,
+            required=True,
+            default=get_template_with_default(
+                guild_id,
+                "upgrade_panel_text",
+                DEFAULT_UPGRADE_PANEL_TEXT,
+            ),
+        )
+        self.add_item(self.content)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        set_template(interaction.guild.id, "upgrade_panel_text", str(self.content).strip())
+        await interaction.response.send_message("등업 패널 문구를 저장했습니다.", ephemeral=True)
+
 
 class UpgradeTicketView(discord.ui.View):
     def __init__(self, user: discord.Member):
@@ -3326,8 +3348,8 @@ async def set_rule_button_template(interaction: discord.Interaction, content: st
 
 @bot.tree.command(name="세팅등업패널문구", description="등업 패널 문구를 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
-async def set_upgrade_panel_template(interaction: discord.Interaction, content: str):
-    set_template(interaction.guild.id, "upgrade_panel_text", content)
+async def set_upgrade_panel_template(interaction: discord.Interaction):
+    await interaction.response.send_modal(UpgradePanelTemplateModal(interaction.guild.id))
     await interaction.response.send_message("등업 패널 문구를 저장했습니다.", ephemeral=True)
 
 
