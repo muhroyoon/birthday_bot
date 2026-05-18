@@ -1279,8 +1279,23 @@ def get_active_labor_penalty(guild_id: int, user_id: int):
     }
 
 
-def increment_labor_count(guild_id: int, user_id: int):
+def ensure_active_labor_penalty(guild_id: int, user_id: int):
     penalty = get_active_labor_penalty(guild_id, user_id)
+    if penalty is not None:
+        return penalty
+
+    profile = get_credit_profile(user_id)
+    if not profile["is_blacklisted"]:
+        return None
+
+    active_loan = get_active_loan(user_id)
+    debt_amount = active_loan["total_repayment"] if active_loan else DEFAULT_LABOR_DEBT_AMOUNT
+    create_or_replace_labor_penalty(guild_id, user_id, debt_amount)
+    return get_active_labor_penalty(guild_id, user_id)
+
+
+def increment_labor_count(guild_id: int, user_id: int):
+    penalty = ensure_active_labor_penalty(guild_id, user_id)
     if penalty is None:
         return None, False
 
@@ -4445,7 +4460,7 @@ async def repay_loan_command(interaction: discord.Interaction):
 async def my_credit(interaction: discord.Interaction):
     profile = get_credit_profile(interaction.user.id)
     active_loan = get_active_loan(interaction.user.id)
-    labor_penalty = get_active_labor_penalty(interaction.guild.id, interaction.user.id) if interaction.guild else None
+    labor_penalty = ensure_active_labor_penalty(interaction.guild.id, interaction.user.id) if interaction.guild else None
 
     if profile["is_blacklisted"]:
         grade_text = "신용불량자"
@@ -4499,7 +4514,7 @@ async def labor(interaction: discord.Interaction):
         await interaction.response.send_message("현재 신용불량자 상태가 아닙니다.", ephemeral=True)
         return
 
-    penalty = get_active_labor_penalty(interaction.guild.id, interaction.user.id)
+    penalty = ensure_active_labor_penalty(interaction.guild.id, interaction.user.id)
     if penalty is None:
         await interaction.response.send_message("진행 중인 노동 패널티 정보가 없습니다. 관리자에게 문의해주세요.", ephemeral=True)
         return
@@ -4519,7 +4534,7 @@ async def labor_status(interaction: discord.Interaction, member: discord.Member 
         return
 
     target = member or interaction.user
-    penalty = get_active_labor_penalty(interaction.guild.id, target.id)
+    penalty = ensure_active_labor_penalty(interaction.guild.id, target.id)
     if penalty is None:
         await interaction.response.send_message("진행 중인 노동 패널티가 없습니다.", ephemeral=True)
         return
