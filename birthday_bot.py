@@ -3350,7 +3350,6 @@ async def set_rule_button_template(interaction: discord.Interaction, content: st
 @app_commands.checks.has_permissions(administrator=True)
 async def set_upgrade_panel_template(interaction: discord.Interaction):
     await interaction.response.send_modal(UpgradePanelTemplateModal(interaction.guild.id))
-    await interaction.response.send_message("등업 패널 문구를 저장했습니다.", ephemeral=True)
 
 
 @bot.tree.command(name="세팅신입알림문구", description="신입 역할 경과 알림 문구를 설정합니다.")
