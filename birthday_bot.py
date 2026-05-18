@@ -8,6 +8,33 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+# ============================================================
+# 목차
+# 1. 기본 유틸리티
+# 2. 전역 설정
+# 3. 데이터베이스 초기화
+# 4. 서버 설정 / 템플릿 헬퍼
+# 5. 잔액 / 지갑 헬퍼
+# 6. 대기방 / 닉네임 패널 헬퍼
+# 7. 신용 / 대출 / 적금 / 노동 헬퍼
+# 8. 무기 강화 헬퍼
+# 9. UI 뷰 / 모달
+# 10. 슬래시 명령어
+#    - 관리자 설정 명령어
+#    - 재화 / 적금 명령어
+#    - 도박 명령어
+#    - 신용 / 대출 명령어
+#    - 무기 강화 명령어
+#    - 관리자 신용 관리 명령어
+# 11. 디스코드 이벤트
+# 12. 백그라운드 작업
+# 13. 봇 시작 설정
+# ============================================================
+
+
+# ============================================================
+# 기본 유틸리티
+# ============================================================
 
 def get_kst_now():
     return datetime.now(ZoneInfo("Asia/Seoul"))
@@ -39,6 +66,10 @@ def dt_from_db(value: str) -> datetime:
 
 TOKEN = os.getenv("TOKEN")
 
+# ============================================================
+# 전역 설정
+# ============================================================
+
 DAILY_REWARD = 10000
 MIN_BET = 100
 COIN_FLIP_TIMEOUT = 60
@@ -49,6 +80,9 @@ ALL_IN_GAME_NAME = "몰빵게임"
 GAME_HISTORY_LIMIT = 10
 INITIAL_CREDIT_GRADE = 5
 LOAN_REPAYMENT_DAYS = 2
+DEFAULT_SAVINGS_DAYS = "3"
+DEFAULT_SAVINGS_INTEREST_RATE = "10"
+DEFAULT_LABOR_DEBT_AMOUNT = 100_000
 
 LOAN_GRADE_LIMITS = {
     1: 10_000_000,
@@ -122,30 +156,6 @@ WEAPON_UPGRADE_COSTS = {
     18: 1820000,
     19: 2320000,
     20: 2950000,
-}
-
-WEAPON_PROTECTION_COSTS = {
-    1: 5000,
-    2: 9000,
-    3: 15000,
-    4: 24000,
-    5: 36000,
-    6: 52000,
-    7: 72000,
-    8: 98000,
-    9: 132000,
-    10: 176000,
-    11: 235000,
-    12: 310000,
-    13: 410000,
-    14: 540000,
-    15: 710000,
-    16: 930000,
-    17: 1210000,
-    18: 1570000,
-    19: 2030000,
-    20: 2610000,
-    21: 3350000,
 }
 
 WEAPON_SELL_PRICES = {
@@ -243,6 +253,10 @@ intents.voice_states = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 active_recruits = {}
+
+# ============================================================
+# 데이터베이스 초기화
+# ============================================================
 
 conn = sqlite3.connect("/data/birthday.db")
 cursor = conn.cursor()
@@ -406,6 +420,39 @@ cursor.execute(
 
 cursor.execute(
     """
+    CREATE TABLE IF NOT EXISTS savings(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        principal INTEGER NOT NULL,
+        interest_rate INTEGER NOT NULL,
+        total_amount INTEGER NOT NULL,
+        deposited_at TEXT NOT NULL,
+        due_at TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        claimed_at TEXT
+    )
+    """
+)
+
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS labor_penalties(
+        guild_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        debt_amount INTEGER NOT NULL,
+        required_count INTEGER NOT NULL,
+        completed_count INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at TEXT NOT NULL,
+        resolved_at TEXT,
+        PRIMARY KEY (guild_id, user_id)
+    )
+    """
+)
+
+cursor.execute(
+    """
     CREATE TABLE IF NOT EXISTS scrim_signups(
         message_id TEXT NOT NULL,
         user_id TEXT NOT NULL,
@@ -454,33 +501,9 @@ if "total_protection_spent" not in weapon_columns:
 conn.commit()
 
 
-cursor.execute(
-    """
-    CREATE TABLE IF NOT EXISTS weapon_inventory(
-        guild_id TEXT NOT NULL,
-        user_id TEXT NOT NULL,
-        weapon_level INTEGER NOT NULL DEFAULT 0,
-        low_protection_count INTEGER NOT NULL DEFAULT 0,
-        mid_protection_count INTEGER NOT NULL DEFAULT 0,
-        high_protection_count INTEGER NOT NULL DEFAULT 0,
-        PRIMARY KEY (guild_id, user_id)
-    )
-    """
-)
-
-cursor.execute("PRAGMA table_info(weapon_inventory)")
-weapon_columns = [row[1] for row in cursor.fetchall()]
-
-if "low_protection_count" not in weapon_columns:
-    cursor.execute("ALTER TABLE weapon_inventory ADD COLUMN low_protection_count INTEGER NOT NULL DEFAULT 0")
-if "mid_protection_count" not in weapon_columns:
-    cursor.execute("ALTER TABLE weapon_inventory ADD COLUMN mid_protection_count INTEGER NOT NULL DEFAULT 0")
-if "high_protection_count" not in weapon_columns:
-    cursor.execute("ALTER TABLE weapon_inventory ADD COLUMN high_protection_count INTEGER NOT NULL DEFAULT 0")
-
-conn.commit()
-
-
+# ============================================================
+# 서버 설정 / 템플릿 헬퍼
+# ============================================================
 
 def set_guild_setting(guild_id: int, key: str, value: str):
     cursor.execute(
@@ -543,6 +566,14 @@ def get_template_with_default(guild_id: int, template_name: str, default_value: 
 def get_setting_with_default(guild_id: int, key: str, default_value: str):
     value = get_guild_setting(guild_id, key)
     return value if value is not None else default_value
+
+
+def get_savings_days(guild_id: int) -> int:
+    return int(get_setting_with_default(guild_id, "savings_days", DEFAULT_SAVINGS_DAYS))
+
+
+def get_savings_interest_rate(guild_id: int) -> int:
+    return int(get_setting_with_default(guild_id, "savings_interest_rate", DEFAULT_SAVINGS_INTEREST_RATE))
 
 
 def set_time_role(guild_id: int, slot_name: str, role_id: int):
@@ -669,6 +700,10 @@ async def refresh_sticky_message(channel: discord.TextChannel):
     set_sticky_message(channel.guild.id, channel.id, sticky["content"], new_message.id)
 
 
+# ============================================================
+# 잔액 / 지갑 헬퍼
+# ============================================================
+
 def ensure_wallet(user_id: int):
     cursor.execute("INSERT OR IGNORE INTO balances(user_id, balance) VALUES (?, 0)", (str(user_id),))
     conn.commit()
@@ -713,6 +748,10 @@ def is_spectator_member(member: discord.Member, guild_id: int) -> bool:
     return False
 
 
+
+# ============================================================
+# 대기방 / 닉네임 패널 헬퍼
+# ============================================================
 
 def add_waiting_room(guild_id: int, channel_id: int):
     cursor.execute(
@@ -938,6 +977,10 @@ def clear_all_in_entries(entry_date: str, guild_id: int):
     )
     conn.commit()
 
+# ============================================================
+# 신용 / 대출 / 적금 / 노동 헬퍼
+# ============================================================
+
 def ensure_credit_profile(user_id: int):
     cursor.execute(
         """
@@ -993,9 +1036,14 @@ def set_credit_grade(user_id: int, grade: int):
 
 def set_credit_blacklisted(user_id: int, is_blacklisted: bool):
     ensure_credit_profile(user_id)
+    blacklisted_at = dt_to_db(get_kst_now()) if is_blacklisted else None
     cursor.execute(
-        "UPDATE credit_profiles SET is_blacklisted=? WHERE user_id=?",
-        (1 if is_blacklisted else 0, str(user_id)),
+        """
+        UPDATE credit_profiles
+        SET is_blacklisted=?, blacklisted_at=?
+        WHERE user_id=?
+        """,
+        (1 if is_blacklisted else 0, blacklisted_at, str(user_id)),
     )
     conn.commit()
 
@@ -1118,7 +1166,7 @@ def mark_loan_overdue(loan_id: int):
 def get_due_loans(now: datetime):
     cursor.execute(
         """
-        SELECT id, user_id, due_at
+        SELECT id, guild_id, user_id, total_repayment, due_at
         FROM loans
         WHERE status='active' AND delinquency_processed=0 AND due_at<=?
         ORDER BY id ASC
@@ -1126,6 +1174,190 @@ def get_due_loans(now: datetime):
         (dt_to_db(now),),
     )
     return cursor.fetchall()
+
+
+def get_active_saving(guild_id: int, user_id: int):
+    cursor.execute(
+        """
+        SELECT id, principal, interest_rate, total_amount, deposited_at, due_at, status
+        FROM savings
+        WHERE guild_id=? AND user_id=? AND status='active'
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (str(guild_id), str(user_id)),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+
+    return {
+        "id": row[0],
+        "principal": row[1],
+        "interest_rate": row[2],
+        "total_amount": row[3],
+        "deposited_at": row[4],
+        "due_at": row[5],
+        "status": row[6],
+    }
+
+
+def create_saving(
+    guild_id: int,
+    user_id: int,
+    principal: int,
+    interest_rate: int,
+    total_amount: int,
+    due_at: datetime,
+):
+    cursor.execute(
+        """
+        INSERT INTO savings(guild_id, user_id, principal, interest_rate, total_amount, deposited_at, due_at, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'active')
+        """,
+        (
+            str(guild_id),
+            str(user_id),
+            principal,
+            interest_rate,
+            total_amount,
+            dt_to_db(get_kst_now()),
+            dt_to_db(due_at),
+        ),
+    )
+    conn.commit()
+
+
+def claim_saving(saving_id: int):
+    cursor.execute(
+        """
+        UPDATE savings
+        SET status='claimed', claimed_at=?
+        WHERE id=?
+        """,
+        (dt_to_db(get_kst_now()), saving_id),
+    )
+    conn.commit()
+
+
+def calculate_labor_required_count(debt_amount: int) -> int:
+    return max(10, min(1000, debt_amount // 10_000))
+
+
+def create_or_replace_labor_penalty(guild_id: int, user_id: int, debt_amount: int):
+    required_count = calculate_labor_required_count(debt_amount)
+    cursor.execute(
+        """
+        INSERT OR REPLACE INTO labor_penalties(
+            guild_id, user_id, debt_amount, required_count, completed_count, status, created_at, resolved_at
+        )
+        VALUES (?, ?, ?, ?, 0, 'active', ?, NULL)
+        """,
+        (str(guild_id), str(user_id), debt_amount, required_count, dt_to_db(get_kst_now())),
+    )
+    conn.commit()
+
+
+def get_active_labor_penalty(guild_id: int, user_id: int):
+    cursor.execute(
+        """
+        SELECT debt_amount, required_count, completed_count, created_at
+        FROM labor_penalties
+        WHERE guild_id=? AND user_id=? AND status='active'
+        """,
+        (str(guild_id), str(user_id)),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+
+    return {
+        "debt_amount": int(row[0]),
+        "required_count": int(row[1]),
+        "completed_count": int(row[2]),
+        "created_at": row[3],
+    }
+
+
+def increment_labor_count(guild_id: int, user_id: int):
+    penalty = get_active_labor_penalty(guild_id, user_id)
+    if penalty is None:
+        return None, False
+
+    cursor.execute(
+        """
+        UPDATE labor_penalties
+        SET completed_count=completed_count+1
+        WHERE guild_id=? AND user_id=? AND status='active'
+        """,
+        (str(guild_id), str(user_id)),
+    )
+    conn.commit()
+
+    updated = get_active_labor_penalty(guild_id, user_id)
+    if updated is None:
+        return None, False
+
+    if updated["completed_count"] >= updated["required_count"]:
+        cursor.execute(
+            """
+            UPDATE labor_penalties
+            SET status='resolved', resolved_at=?
+            WHERE guild_id=? AND user_id=?
+            """,
+            (dt_to_db(get_kst_now()), str(guild_id), str(user_id)),
+        )
+        conn.commit()
+
+        active_loan = get_active_loan(user_id)
+        if active_loan is not None:
+            repay_loan(active_loan["id"])
+
+        set_credit_blacklisted(user_id, False)
+        set_credit_grade(user_id, INITIAL_CREDIT_GRADE)
+        return updated, True
+
+    return updated, False
+
+
+def delete_labor_penalty(guild_id: int, user_id: int):
+    cursor.execute(
+        "DELETE FROM labor_penalties WHERE guild_id=? AND user_id=?",
+        (str(guild_id), str(user_id)),
+    )
+    conn.commit()
+
+
+async def ensure_not_blacklisted_for_gambling(interaction: discord.Interaction) -> bool:
+    profile = get_credit_profile(interaction.user.id)
+    if profile["is_blacklisted"]:
+        await interaction.response.send_message(
+            "현재 신용불량자 상태라 도박 명령어를 사용할 수 없습니다. `/노동`으로 신용 회복을 진행해주세요.",
+            ephemeral=True,
+        )
+        return False
+    return True
+
+
+def build_labor_embed(member: discord.Member, penalty: dict) -> discord.Embed:
+    remaining = max(0, penalty["required_count"] - penalty["completed_count"])
+    embed = discord.Embed(title="🛠 노동", color=0xE67E22)
+    embed.add_field(name="대상", value=member.mention, inline=False)
+    embed.add_field(name="미상환 기준 금액", value=format_money(penalty["debt_amount"]), inline=False)
+    embed.add_field(
+        name="진행 현황",
+        value=(
+            f"완료: `{penalty['completed_count']}회`\n"
+            f"필요: `{penalty['required_count']}회`\n"
+            f"남은 횟수: `{remaining}회`"
+        ),
+        inline=False,
+    )
+    return embed
+
+# ============================================================
+# 무기 강화 헬퍼
+# ============================================================
 
 def ensure_weapon_inventory(guild_id: int, user_id: int):
     cursor.execute(
@@ -1252,21 +1484,6 @@ def get_protection_purchase_level(tier: str) -> int:
 def get_protection_cost_by_tier(tier: str) -> int:
     return PROTECTION_TIER_PRICES[tier]
 
-
-def ensure_weapon_inventory(guild_id: int, user_id: int):
-    cursor.execute(
-        """
-        INSERT OR IGNORE INTO weapon_inventory(
-            guild_id, user_id, weapon_level,
-            low_protection_count, mid_protection_count, high_protection_count,
-            total_upgrade_spent, total_protection_spent
-        )
-        VALUES (?, ?, 0, 0, 0, 0, 0, 0)
-        """,
-        (str(guild_id), str(user_id)),
-    )
-    conn.commit()
-
 def add_protection_count(guild_id: int, user_id: int, tier: str, amount: int):
     ensure_weapon_inventory(guild_id, user_id)
     column = {
@@ -1325,10 +1542,6 @@ def get_weapon_name(level: int) -> str:
 
 def get_upgrade_cost(level: int) -> int | None:
     return WEAPON_UPGRADE_COSTS.get(level)
-
-
-def get_protection_cost(level: int) -> int:
-    return WEAPON_PROTECTION_COSTS.get(level, WEAPON_PROTECTION_COSTS[21])
 
 
 def get_weapon_sell_price(level: int) -> int:
@@ -1490,20 +1703,6 @@ def get_scrim_signups(message_id: int):
     )
     return [row[0] for row in cursor.fetchall()]
 
-def set_credit_blacklisted(user_id: int, is_blacklisted: bool):
-    ensure_credit_profile(user_id)
-    blacklisted_at = dt_to_db(get_kst_now()) if is_blacklisted else None
-    cursor.execute(
-        """
-        UPDATE credit_profiles
-        SET is_blacklisted=?, blacklisted_at=?
-        WHERE user_id=?
-        """,
-        (1 if is_blacklisted else 0, blacklisted_at, str(user_id)),
-    )
-    conn.commit()
-
-
 def get_pending_all_in_dates(guild_id: int, today_date: str):
     cursor.execute(
         """
@@ -1526,6 +1725,10 @@ GAME_LABELS = {
 }
 
 
+
+# ============================================================
+# UI 뷰 / 모달
+# ============================================================
 
 async def backfill_probation_members():
     for guild in bot.guilds:
@@ -2755,7 +2958,7 @@ class WeaponUpgradeButton(discord.ui.Button):
                 message_text = f"강화 실패! 보호권이 자동 사용되어 파괴가 방지되었습니다. 현재 무기: `{current_level}강 {before_name}`"
                 color = 0x3498DB
             else:
-                set_weapon_level(view.guild_id, view.user_id, 0)
+                reset_weapon_progress(view.guild_id, view.user_id)
                 message_text = f"강화 실패! `{current_level}강 {before_name}` 무기가 파괴되었습니다."
                 color = 0xE74C3C
         else:
@@ -2881,6 +3084,41 @@ class WeaponUpgradeView(discord.ui.View):
         self.add_item(ProtectionPurchaseButton())
 
 
+class LaborWorkView(discord.ui.View):
+    def __init__(self, guild_id: int, user_id: int):
+        super().__init__(timeout=300)
+        self.guild_id = guild_id
+        self.user_id = user_id
+
+    @discord.ui.button(label="노동하기", style=discord.ButtonStyle.primary)
+    async def work(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("이 버튼은 명령어를 사용한 사람만 누를 수 있습니다.", ephemeral=True)
+            return
+
+        penalty, resolved = increment_labor_count(self.guild_id, self.user_id)
+        if penalty is None:
+            await interaction.response.send_message("진행 중인 노동 패널티가 없습니다.", ephemeral=True)
+            return
+
+        embed = build_labor_embed(interaction.user, penalty)
+
+        if resolved:
+            embed.title = "✅ 노동 완료"
+            embed.color = 0x2ECC71
+            embed.add_field(
+                name="결과",
+                value=f"필요 노동 횟수를 모두 채워 신용불량자 상태가 해제되고 `{INITIAL_CREDIT_GRADE}등급`으로 초기화되었습니다.",
+                inline=False,
+            )
+            for item in self.children:
+                item.disabled = True
+        else:
+            embed.add_field(name="결과", value="노동 1회를 완료했습니다.", inline=False)
+
+        await interaction.response.edit_message(embed=embed, view=self)
+
+
 class StickyMessageModal(discord.ui.Modal, title="고정메시지 설정"):
     content = discord.ui.TextInput(
         label="고정할 메시지 내용",
@@ -2944,6 +3182,14 @@ async def create_recruit_post(
         "max_players": max_players,
     }
 
+
+# ============================================================
+# 슬래시 명령어
+# ============================================================
+
+# ----------------------------
+# 관리자 설정 명령어
+# ----------------------------
 
 @bot.tree.command(name="세팅생일알림", description="현재 채널을 생일 알림 채널로 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
@@ -3087,6 +3333,24 @@ async def set_probation_days(interaction: discord.Interaction, days: int):
     set_guild_setting(interaction.guild.id, "probation_days", str(days))
     await interaction.response.send_message(
         f"신입 역할 경과일을 {days}일로 설정했습니다.",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="적금세팅", description="적금 기간과 이자율을 설정합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def savings_setting(interaction: discord.Interaction, days: int, interest_rate: int):
+    if days < 1:
+        await interaction.response.send_message("적금 기간은 1일 이상이어야 합니다.", ephemeral=True)
+        return
+    if interest_rate < 0:
+        await interaction.response.send_message("이자율은 0 이상이어야 합니다.", ephemeral=True)
+        return
+
+    set_guild_setting(interaction.guild.id, "savings_days", str(days))
+    set_guild_setting(interaction.guild.id, "savings_interest_rate", str(interest_rate))
+    await interaction.response.send_message(
+        f"적금 설정을 저장했습니다.\n기간: `{days}일`\n이자율: `{interest_rate}%`",
         ephemeral=True,
     )
 
@@ -3313,6 +3577,10 @@ async def time_panel(interaction: discord.Interaction):
     await interaction.response.send_message("시간 설정 패널 생성 완료", ephemeral=True)
 
 
+# ----------------------------
+# 재화 / 적금 명령어
+# ----------------------------
+
 @bot.tree.command(name="상생지원금", description="하루에 한 번 상생지원금 10,000원을 받습니다.")
 async def daily_money(interaction: discord.Interaction):
     today = get_kst_now().strftime("%Y-%m-%d")
@@ -3340,6 +3608,86 @@ async def balance(interaction: discord.Interaction):
     await interaction.response.send_message(
         f"{interaction.user.mention}님의 현재 잔액은 `{format_money(get_balance(interaction.user.id))}`입니다."
     )
+
+
+@bot.tree.command(name="적금", description="현재 서버 설정 기준으로 적금을 가입합니다.")
+async def savings_join(interaction: discord.Interaction, amount: int):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+    if amount <= 0:
+        await interaction.response.send_message("적금 금액은 1원 이상이어야 합니다.", ephemeral=True)
+        return
+    if not can_afford(interaction.user.id, amount):
+        await interaction.response.send_message("잔액이 부족합니다.", ephemeral=True)
+        return
+    if get_active_saving(interaction.guild.id, interaction.user.id) is not None:
+        await interaction.response.send_message("이미 진행 중인 적금이 있습니다. `/내적금`으로 확인해주세요.", ephemeral=True)
+        return
+
+    days = get_savings_days(interaction.guild.id)
+    interest_rate = get_savings_interest_rate(interaction.guild.id)
+    due_at = get_kst_now() + timedelta(days=days)
+    total_amount = int(amount * (100 + interest_rate) / 100)
+
+    add_balance(interaction.user.id, -amount)
+    create_saving(interaction.guild.id, interaction.user.id, amount, interest_rate, total_amount, due_at)
+
+    embed = discord.Embed(title="🏦 적금 가입 완료", color=0x3498DB)
+    embed.add_field(name="원금", value=format_money(amount), inline=False)
+    embed.add_field(name="이자율", value=f"{interest_rate}%", inline=False)
+    embed.add_field(name="만기 수령액", value=format_money(total_amount), inline=False)
+    embed.add_field(name="만기일", value=due_at.strftime("%Y-%m-%d %H:%M:%S KST"), inline=False)
+    embed.add_field(name="현재 잔액", value=format_money(get_balance(interaction.user.id)), inline=False)
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="내적금", description="현재 가입 중인 적금 정보를 확인합니다.")
+async def my_savings(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    saving = get_active_saving(interaction.guild.id, interaction.user.id)
+    if saving is None:
+        await interaction.response.send_message("현재 가입 중인 적금이 없습니다.", ephemeral=True)
+        return
+
+    due_at = dt_from_db(saving["due_at"])
+    matured = get_kst_now() >= due_at
+
+    embed = discord.Embed(title="🏦 내 적금", color=0x1ABC9C)
+    embed.add_field(name="원금", value=format_money(saving["principal"]), inline=False)
+    embed.add_field(name="이자율", value=f"{saving['interest_rate']}%", inline=False)
+    embed.add_field(name="만기 수령액", value=format_money(saving["total_amount"]), inline=False)
+    embed.add_field(name="만기일", value=due_at.strftime("%Y-%m-%d %H:%M:%S KST"), inline=False)
+    embed.add_field(name="상태", value="수령 가능" if matured else "적금 진행 중", inline=False)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="적금수령", description="만기된 적금을 수령합니다.")
+async def savings_claim(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    saving = get_active_saving(interaction.guild.id, interaction.user.id)
+    if saving is None:
+        await interaction.response.send_message("현재 수령할 적금이 없습니다.", ephemeral=True)
+        return
+
+    due_at = dt_from_db(saving["due_at"])
+    if get_kst_now() < due_at:
+        await interaction.response.send_message("아직 적금 만기 전입니다.", ephemeral=True)
+        return
+
+    add_balance(interaction.user.id, saving["total_amount"])
+    claim_saving(saving["id"])
+
+    embed = discord.Embed(title="🏦 적금 수령 완료", color=0x2ECC71)
+    embed.add_field(name="수령액", value=format_money(saving["total_amount"]), inline=False)
+    embed.add_field(name="현재 잔액", value=format_money(get_balance(interaction.user.id)), inline=False)
+    await interaction.response.send_message(embed=embed)
 
 
 @bot.tree.command(name="랭킹", description="서버 자산 랭킹 상위 10명을 확인합니다.")
@@ -3473,8 +3821,14 @@ async def remove_money(interaction: discord.Interaction, member: discord.Member,
     )
 
 
+# ----------------------------
+# 도박 명령어
+# ----------------------------
+
 @bot.tree.command(name="슬롯", description="입력한 금액으로 슬롯머신을 돌립니다.")
 async def slot(interaction: discord.Interaction, amount: int):
+    if not await ensure_not_blacklisted_for_gambling(interaction):
+        return
     if amount < MIN_BET:
         await interaction.response.send_message(f"최소 배팅 금액은 `{format_money(MIN_BET)}`입니다.", ephemeral=True)
         return
@@ -3543,6 +3897,8 @@ async def slot(interaction: discord.Interaction, amount: int):
 
 @bot.tree.command(name="동전", description="입력한 금액으로 동전 앞뒤 맞추기를 합니다.")
 async def coin(interaction: discord.Interaction, amount: int):
+    if not await ensure_not_blacklisted_for_gambling(interaction):
+        return
     if amount < MIN_BET:
         await interaction.response.send_message(f"최소 배팅 금액은 `{format_money(MIN_BET)}`입니다.", ephemeral=True)
         return
@@ -3566,6 +3922,8 @@ async def coin(interaction: discord.Interaction, amount: int):
 
 @bot.tree.command(name="룰렛", description="룰렛에 배팅하고 색상을 선택합니다.")
 async def roulette(interaction: discord.Interaction, amount: int):
+    if not await ensure_not_blacklisted_for_gambling(interaction):
+        return
     if amount < MIN_BET:
         await interaction.response.send_message(
             f"최소 배팅 금액은 `{format_money(MIN_BET)}`입니다.",
@@ -3700,6 +4058,8 @@ async def general_recruit(interaction: discord.Interaction):
 
 @bot.tree.command(name="보급", description="배그 보급상자를 열어 결과에 따라 보상을 받습니다.")
 async def supply_drop(interaction: discord.Interaction, amount: int):
+    if not await ensure_not_blacklisted_for_gambling(interaction):
+        return
     if amount < MIN_BET:
         await interaction.response.send_message(
             f"최소 배팅 금액은 `{format_money(MIN_BET)}`입니다.",
@@ -3883,6 +4243,8 @@ async def game_history_command(interaction: discord.Interaction):
 
 @bot.tree.command(name="몰빵참여", description="오늘의 몰빵게임에 참여합니다.")
 async def join_all_in_game(interaction: discord.Interaction):
+    if not await ensure_not_blacklisted_for_gambling(interaction):
+        return
     if interaction.guild is None:
         await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
         return
@@ -3940,6 +4302,10 @@ async def money_grant_history(interaction: discord.Interaction, member: discord.
         color=0xF1C40F,
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# ----------------------------
+# 신용 / 대출 명령어
+# ----------------------------
 
 @bot.tree.command(name="일수", description="현재 신용등급 기준으로 대출을 받습니다.")
 @app_commands.rename(amount="금액")
@@ -4032,6 +4398,8 @@ async def repay_loan_command(interaction: discord.Interaction):
     if profile["is_blacklisted"]:
         set_credit_blacklisted(interaction.user.id, False)
         set_credit_grade(interaction.user.id, 6)
+        if interaction.guild is not None:
+            delete_labor_penalty(interaction.guild.id, interaction.user.id)
         grade_up = True
     else:
         required_amount = get_loan_limit_by_grade(profile["grade"])
@@ -4077,6 +4445,7 @@ async def repay_loan_command(interaction: discord.Interaction):
 async def my_credit(interaction: discord.Interaction):
     profile = get_credit_profile(interaction.user.id)
     active_loan = get_active_loan(interaction.user.id)
+    labor_penalty = get_active_labor_penalty(interaction.guild.id, interaction.user.id) if interaction.guild else None
 
     if profile["is_blacklisted"]:
         grade_text = "신용불량자"
@@ -4104,10 +4473,64 @@ async def my_credit(interaction: discord.Interaction):
             due_text = active_loan["due_at"]
         embed.add_field(name="상환 기한", value=due_text, inline=False)
 
+    if labor_penalty is not None:
+        remaining = max(0, labor_penalty["required_count"] - labor_penalty["completed_count"])
+        embed.add_field(
+            name="노동 진행 현황",
+            value=(
+                f"완료: `{labor_penalty['completed_count']}회`\n"
+                f"필요: `{labor_penalty['required_count']}회`\n"
+                f"남은 횟수: `{remaining}회`"
+            ),
+            inline=False,
+        )
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="노동", description="신용불량자 상태일 때 노동을 진행합니다.")
+async def labor(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    profile = get_credit_profile(interaction.user.id)
+    if not profile["is_blacklisted"]:
+        await interaction.response.send_message("현재 신용불량자 상태가 아닙니다.", ephemeral=True)
+        return
+
+    penalty = get_active_labor_penalty(interaction.guild.id, interaction.user.id)
+    if penalty is None:
+        await interaction.response.send_message("진행 중인 노동 패널티 정보가 없습니다. 관리자에게 문의해주세요.", ephemeral=True)
+        return
+
+    embed = build_labor_embed(interaction.user, penalty)
+    await interaction.response.send_message(
+        embed=embed,
+        view=LaborWorkView(interaction.guild.id, interaction.user.id),
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="노동현황", description="현재 노동 진행 현황을 확인합니다.")
+async def labor_status(interaction: discord.Interaction, member: discord.Member | None = None):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    target = member or interaction.user
+    penalty = get_active_labor_penalty(interaction.guild.id, target.id)
+    if penalty is None:
+        await interaction.response.send_message("진행 중인 노동 패널티가 없습니다.", ephemeral=True)
+        return
+
+    embed = build_labor_embed(target, penalty)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="덕몽", description="덕몽어스 테마의 오리를 찾아라 게임입니다.")
 async def duckmong(interaction: discord.Interaction, amount: int):
+    if not await ensure_not_blacklisted_for_gambling(interaction):
+        return
     if amount < MIN_BET:
         await interaction.response.send_message(
             f"최소 배팅 금액은 `{format_money(MIN_BET)}`입니다.",
@@ -4143,6 +4566,10 @@ async def duckmong(interaction: discord.Interaction, amount: int):
         embed=embed,
         view=DuckmongView(interaction.user.id, amount, fake_names, hidden_results),
     )
+
+# ----------------------------
+# 무기 강화 명령어
+# ----------------------------
 
 @bot.tree.command(name="강화", description="현재 무기의 강화 정보와 강화 버튼을 확인합니다.")
 async def upgrade_weapon(interaction: discord.Interaction):
@@ -4286,44 +4713,74 @@ async def weapon_info_table(interaction: discord.Interaction):
 
 @bot.tree.command(name="도박명령어", description="도박 및 재화 시스템 관련 명령어를 확인합니다.")
 async def gambling_commands(interaction: discord.Interaction):
-    embed = discord.Embed(title="🎰 도박 / 재화 시스템 명령어", color=0xF1C40F)
+    embed = discord.Embed(
+        title="🎰 도박 / 재화 시스템 명령어",
+        description=(
+            "재화, 대출, 적금, 강화, 도박 명령어를 한 번에 확인할 수 있습니다.\n"
+            "신용불량자 상태에서는 일부 도박 명령어가 제한됩니다."
+        ),
+        color=0xF1C40F,
+    )
 
     embed.add_field(
-        name="기본 재화",
+        name="💰 재화 관리",
         value=(
             "`/상생지원금` - 하루 지원금 받기\n"
             "`/잔액` - 현재 잔액 확인\n"
-            "`/랭킹` - 자산 랭킹 확인\n"
+            "`/랭킹` - 서버 자산 랭킹 확인\n"
             "`/송금` - 다른 유저에게 송금"
         ),
         inline=False,
     )
 
     embed.add_field(
-        name="대출 / 신용",
+        name="🏦 적금",
         value=(
-            "`/일수 [금액]` - 대출 받기\n"
-            "`/중도상환` - 현재 대출 상환\n"
-            "`/내신용` - 신용등급 및 대출 상태 확인"
+            "`/적금 [금액]` - 현재 서버 설정 기준으로 적금 가입\n"
+            "`/내적금` - 현재 가입 중인 적금 확인\n"
+            "`/적금수령` - 만기된 적금 수령"
         ),
         inline=False,
     )
 
     embed.add_field(
-        name="도박 게임",
+        name="💳 대출 / 신용",
+        value=(
+            "`/일수 [금액]` - 현재 신용등급 기준으로 대출\n"
+            "`/중도상환` - 현재 대출 전액 상환\n"
+            "`/내신용` - 신용등급, 대출, 노동 현황 확인\n"
+            "`/노동` - 신용불량자 노동 진행\n"
+            "`/노동현황` - 노동 횟수 진행 상황 확인"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="🎲 도박 게임",
         value=(
             "`/슬롯 [금액]` - 슬롯머신\n"
             "`/동전 [금액]` - 동전 앞뒤 맞추기\n"
             "`/룰렛 [금액]` - 색상 배팅 룰렛\n"
             "`/보급 [금액]` - 보급상자 게임\n"
-            "`/덕몽 [금액]` - 오리를 찾아라 야바위\n"
-            "`/몰빵참여` - 몰빵게임 참여"
+            "`/덕몽 [금액]` - 오리를 찾아라\n"
+            "`/몰빵참여` - 하루 1회 몰빵게임 참여"
         ),
         inline=False,
     )
 
     embed.add_field(
-        name="확률 / 기록",
+        name="🛠 강화 시스템",
+        value=(
+            "`/강화` - 무기 강화 패널 열기\n"
+            "`/강화현황` - 현재 무기, 보호권, 누적 투자 확인\n"
+            "`/강화정보` - 단계별 강화 비용, 확률, 판매가 확인\n"
+            "`/무기판매` - 현재 무기 판매"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="📜 참고 정보",
         value=(
             "`/확률표` - 게임 확률과 배당 확인\n"
             "`/족보` - 최근 게임 결과 확인"
@@ -4332,25 +4789,15 @@ async def gambling_commands(interaction: discord.Interaction):
     )
 
     embed.add_field(
-        name="강화 시스템",
-        value=(
-            "`/강화` - 무기 강화 패널 열기\n"
-            "`/강화현황` - 현재 무기 / 보호권 확인\n"
-            "`/강화정보` - 전체 강화 비용 / 확률 / 판매가 확인\n"
-            "`/무기판매` - 현재 무기 판매"
-        ),
-        inline=False,
-    )
-
-
-
-
-    embed.add_field(
-        name="관리자 전용",
+        name="🛡 관리자 전용",
         value=(
             "`/돈지급` - 여러 유저에게 재화 지급\n"
             "`/돈지급내역` - 특정 유저 지급 내역 확인\n"
-            "`/돈삭제` - 특정 유저 재화 차감"
+            "`/돈삭제` - 특정 유저 재화 차감\n"
+            "`/적금세팅` - 적금 기간/이자율 설정\n"
+            "`/신용불량자등록` - 신용불량자 등록\n"
+            "`/신용불량자삭제` - 오등록 해제\n"
+            "`/신용초기화` - 신용등급 직접 조정"
         ),
         inline=False,
     )
@@ -4362,14 +4809,21 @@ async def gambling_commands(interaction: discord.Interaction):
 async def scrim_notice(interaction: discord.Interaction):
     await interaction.response.send_modal(ScrimNoticeModal())
 
+# ----------------------------
+# 관리자 신용 관리 명령어
+# ----------------------------
+
 @bot.tree.command(name="신용불량자등록", description="특정 인원을 신용불량자로 등록합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def blacklist_user(interaction: discord.Interaction, member: discord.Member):
     set_credit_grade(member.id, 6)
     set_credit_blacklisted(member.id, True)
+    active_loan = get_active_loan(member.id)
+    debt_amount = active_loan["total_repayment"] if active_loan else DEFAULT_LABOR_DEBT_AMOUNT
+    create_or_replace_labor_penalty(interaction.guild.id, member.id, debt_amount)
 
     await interaction.response.send_message(
-        f"{member.mention}님을 신용불량자로 등록했습니다.\n현재 신용등급: `신용불량자`",
+        f"{member.mention}님을 신용불량자로 등록했습니다.\n필요 노동 횟수: `{calculate_labor_required_count(debt_amount)}회`",
         ephemeral=True,
     )
 
@@ -4398,7 +4852,7 @@ async def blacklist_list(interaction: discord.Interaction):
         lines.append(
             f"**{name}**\n"
             f"등록일: `{blacklisted_text}`\n"
-            f"신용등급: `신용불량자`"
+            f"신용등급: `{grade}등급 (신용불량자)`"
         )
 
     embed = discord.Embed(
@@ -4409,18 +4863,39 @@ async def blacklist_list(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="개인회생", description="특정 인원의 신용불량자 상태를 해제하고 6등급으로 조정합니다.")
+@bot.tree.command(name="신용불량자삭제", description="실수로 등록한 인원을 신용불량자 목록에서 제거합니다.")
 @app_commands.checks.has_permissions(administrator=True)
-async def debt_recovery(interaction: discord.Interaction, member: discord.Member):
-    set_credit_grade(member.id, 6)
+async def remove_blacklist(interaction: discord.Interaction, member: discord.Member):
     set_credit_blacklisted(member.id, False)
+    delete_labor_penalty(interaction.guild.id, member.id)
 
     await interaction.response.send_message(
-        f"{member.mention}님의 신용불량자 상태를 해제하고 신용등급을 `6등급`으로 조정했습니다.",
+        f"{member.mention}님의 신용불량자 등록을 해제했습니다.\n신용등급은 변경하지 않았습니다.",
         ephemeral=True,
     )
 
 
+@bot.tree.command(name="신용초기화", description="특정 인원의 신용불량자 상태를 해제하고 원하는 등급으로 조정합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def reset_credit(interaction: discord.Interaction, member: discord.Member, grade: int):
+    if grade < 1 or grade > 6:
+        await interaction.response.send_message("등급은 1등급부터 6등급까지만 가능합니다.", ephemeral=True)
+        return
+
+    set_credit_blacklisted(member.id, False)
+    set_credit_grade(member.id, grade)
+    delete_labor_penalty(interaction.guild.id, member.id)
+
+    await interaction.response.send_message(
+        f"{member.mention}님의 신용을 `{grade}등급`으로 초기화했습니다.",
+        ephemeral=True,
+    )
+
+
+
+# ============================================================
+# 디스코드 이벤트
+# ============================================================
 
 @bot.event
 async def on_member_update(before: discord.Member, after: discord.Member):
@@ -4554,6 +5029,10 @@ async def on_message(message: discord.Message):
 
     await bot.process_commands(message)
 
+
+# ============================================================
+# 백그라운드 작업
+# ============================================================
 
 @tasks.loop(hours=1)
 async def probation_role_check_loop():
@@ -4744,11 +5223,18 @@ async def loan_due_check_loop():
     now = get_kst_now()
     rows = get_due_loans(now)
 
-    for loan_id, user_id, due_at in rows:
+    for loan_id, guild_id, user_id, total_repayment, due_at in rows:
         mark_loan_overdue(loan_id)
         downgrade_credit_grade(int(user_id))
+        profile = get_credit_profile(int(user_id))
+        if profile["is_blacklisted"]:
+            create_or_replace_labor_penalty(int(guild_id), int(user_id), int(total_repayment))
 
 
+
+# ============================================================
+# 봇 시작 설정
+# ============================================================
 
 @bot.event
 async def on_ready():
