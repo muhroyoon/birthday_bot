@@ -4519,6 +4519,7 @@ async def labor(interaction: discord.Interaction):
         await interaction.response.send_message("진행 중인 노동 패널티 정보가 없습니다. 관리자에게 문의해주세요.", ephemeral=True)
         return
 
+    embed = build_labor_embed(interaction.user, penalty)
     await interaction.response.send_message(
         embed=embed,
         view=LaborWorkView(interaction.guild.id, interaction.user.id),
