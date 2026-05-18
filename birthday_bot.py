@@ -14,7 +14,7 @@ from discord.ext import commands, tasks
 # 2. 전역 설정
 # 3. 데이터베이스 초기화
 # 4. 서버 설정 / 템플릿 헬퍼
-# 5. 잔액 / 지갑 헬퍼
+# 5. 재화 / 지급 헬퍼
 # 6. 대기방 / 닉네임 패널 헬퍼
 # 7. 신용 / 대출 / 적금 / 노동 헬퍼
 # 8. 무기 강화 헬퍼
@@ -22,7 +22,7 @@ from discord.ext import commands, tasks
 # 10. 슬래시 명령어
 #    - 관리자 설정 명령어
 #    - 재화 / 적금 명령어
-#    - 도박 명령어
+#    - 게임 명령어
 #    - 신용 / 대출 명령어
 #    - 무기 강화 명령어
 #    - 관리자 신용 관리 명령어
@@ -45,13 +45,13 @@ def normalize_birthday(date_str: str) -> str:
     parts = value.split("-")
 
     if len(parts) != 2:
-        raise ValueError("생일 형식은 MM-DD 로 입력해주세요.")
+        raise ValueError("?앹씪 ?뺤떇? MM-DD 濡??낅젰?댁＜?몄슂.")
 
     month = int(parts[0])
     day = int(parts[1])
 
     if not (1 <= month <= 12 and 1 <= day <= 31):
-        raise ValueError("올바른 날짜를 입력해주세요.")
+        raise ValueError("?щ컮瑜??좎쭨瑜??낅젰?댁＜?몄슂.")
 
     return f"{month:02d}-{day:02d}"
 
@@ -76,7 +76,7 @@ COIN_FLIP_TIMEOUT = 60
 ROULETTE_TIMEOUT = 60
 MAX_PLAYERS = 4
 ALL_IN_COST = 10000
-ALL_IN_GAME_NAME = "몰빵게임"
+ALL_IN_GAME_NAME = "紐곕뭇寃뚯엫"
 GAME_HISTORY_LIMIT = 10
 INITIAL_CREDIT_GRADE = 5
 LOAN_REPAYMENT_DAYS = 2
@@ -206,9 +206,9 @@ WEAPON_UPGRADE_RATES = {
 }
 
 PROTECTION_TIER_PRICES = {
-    "low": 100000,    # 1강~7강
-    "mid": 400000,    # 8강~14강
-    "high": 1200000,  # 15강~21강
+    "low": 100000,    # 1媛?7媛?
+    "mid": 400000,    # 8媛?14媛?
+    "high": 1200000,  # 15媛?21媛?
 }
 
 PROTECTION_TIER_LABELS = {
@@ -228,21 +228,21 @@ TIME_SLOT_LABELS = {
 
 DEFAULT_RULE_BUTTON_TEXT = "원활한 게임을 위해 서버 규칙을 확인해주세요.\n확인 후 아래 버튼을 눌러주세요!"
 DEFAULT_UPGRADE_PANEL_TEXT = (
-    "등업 신청 패널입니다.\n\n"
-    "1. 닉네임 변경\n"
-    "2. 자기소개 작성\n"
-    "3. 규칙 확인\n"
-    "4. 출석 체크\n\n"
-    "완료하셨다면 아래 버튼을 눌러주세요!"
+    "?깆뾽 ?좎껌 ?⑤꼸?낅땲??\n\n"
+    "1. ?됰꽕??蹂寃?n"
+    "2. ?먭린?뚭컻 ?묒꽦\n"
+    "3. 洹쒖튃 ?뺤씤\n"
+    "4. 異쒖꽍 泥댄겕\n\n"
+    "?꾨즺?섏뀲?ㅻ㈃ ?꾨옒 踰꾪듉???뚮윭二쇱꽭??"
 )
 DEFAULT_WELCOME_DM_TEXT = (
-    "안녕하세요 {user}님! 서버에 오신 걸 환영합니다!\n"
-    "서버 안내는 {guide_channel} 에 정리되어 있습니다.\n"
-    "궁금한 점이 있으면 관리자에게 문의해주세요!"
+    "?덈뀞?섏꽭??{user}?? ?쒕쾭???ㅼ떊 嫄??섏쁺?⑸땲??\n"
+    "?쒕쾭 ?덈궡??{guide_channel} ???뺣━?섏뼱 ?덉뒿?덈떎.\n"
+    "沅곴툑???먯씠 ?덉쑝硫?愿由ъ옄?먭쾶 臾몄쓽?댁＜?몄슂!"
 )
 DEFAULT_PROBATION_NOTICE_TEXT = (
-    "신입 역할 부여 후 7일이 지났습니다.\n"
-    "출석과 평판을 확인한 뒤 역할 유지 여부를 검토해주세요."
+    "?좎엯 ??븷 遺????7?쇱씠 吏?ъ뒿?덈떎.\n"
+    "異쒖꽍怨??됲뙋???뺤씤??????븷 ?좎? ?щ?瑜?寃?좏빐二쇱꽭??"
 )
 DEFAULT_PROBATION_DAYS = "7"
 
@@ -701,7 +701,7 @@ async def refresh_sticky_message(channel: discord.TextChannel):
 
 
 # ============================================================
-# 잔액 / 지갑 헬퍼
+# 재화 / 지급 헬퍼
 # ============================================================
 
 def ensure_wallet(user_id: int):
@@ -732,7 +732,7 @@ def format_money(amount: int) -> str:
 def get_spectator_prefixes(guild_id: int) -> list[str]:
     raw = get_guild_setting(guild_id, "spectator_prefixes")
     if not raw:
-        return ["📺관전중"]
+        return ["관전자"]
 
     return [item.strip() for item in raw.split(",") if item.strip()]
 
@@ -1052,7 +1052,7 @@ def upgrade_credit_grade(user_id: int):
     profile = get_credit_profile(user_id)
 
     if profile["is_blacklisted"]:
-        # 신용불량자 해제 시 6등급으로 복귀
+        # ?좎슜遺덈웾???댁젣 ??6?깃툒?쇰줈 蹂듦?
         set_credit_blacklisted(user_id, False)
         set_credit_grade(user_id, 6)
         return
@@ -1241,7 +1241,7 @@ def claim_saving(saving_id: int):
 
 
 def calculate_labor_required_count(debt_amount: int) -> int:
-    return max(10, debt_amount // 10_000)
+    return max(10, min(1000, debt_amount // 10_000))
 
 
 def create_or_replace_labor_penalty(guild_id: int, user_id: int, debt_amount: int):
@@ -1347,7 +1347,7 @@ async def ensure_not_blacklisted_for_gambling(interaction: discord.Interaction) 
     profile = get_credit_profile(interaction.user.id)
     if profile["is_blacklisted"]:
         await interaction.response.send_message(
-            "현재 신용불량자 상태라 도박 명령어를 사용할 수 없습니다. `/노동`으로 신용 회복을 진행해주세요.",
+            "?꾩옱 ?좎슜遺덈웾???곹깭???꾨컯 紐낅졊?대? ?ъ슜?????놁뒿?덈떎. `/?몃룞`?쇰줈 ?좎슜 ?뚮났??吏꾪뻾?댁＜?몄슂.",
             ephemeral=True,
         )
         return False
@@ -1552,7 +1552,7 @@ def ensure_base_weapon(guild_id: int, user_id: int):
 
 
 def get_weapon_name(level: int) -> str:
-    return WEAPON_LEVEL_NAMES.get(level, "알 수 없는 무기")
+    return WEAPON_LEVEL_NAMES.get(level, "?????녿뒗 臾닿린")
 
 
 def get_upgrade_cost(level: int) -> int | None:
@@ -1589,26 +1589,26 @@ def build_upgrade_embed(guild_id: int, user_id: int) -> discord.Embed:
     total_invested = total_upgrade_spent + total_protection_spent
 
     embed = discord.Embed(
-        title="🔧 무기 강화",
-        description="강화할 무기 정보를 확인하고 아래 버튼으로 진행해주세요.",
+        title="?뵩 臾닿린 媛뺥솕",
+        description="媛뺥솕??臾닿린 ?뺣낫瑜??뺤씤?섍퀬 ?꾨옒 踰꾪듉?쇰줈 吏꾪뻾?댁＜?몄슂.",
         color=0x5865F2,
     )
 
     embed.add_field(
-        name="현재 무기",
+        name="?꾩옱 臾닿린",
         value=(
-            f"`{current_level}강 {current_name}`\n"
-            f"판매 가격: `{format_money(current_sell_price)}`"
+            f"`{current_level}媛?{current_name}`\n"
+            f"?먮ℓ 媛寃? `{format_money(current_sell_price)}`"
         ),
         inline=False,
     )
 
     embed.add_field(
-        name="누적 투자",
+        name="?꾩쟻 ?ъ옄",
         value=(
-            f"강화 누적: `{format_money(total_upgrade_spent)}`\n"
-            f"보호권 누적: `{format_money(total_protection_spent)}`\n"
-            f"총 투자: `{format_money(total_invested)}`"
+            f"媛뺥솕 ?꾩쟻: `{format_money(total_upgrade_spent)}`\n"
+            f"蹂댄샇沅??꾩쟻: `{format_money(total_protection_spent)}`\n"
+            f"珥??ъ옄: `{format_money(total_invested)}`"
         ),
         inline=False,
     )
@@ -1616,23 +1616,23 @@ def build_upgrade_embed(guild_id: int, user_id: int) -> discord.Embed:
     embed.add_field(
         name="보유 보호권",
         value=(
-            f"저강: `{low_count}장`\n"
-            f"중강: `{mid_count}장`\n"
-            f"고강: `{high_count}장`"
+            f"저강: `{low_count}개`\n"
+            f"중강: `{mid_count}개`\n"
+            f"고강: `{high_count}개`"
         ),
         inline=True,
     )
 
     embed.add_field(
-        name="현재 잔액",
+        name="?꾩옱 ?붿븸",
         value=f"`{format_money(balance)}`",
         inline=True,
     )
 
     if current_level >= 21:
         embed.add_field(
-            name="강화 상태",
-            value="최대 강화 단계입니다.",
+            name="媛뺥솕 ?곹깭",
+            value="理쒕? 媛뺥솕 ?④퀎?낅땲??",
             inline=False,
         )
         return embed
@@ -1648,38 +1648,38 @@ def build_upgrade_embed(guild_id: int, user_id: int) -> discord.Embed:
     purchase_level = get_protection_purchase_level(tier)
 
     embed.add_field(
-        name="다음 무기",
-        value=f"`{next_level}강 {next_name}`",
+        name="?ㅼ쓬 臾닿린",
+        value=f"`{next_level}媛?{next_name}`",
         inline=False,
     )
 
     embed.add_field(
-        name="비용 정보",
+        name="鍮꾩슜 ?뺣낫",
         value=(
-            f"강화 비용: `{format_money(upgrade_cost)}`\n"
+            f"媛뺥솕 鍮꾩슜: `{format_money(upgrade_cost)}`\n"
             f"{protection_label}: `{format_money(protection_cost)}`"
         ),
         inline=True,
     )
 
     embed.add_field(
-        name="강화 확률",
+        name="媛뺥솕 ?뺣쪧",
         value=(
-            f"성공: `{rates['success']}%`\n"
-            f"하락: `{rates['down']}%`\n"
-            f"파괴: `{rates['destroy']}%`\n"
-            f"유지: `{rates['keep']}%`"
+            f"?깃났: `{rates['success']}%`\n"
+            f"?섎씫: `{rates['down']}%`\n"
+            f"?뚭눼: `{rates['destroy']}%`\n"
+            f"?좎?: `{rates['keep']}%`"
         ),
         inline=True,
     )
 
     embed.add_field(
-        name="보호권 안내",
+        name="蹂댄샇沅??덈궡",
         value=(
-            f"현재 구간: `{protection_label}`\n"
-            f"구매 가능 단계: `{purchase_level}강`\n"
-            "보호권은 강화 성공을 보장하지 않으며,\n"
-            "실패 시 하락 / 파괴만 자동 방지합니다."
+            f"?꾩옱 援ш컙: `{protection_label}`\n"
+            f"援щℓ 媛???④퀎: `{purchase_level}媛?\n"
+            "蹂댄샇沅뚯? 媛뺥솕 ?깃났??蹂댁옣?섏? ?딆쑝硫?\n"
+            "?ㅽ뙣 ???섎씫 / ?뚭눼留??먮룞 諛⑹??⑸땲??"
         ),
         inline=False,
     )
@@ -1732,11 +1732,11 @@ def get_pending_all_in_dates(guild_id: int, today_date: str):
 
 
 GAME_LABELS = {
-    "슬롯": "슬롯",
-    "동전": "동전",
-    "룰렛": "룰렛",
-    "보급": "보급",
-    "몰빵게임": "몰빵게임",
+    "?щ’": "?щ’",
+    "?숈쟾": "?숈쟾",
+    "猷곕젢": "猷곕젢",
+    "蹂닿툒": "蹂닿툒",
+    "紐곕뭇寃뚯엫": "紐곕뭇寃뚯엫",
 }
 
 
@@ -1779,18 +1779,41 @@ async def backfill_probation_members():
     conn.commit()
 
 
+class UpgradePanelTemplateModal(discord.ui.Modal):
+    def __init__(self, guild_id: int):
+        super().__init__(title="?깆뾽 ?⑤꼸 臾멸뎄 ?ㅼ젙")
+        self.guild_id = guild_id
+        self.content = discord.ui.TextInput(
+            label="?깆뾽 ?⑤꼸 臾멸뎄",
+            placeholder="以꾨컮轅덊빐???낅젰?댁＜?몄슂.",
+            style=discord.TextStyle.paragraph,
+            max_length=2000,
+            required=True,
+            default=get_template_with_default(
+                guild_id,
+                "upgrade_panel_text",
+                DEFAULT_UPGRADE_PANEL_TEXT,
+            ),
+        )
+        self.add_item(self.content)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        set_template(interaction.guild.id, "upgrade_panel_text", str(self.content).strip())
+        await interaction.response.send_message("?깆뾽 ?⑤꼸 臾멸뎄瑜???ν뻽?듬땲??", ephemeral=True)
+
+
 class BirthdayView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="🎁 축하하기 (0)", style=discord.ButtonStyle.green, custom_id="birthday_congrats")
+    @discord.ui.button(label="?럞 異뺥븯?섍린 (0)", style=discord.ButtonStyle.green, custom_id="birthday_congrats")
     async def congrats(self, interaction: discord.Interaction, button: discord.ui.Button):
         cursor.execute(
             "SELECT * FROM congrats WHERE message_id=? AND user_id=?",
             (str(interaction.message.id), str(interaction.user.id)),
         )
         if cursor.fetchone():
-            await interaction.response.send_message("이미 축하했습니다 🎂", ephemeral=True)
+            await interaction.response.send_message("?대? 異뺥븯?덉뒿?덈떎 ?럟", ephemeral=True)
             return
 
         cursor.execute("INSERT INTO congrats VALUES (?,?)", (str(interaction.message.id), str(interaction.user.id)))
@@ -1801,7 +1824,7 @@ class BirthdayView(discord.ui.View):
         cursor.execute("SELECT COUNT(*) FROM congrats WHERE message_id=?", (str(interaction.message.id),))
         count = cursor.fetchone()[0]
 
-        button.label = f"🎁 축하하기 ({count})"
+        button.label = f"?럞 異뺥븯?섍린 ({count})"
         await interaction.message.edit(view=self)
 
         cursor.execute("SELECT user_id FROM birthday_messages WHERE message_id=?", (str(interaction.message.id),))
@@ -1811,15 +1834,15 @@ class BirthdayView(discord.ui.View):
             if member:
                 try:
                     embed = discord.Embed(
-                        title="🎉 생일 축하 도착!",
-                        description=f"**{interaction.user.display_name}님이 당신의 생일을 축하했습니다!** 🎂",
+                        title="?럦 ?앹씪 異뺥븯 ?꾩갑!",
+                        description=f"**{interaction.user.display_name}?섏씠 ?뱀떊???앹씪??異뺥븯?덉뒿?덈떎!** ?럟",
                         color=0xFF69B4,
                     )
                     await member.send(embed=embed)
                 except Exception:
                     pass
 
-        await interaction.response.send_message("🎉 축하 완료!", ephemeral=True)
+        await interaction.response.send_message("?럦 異뺥븯 ?꾨즺!", ephemeral=True)
 
 
 class BirthdayListView(discord.ui.View):
@@ -1839,17 +1862,17 @@ class BirthdayListView(discord.ui.View):
         for member, date in chunk:
             month, day = map(int, date.split("-"))
             if month == now.month and day == now.day:
-                desc += f"🎉 **{member.display_name}** - {date} (오늘!)\n"
+                desc += f"?럦 **{member.display_name}** - {date} (?ㅻ뒛!)\n"
             elif month == now.month:
-                desc += f"⭐ **{member.display_name}** - {date}\n"
+                desc += f"狩?**{member.display_name}** - {date}\n"
             else:
                 desc += f"{member.display_name} - {date}\n"
 
-        embed = discord.Embed(title="🎂 생일 목록", description=desc or "데이터 없음", color=0xFF69B4)
+        embed = discord.Embed(title="?럟 ?앹씪 紐⑸줉", description=desc or "?곗씠???놁쓬", color=0xFF69B4)
         embed.set_footer(text=f"{self.page + 1}/{self.max_page + 1}")
         return embed
 
-    @discord.ui.button(label="◀ 이전")
+    @discord.ui.button(label="? ?댁쟾")
     async def prev(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.page > 0:
             self.page -= 1
@@ -1857,7 +1880,7 @@ class BirthdayListView(discord.ui.View):
         else:
             await interaction.response.defer()
 
-    @discord.ui.button(label="▶ 다음")
+    @discord.ui.button(label="???ㅼ쓬")
     async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.page < self.max_page:
             self.page += 1
@@ -1875,17 +1898,17 @@ class RuleConfirmView(discord.ui.View):
         count = cursor.fetchone()[0]
         for item in self.children:
             if item.custom_id == "rule_confirm":
-                item.label = f"✅ 규칙 확인 ({count})"
+                item.label = f"??洹쒖튃 ?뺤씤 ({count})"
         await message.edit(view=self)
 
-    @discord.ui.button(label="✅ 규칙 확인 (0)", style=discord.ButtonStyle.success, custom_id="rule_confirm")
+    @discord.ui.button(label="??洹쒖튃 ?뺤씤 (0)", style=discord.ButtonStyle.success, custom_id="rule_confirm")
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         cursor.execute(
             "SELECT * FROM rule_confirm WHERE message_id=? AND user_id=?",
             (str(interaction.message.id), str(interaction.user.id)),
         )
         if cursor.fetchone():
-            await interaction.response.send_message("이미 인증 완료된 상태입니다.", ephemeral=True)
+            await interaction.response.send_message("?대? ?몄쬆 ?꾨즺???곹깭?낅땲??", ephemeral=True)
             return
 
         cursor.execute("INSERT INTO rule_confirm VALUES (?,?)", (str(interaction.message.id), str(interaction.user.id)))
@@ -1903,23 +1926,23 @@ class RuleConfirmView(discord.ui.View):
         if rule_log_channel_id is not None:
             log_channel = interaction.guild.get_channel(rule_log_channel_id)
             if log_channel:
-                await log_channel.send(f"✅ {interaction.user.mention} 님이 규칙 확인")
+                await log_channel.send(f"??{interaction.user.mention} ?섏씠 洹쒖튃 ?뺤씤")
 
-        await interaction.response.send_message("🎉 규칙 확인 완료!", ephemeral=True)
+        await interaction.response.send_message("?럦 洹쒖튃 ?뺤씤 ?꾨즺!", ephemeral=True)
 
 
 class UpgradePanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="등업신청", style=discord.ButtonStyle.success, custom_id="upgrade_apply")
+    @discord.ui.button(label="?깆뾽?좎껌", style=discord.ButtonStyle.success, custom_id="upgrade_apply")
     async def apply(self, interaction: discord.Interaction, button: discord.ui.Button):
         guild = interaction.guild
         user = interaction.user
 
-        existing = discord.utils.get(guild.channels, name=f"{user.name}-등업신청")
+        existing = discord.utils.get(guild.channels, name=f"{user.name}-?깆뾽?좎껌")
         if existing:
-            await interaction.response.send_message("이미 신청 티켓이 있습니다.", ephemeral=True)
+            await interaction.response.send_message("?대? ?좎껌 ?곗폆???덉뒿?덈떎.", ephemeral=True)
             return
 
         overwrites = {
@@ -1929,38 +1952,16 @@ class UpgradePanelView(discord.ui.View):
         }
 
         channel = await guild.create_text_channel(
-            name=f"{user.name}-등업신청",
+            name=f"{user.name}-?깆뾽?좎껌",
             overwrites=overwrites,
         )
 
         await channel.send(
-            content=f"{user.mention}님의 등업 신청 채널입니다.",
+            content=f"{user.mention}?섏쓽 ?깆뾽 ?좎껌 梨꾨꼸?낅땲??",
             view=UpgradeTicketView(user),
         )
 
-        await interaction.response.send_message(f"{channel.mention} 생성 완료!", ephemeral=True)
-
-class UpgradePanelTemplateModal(discord.ui.Modal):
-    def __init__(self, guild_id: int):
-        super().__init__(title="등업 패널 문구 설정")
-        self.guild_id = guild_id
-        self.content = discord.ui.TextInput(
-            label="등업 패널 문구",
-            placeholder="줄바꿈해서 입력해주세요.",
-            style=discord.TextStyle.paragraph,
-            max_length=2000,
-            required=True,
-            default=get_template_with_default(
-                guild_id,
-                "upgrade_panel_text",
-                DEFAULT_UPGRADE_PANEL_TEXT,
-            ),
-        )
-        self.add_item(self.content)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        set_template(interaction.guild.id, "upgrade_panel_text", str(self.content).strip())
-        await interaction.response.send_message("등업 패널 문구를 저장했습니다.", ephemeral=True)
+        await interaction.response.send_message(f"{channel.mention} ?앹꽦 ?꾨즺!", ephemeral=True)
 
 
 class UpgradeTicketView(discord.ui.View):
@@ -1983,17 +1984,17 @@ class UpgradeTicketView(discord.ui.View):
             return
         log_channel = interaction.guild.get_channel(upgrade_log_channel_id)
         if log_channel:
-            embed = discord.Embed(title="📋 등업 로그", color=0x3498DB)
+            embed = discord.Embed(title="📒 등업 로그", color=0x3498DB)
             embed.add_field(name="대상", value=self.user.mention, inline=True)
             embed.add_field(name="처리자", value=interaction.user.mention, inline=True)
-            embed.add_field(name="결과", value=action, inline=False)
+            embed.add_field(name="寃곌낵", value=action, inline=False)
             await log_channel.send(embed=embed)
 
     async def send_welcome_dm(self):
         guild_id = self.user.guild.id
         template = get_template_with_default(guild_id, "welcome_dm", DEFAULT_WELCOME_DM_TEXT)
         guide_channel_id = get_guild_setting(guild_id, "welcome_guide_channel_id")
-        guide_channel_text = f"<#{guide_channel_id}>" if guide_channel_id else "안내 채널"
+        guide_channel_text = f"<#{guide_channel_id}>" if guide_channel_id else "?덈궡 梨꾨꼸"
         content = template.replace("{user}", self.user.mention).replace("{guide_channel}", guide_channel_text)
 
         try:
@@ -2001,7 +2002,7 @@ class UpgradeTicketView(discord.ui.View):
         except Exception:
             pass
 
-    @discord.ui.button(label="클랜원등업", style=discord.ButtonStyle.primary, custom_id="upgrade_clan")
+    @discord.ui.button(label="클랜원 등업", style=discord.ButtonStyle.primary, custom_id="upgrade_clan")
     async def clan(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.is_admin(interaction):
             await interaction.response.send_message("관리자만 사용할 수 있습니다.", ephemeral=True)
@@ -2018,7 +2019,7 @@ class UpgradeTicketView(discord.ui.View):
         await interaction.channel.set_permissions(interaction.guild.default_role, send_messages=False)
         await interaction.response.send_message(f"{self.user.mention}님의 클랜원 등업이 완료되었습니다.")
 
-    @discord.ui.button(label="게스트등업", style=discord.ButtonStyle.secondary, custom_id="upgrade_guest")
+    @discord.ui.button(label="게스트 등업", style=discord.ButtonStyle.secondary, custom_id="upgrade_guest")
     async def guest(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.is_admin(interaction):
             await interaction.response.send_message("관리자만 사용할 수 있습니다.", ephemeral=True)
@@ -2035,13 +2036,13 @@ class UpgradeTicketView(discord.ui.View):
         await interaction.channel.set_permissions(interaction.guild.default_role, send_messages=False)
         await interaction.response.send_message(f"{self.user.mention}님의 게스트 등업이 완료되었습니다.")
 
-    @discord.ui.button(label="티켓삭제", style=discord.ButtonStyle.danger, custom_id="ticket_delete")
+    @discord.ui.button(label="티켓 삭제", style=discord.ButtonStyle.danger, custom_id="ticket_delete")
     async def delete(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.is_admin(interaction):
             await interaction.response.send_message("관리자만 사용할 수 있습니다.", ephemeral=True)
             return
 
-        await interaction.response.send_message("삭제 중...")
+        await interaction.response.send_message("티켓을 삭제합니다.")
         await interaction.channel.delete()
 
 
@@ -2052,7 +2053,7 @@ class TimeRoleView(discord.ui.View):
     async def add_role(self, interaction: discord.Interaction, slot_name: str):
         role_id = get_time_role_id(interaction.guild.id, slot_name)
         if role_id is None:
-            await interaction.response.send_message("이 시간대 역할이 아직 설정되지 않았습니다.", ephemeral=True)
+            await interaction.response.send_message("해당 시간대 역할이 아직 설정되지 않았습니다.", ephemeral=True)
             return
 
         role = interaction.guild.get_role(role_id)
@@ -2061,11 +2062,11 @@ class TimeRoleView(discord.ui.View):
             return
 
         if role in interaction.user.roles:
-            await interaction.response.send_message("이미 선택된 시간대입니다.", ephemeral=True)
+            await interaction.response.send_message("이미 선택한 시간대입니다.", ephemeral=True)
             return
 
         await interaction.user.add_roles(role)
-        await interaction.response.send_message(f"{role.name} 역할이 추가되었습니다.", ephemeral=True)
+        await interaction.response.send_message(f"{role.name} 역할을 추가했습니다.", ephemeral=True)
 
     @discord.ui.button(label="오전반", style=discord.ButtonStyle.primary, custom_id="time_morning")
     async def morning(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -2075,7 +2076,7 @@ class TimeRoleView(discord.ui.View):
     async def afternoon(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.add_role(interaction, "afternoon")
 
-    @discord.ui.button(label="저녁반", style=discord.ButtonStyle.primary, custom_id="time_evening")
+    @discord.ui.button(label="??곷컲", style=discord.ButtonStyle.primary, custom_id="time_evening")
     async def evening(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.add_role(interaction, "evening")
 
@@ -2087,7 +2088,7 @@ class TimeRoleView(discord.ui.View):
     async def dawn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.add_role(interaction, "dawn")
 
-    @discord.ui.button(label="리셋", style=discord.ButtonStyle.danger, custom_id="time_reset")
+    @discord.ui.button(label="由ъ뀑", style=discord.ButtonStyle.danger, custom_id="time_reset")
     async def reset(self, interaction: discord.Interaction, button: discord.ui.Button):
         role_map = get_all_time_roles(interaction.guild.id)
         removed = []
@@ -2098,9 +2099,9 @@ class TimeRoleView(discord.ui.View):
                 removed.append(role.name)
 
         if removed:
-            await interaction.response.send_message(f"삭제된 역할: {', '.join(removed)}", ephemeral=True)
+            await interaction.response.send_message(f"제거된 역할: {', '.join(removed)}", ephemeral=True)
         else:
-            await interaction.response.send_message("삭제할 시간대 역할이 없습니다.", ephemeral=True)
+            await interaction.response.send_message("제거할 시간대 역할이 없습니다.", ephemeral=True)
 
 
 class CoinFlipView(discord.ui.View):
@@ -2112,7 +2113,7 @@ class CoinFlipView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("이 버튼은 명령어를 사용한 사람만 누를 수 있습니다.", ephemeral=True)
+            await interaction.response.send_message("이 버튼은 명령어를 사용한 본인만 누를 수 있습니다.", ephemeral=True)
             return False
         return True
 
@@ -2128,7 +2129,7 @@ class CoinFlipView(discord.ui.View):
         if win:
             payout = int(self.bet_amount * 1.8)
             add_balance(self.user_id, payout)
-            description = f"선택: **{choice}**\n결과: **{result}**\n축하합니다! `{format_money(payout)}`을 받았습니다."
+            description = f"선택: **{choice}**\n결과: **{result}**\n축하합니다! `{format_money(payout)}`을 획득했습니다."
             color = 0x2ECC71
         else:
             description = f"선택: **{choice}**\n결과: **{result}**\n아쉽네요... `{format_money(self.bet_amount)}`을 잃었습니다."
@@ -2144,7 +2145,7 @@ class CoinFlipView(discord.ui.View):
         add_game_history(
             interaction.guild.id,
             "동전",
-            f"{interaction.user.display_name} - 선택:{choice} / 결과:{result} / {'당첨' if win else '꽝'}"
+            f"{interaction.user.display_name} - 선택:{choice} / 결과:{result} / {'승리' if win else '패배'}"
         )
 
         await interaction.response.edit_message(embed=embed, view=self)
@@ -2176,7 +2177,7 @@ class RouletteView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("이 버튼은 명령어를 사용한 사람만 누를 수 있습니다.", ephemeral=True)
+            await interaction.response.send_message("이 버튼은 명령어를 사용한 본인만 누를 수 있습니다.", ephemeral=True)
             return False
         return True
 
@@ -2228,7 +2229,7 @@ class RouletteView(discord.ui.View):
         add_game_history(
             interaction.guild.id,
             "룰렛",
-            f"{interaction.user.display_name} - 선택:{choice} / 결과:{result} / {'당첨' if win else '꽝'}"
+            f"{interaction.user.display_name} - 선택:{choice} / 결과:{result} / {'승리' if win else '패배'}"
         )
 
         await interaction.response.edit_message(embed=embed, view=self)
@@ -2241,23 +2242,23 @@ class RouletteView(discord.ui.View):
         for item in self.children:
             item.disabled = True
 
-    @discord.ui.button(label="🔴 빨강", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="🟥 빨강", style=discord.ButtonStyle.danger)
     async def red(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.finish(interaction, "빨강")
 
-    @discord.ui.button(label="🟡 노랑", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="🟨 노랑", style=discord.ButtonStyle.primary)
     async def yellow(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.finish(interaction, "노랑")
 
-    @discord.ui.button(label="🔵 파랑", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="🟦 파랑", style=discord.ButtonStyle.primary)
     async def blue(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.finish(interaction, "파랑")
 
-    @discord.ui.button(label="⚫ 검정", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="⬛ 검정", style=discord.ButtonStyle.secondary)
     async def black(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.finish(interaction, "검정")
 
-    @discord.ui.button(label="🟢 초록", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="🟩 초록", style=discord.ButtonStyle.success)
     async def green(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.finish(interaction, "초록")
 
@@ -2273,7 +2274,7 @@ class SupplyDropView(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
             await interaction.response.send_message(
-                "이 버튼은 명령어를 사용한 사람만 누를 수 있습니다.",
+                "??踰꾪듉? 紐낅졊?대? ?ъ슜???щ엺留??꾨? ???덉뒿?덈떎.",
                 ephemeral=True,
             )
             return False
@@ -2282,12 +2283,12 @@ class SupplyDropView(discord.ui.View):
     def roll_result(self):
         result = random.choices(
             [
-                ("빈 상자", 0.0, "📦 보급상자를 열었지만... 이미 누군가 싹 털어간 빈 상자였습니다."),
-                ("1뚝", 0.9, "🪖 낡은 1레벨 헬멧 하나만 겨우 건졌습니다."),
-                ("2뚝", 1.0, "🪖 2레벨 헬멧을 챙겼습니다. 최소한 머리는 지킬 수 있겠네요."),
-                ("3뚝", 1.6, "✨ 3레벨 헬멧을 획득했습니다! 이번 교전은 자신 있어집니다."),
-                ("보급 총기 획득", 2.8, "🔫 보급 총기를 획득했습니다! 적들이 긴장하기 시작합니다."),
-                ("풀세트 보급 대박", 4.5, "🔥 3뚝, 3갑, 보급총기까지 전부 챙겼습니다! 완벽한 풀세트 보급 대박입니다!"),
+                ("빈 상자", 0.0, "보급 상자를 열었지만 아쉽게도 아무것도 나오지 않았습니다."),
+                ("1뚝", 0.9, "낡은 1뚝을 챙겼습니다. 큰 수확은 아니지만 빈손은 아닙니다."),
+                ("2뚝", 1.0, "2뚝을 획득했습니다. 본전은 지켰습니다."),
+                ("3뚝", 1.6, "3뚝을 획득했습니다! 이번 교전은 조금 더 든든합니다."),
+                ("보급 총기 획득", 2.8, "보급 총기를 획득했습니다! 분위기가 달아오르기 시작합니다."),
+                ("풀세트 보급 대박", 4.5, "3뚝과 보급 총기까지 모두 챙겼습니다! 말 그대로 풀세트 보급 대박입니다!"),
             ],
             weights=[38, 24, 17, 10, 8, 3],
             k=1,
@@ -2328,7 +2329,7 @@ class SupplyDropView(discord.ui.View):
             )
 
         embed = discord.Embed(
-            title="📦 보급상자 개봉 결과",
+            title="📦 보급 상자 결과",
             description=desc,
             color=color,
         )
@@ -2353,7 +2354,7 @@ class SupplyDropView(discord.ui.View):
         for item in self.children:
             item.disabled = True
 
-    @discord.ui.button(label="📦 보급 열기", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="?벀 蹂닿툒 ?닿린", style=discord.ButtonStyle.primary)
     async def open_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.open_supply(interaction)
 
@@ -2364,7 +2365,7 @@ class TeamSelectView(discord.ui.View):
 
     async def create_team(self, interaction: discord.Interaction, team_size: int):
         if interaction.user.voice is None:
-            await interaction.response.send_message("❌ 음성채널에 있어야 합니다.", ephemeral=True)
+            await interaction.response.send_message("???뚯꽦梨꾨꼸???덉뼱???⑸땲??", ephemeral=True)
             return
 
         channel = interaction.user.voice.channel
@@ -2376,35 +2377,35 @@ class TeamSelectView(discord.ui.View):
 
 
         if len(players) < 2:
-            await interaction.response.send_message("플레이어가 부족합니다.", ephemeral=True)
+            await interaction.response.send_message("?뚮젅?댁뼱媛 遺議깊빀?덈떎.", ephemeral=True)
             return
 
         random.shuffle(players)
         teams = [players[i:i + team_size] for i in range(0, len(players), team_size)]
 
         embed = discord.Embed(
-            title="🎮 랜덤 팀 결과",
-            description=f"채널: {channel.name}",
+            title="?렜 ?쒕뜡 ? 寃곌낵",
+            description=f"梨꾨꼸: {channel.name}",
             color=0x2ECC71,
         )
         for index, team in enumerate(teams, start=1):
-            embed.add_field(name=f"팀 {index}", value="\n".join(team), inline=False)
+            embed.add_field(name=f"? {index}", value="\n".join(team), inline=False)
 
         await interaction.response.send_message(embed=embed)
 
-    @discord.ui.button(label="2명 팀", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="2紐??", style=discord.ButtonStyle.primary)
     async def team2(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.create_team(interaction, 2)
 
-    @discord.ui.button(label="3명 팀", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="3紐??", style=discord.ButtonStyle.primary)
     async def team3(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.create_team(interaction, 3)
 
-    @discord.ui.button(label="4명 팀", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="4紐??", style=discord.ButtonStyle.success)
     async def team4(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.create_team(interaction, 4)
 
-    @discord.ui.button(label="5명 팀", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="5紐??", style=discord.ButtonStyle.secondary)
     async def team5(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.create_team(interaction, 5)
 
@@ -2412,7 +2413,7 @@ class TeamSelectView(discord.ui.View):
 class NicknamePrefixApplyButton(discord.ui.Button):
     def __init__(self, prefix: str, managed_prefixes: list[str], panel_key: str):
         super().__init__(
-            label=f"{prefix}적용",
+            label=f"{prefix}?곸슜",
             style=discord.ButtonStyle.primary,
             custom_id=f"nickname_prefix_apply:{panel_key}:{prefix}",
         )
@@ -2437,7 +2438,7 @@ class NicknamePrefixApplyButton(discord.ui.Button):
             return
 
         await interaction.response.send_message(
-            f"닉네임 앞에 `[{self.prefix}]` 접두사를 적용했습니다.",
+            f"닉네임 앞에 `[{self.prefix}]` 접두어를 적용했습니다.",
             ephemeral=True,
         )
 
@@ -2497,22 +2498,22 @@ class InquiryManageView(discord.ui.View):
     def is_admin(self, interaction: discord.Interaction):
         return interaction.user.guild_permissions.manage_channels or interaction.user.guild_permissions.administrator
 
-    @discord.ui.button(label="티켓보관", style=discord.ButtonStyle.secondary, custom_id="inquiry_archive")
+    @discord.ui.button(label="?곗폆蹂닿?", style=discord.ButtonStyle.secondary, custom_id="inquiry_archive")
     async def archive_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.is_admin(interaction):
-            await interaction.response.send_message("관리자만 사용할 수 있습니다.", ephemeral=True)
+            await interaction.response.send_message("愿由ъ옄留??ъ슜?????덉뒿?덈떎.", ephemeral=True)
             return
 
         await interaction.channel.set_permissions(self.user, send_messages=False)
-        await interaction.response.send_message("티켓을 보관했습니다. 작성자는 더 이상 메시지를 보낼 수 없습니다.")
+        await interaction.response.send_message("?곗폆??蹂닿??덉뒿?덈떎. ?묒꽦?먮뒗 ???댁긽 硫붿떆吏瑜?蹂대궪 ???놁뒿?덈떎.")
 
-    @discord.ui.button(label="티켓삭제", style=discord.ButtonStyle.danger, custom_id="inquiry_delete")
+    @discord.ui.button(label="?곗폆??젣", style=discord.ButtonStyle.danger, custom_id="inquiry_delete")
     async def delete_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.is_admin(interaction):
-            await interaction.response.send_message("관리자만 사용할 수 있습니다.", ephemeral=True)
+            await interaction.response.send_message("愿由ъ옄留??ъ슜?????덉뒿?덈떎.", ephemeral=True)
             return
 
-        await interaction.response.send_message("티켓을 삭제합니다.")
+        await interaction.response.send_message("?곗폆????젣?⑸땲??")
         await interaction.channel.delete()
 
 
@@ -2529,7 +2530,7 @@ class InquiryPanelView(discord.ui.View):
             name=f"{user.name}-{ticket_type}"
         )
         if existing:
-            await interaction.response.send_message(f"이미 {ticket_type} 티켓이 있습니다: {existing.mention}", ephemeral=True)
+            await interaction.response.send_message(f"?대? {ticket_type} ?곗폆???덉뒿?덈떎: {existing.mention}", ephemeral=True)
             return
 
         overwrites = {
@@ -2544,8 +2545,8 @@ class InquiryPanelView(discord.ui.View):
         )
 
         embed = discord.Embed(
-            title=f"{ticket_type} 티켓",
-            description=f"{user.mention}님의 [{ticket_type}] 입니다.",
+            title=f"{ticket_type} ?곗폆",
+            description=f"{user.mention}?섏쓽 [{ticket_type}] ?낅땲??",
             color=0x5865F2,
         )
 
@@ -2555,19 +2556,19 @@ class InquiryPanelView(discord.ui.View):
             view=InquiryManageView(user, ticket_type),
         )
 
-        await interaction.response.send_message(f"{channel.mention} 티켓이 생성되었습니다.", ephemeral=True)
+        await interaction.response.send_message(f"{channel.mention} ?곗폆???앹꽦?섏뿀?듬땲??", ephemeral=True)
 
-    @discord.ui.button(label="문의하기", style=discord.ButtonStyle.primary, custom_id="inquiry_open")
+    @discord.ui.button(label="臾몄쓽?섍린", style=discord.ButtonStyle.primary, custom_id="inquiry_open")
     async def inquiry_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.create_ticket(interaction, "문의")
+        await self.create_ticket(interaction, "臾몄쓽")
 
-    @discord.ui.button(label="신고하기", style=discord.ButtonStyle.danger, custom_id="report_open")
+    @discord.ui.button(label="?좉퀬?섍린", style=discord.ButtonStyle.danger, custom_id="report_open")
     async def report_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.create_ticket(interaction, "신고")
+        await self.create_ticket(interaction, "?좉퀬")
 
-    @discord.ui.button(label="건의하기", style=discord.ButtonStyle.success, custom_id="suggest_open")
+    @discord.ui.button(label="嫄댁쓽?섍린", style=discord.ButtonStyle.success, custom_id="suggest_open")
     async def suggest_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.create_ticket(interaction, "건의")
+        await self.create_ticket(interaction, "嫄댁쓽")
 
 class HistoryGameSelectView(discord.ui.View):
     def __init__(self, guild_id: int):
@@ -2579,7 +2580,7 @@ class HistoryGameSelectView(discord.ui.View):
 
         if not rows:
             await interaction.response.send_message(
-                f"{game_name}의 최근 기록이 없습니다.",
+                f"{game_name}??理쒓렐 湲곕줉???놁뒿?덈떎.",
                 ephemeral=True,
             )
             return
@@ -2593,31 +2594,31 @@ class HistoryGameSelectView(discord.ui.View):
             lines.append(f"{idx}. [{dt}] {result_text}")
 
         embed = discord.Embed(
-            title=f"📜 {game_name} 최근 {min(len(rows), GAME_HISTORY_LIMIT)}게임",
+            title=f"?뱶 {game_name} 理쒓렐 {min(len(rows), GAME_HISTORY_LIMIT)}寃뚯엫",
             description="\n".join(lines),
             color=0x5865F2,
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="슬롯", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="?щ’", style=discord.ButtonStyle.primary)
     async def slot_history(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.show_history(interaction, "슬롯")
+        await self.show_history(interaction, "?щ’")
 
-    @discord.ui.button(label="동전", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="?숈쟾", style=discord.ButtonStyle.primary)
     async def coin_history(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.show_history(interaction, "동전")
+        await self.show_history(interaction, "?숈쟾")
 
-    @discord.ui.button(label="룰렛", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="猷곕젢", style=discord.ButtonStyle.primary)
     async def roulette_history(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.show_history(interaction, "룰렛")
+        await self.show_history(interaction, "猷곕젢")
 
-    @discord.ui.button(label="보급", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="蹂닿툒", style=discord.ButtonStyle.success)
     async def supply_history(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.show_history(interaction, "보급")
+        await self.show_history(interaction, "蹂닿툒")
 
-    @discord.ui.button(label="몰빵게임", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="紐곕뭇寃뚯엫", style=discord.ButtonStyle.secondary)
     async def all_in_history(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.show_history(interaction, "몰빵게임")
+        await self.show_history(interaction, "紐곕뭇寃뚯엫")
 
 class DuckmongView(discord.ui.View):
     def __init__(self, user_id: int, bet_amount: int, fake_names: list[str], hidden_results: dict[str, str]):
@@ -2633,13 +2634,13 @@ class DuckmongView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("이 버튼은 명령어를 사용한 사람만 누를 수 있습니다.", ephemeral=True)
+            await interaction.response.send_message("??踰꾪듉? 紐낅졊?대? ?ъ슜???щ엺留??꾨? ???덉뒿?덈떎.", ephemeral=True)
             return False
         return True
 
     async def resolve_choice(self, interaction: discord.Interaction, fake_name: str):
         if self.resolved:
-            await interaction.response.send_message("이미 결과가 확정되었습니다.", ephemeral=True)
+            await interaction.response.send_message("?대? 寃곌낵媛 ?뺤젙?섏뿀?듬땲??", ephemeral=True)
             return
 
         self.resolved = True
@@ -2651,13 +2652,13 @@ class DuckmongView(discord.ui.View):
             add_balance(self.user_id, payout)
             result_text = f"정답은 **오리**였습니다! `{format_money(self.bet_amount)}`을 추가로 벌었습니다."
             color = 0x2ECC71
-        elif result_type == "팰리컨":
+        elif result_type == "너리콘":
             payout = self.bet_amount
             add_balance(self.user_id, payout)
-            result_text = "정답은 **팰리컨**이었습니다. 배팅금액을 그대로 돌려받았습니다."
+            result_text = "정답은 **너리콘**이었습니다! 베팅 금액을 그대로 돌려받았습니다."
             color = 0x3498DB
         else:
-            result_text = "정답은 **거위**였습니다. 배팅금액을 잃었습니다."
+            result_text = "정답은 **거위**였습니다! 베팅 금액을 잃었습니다."
             color = 0xE74C3C
 
         for item in self.children:
@@ -2676,12 +2677,12 @@ class DuckmongView(discord.ui.View):
             ),
             color=color,
         )
-        embed.add_field(name="현재 잔액", value=format_money(get_balance(self.user_id)), inline=False)
+        embed.add_field(name="?꾩옱 ?붿븸", value=format_money(get_balance(self.user_id)), inline=False)
 
         add_game_history(
             interaction.guild.id,
-            "덕몽",
-            f"{interaction.user.display_name} - 선택:{fake_name} / 결과:{result_type}"
+            "?뺣そ",
+            f"{interaction.user.display_name} - ?좏깮:{fake_name} / 寃곌낵:{result_type}"
         )
 
         await interaction.response.edit_message(embed=embed, view=self)
@@ -2736,20 +2737,20 @@ def get_recruit_color(players, max_players):
 
 def build_description(host, voice_channel, players, spectators, message_content, max_players=None):
     lines = [
-        f"👤 모집자 : {host.mention}",
-        f"🔊 채널 : {voice_channel.name}",
+        f"모집자 : {host.mention}",
+        f"채널 : {voice_channel.name}",
         "",
     ]
     if max_players is None:
-        lines.append(f"👥 참여 인원 : {players}명")
-        lines.append(f"📺 관전자 : {spectators}")
+        lines.append(f"참여 인원 : {players}명")
+        lines.append(f"관전자 : {spectators}")
     else:
         remain = max_players - players
-        lines.append(f"👥 참여 인원 : {players} / {max_players}")
-        lines.append(f"📺 관전자 : {spectators}")
+        lines.append(f"참여 인원 : {players} / {max_players}")
+        lines.append(f"관전자 : {spectators}")
         lines.append("")
-        lines.append(f"🪑 남은 자리 : {remain}")
-    lines.extend(["", f"💬 {message_content}"])
+        lines.append(f"남은 자리 : {remain}")
+    lines.extend(["", f"메모 : {message_content}"])
     return "\n".join(lines)
 
 
@@ -2766,7 +2767,7 @@ class RecruitView(discord.ui.View):
     async def update_embed(self):
         players, spectators = count_members(self.channel)
         embed = self.message.embeds[0]
-        embed.title = f"🎮 {self.game_name} 모집중!!"
+        embed.title = f"?렜 {self.game_name} 紐⑥쭛以?!"
         embed.color = get_recruit_color(players, self.max_players)
         embed.description = build_description(
             self.host, self.channel, players, spectators, self.message_content, self.max_players
@@ -2778,7 +2779,7 @@ class RecruitView(discord.ui.View):
 
     async def auto_close(self):
         embed = self.message.embeds[0]
-        embed.title = f"🎮 {self.game_name} 모집 종료"
+        embed.title = f"?렜 {self.game_name} 紐⑥쭛 醫낅즺"
         embed.color = 0xFF0000
         for item in self.children:
             item.disabled = True
@@ -2787,10 +2788,10 @@ class RecruitView(discord.ui.View):
         if self.channel.id in active_recruits:
             del active_recruits[self.channel.id]
 
-    @discord.ui.button(label="참가하기", style=discord.ButtonStyle.green)
+    @discord.ui.button(label="李멸??섍린", style=discord.ButtonStyle.green)
     async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.voice and interaction.user.voice.channel == self.channel:
-            await interaction.response.send_message("이미 해당 음성채널에 참여 중입니다.", ephemeral=True)
+            await interaction.response.send_message("?대? ?대떦 ?뚯꽦梨꾨꼸??李몄뿬 以묒엯?덈떎.", ephemeral=True)
             return
 
         permissions = self.channel.permissions_for(interaction.guild.me)
@@ -2798,32 +2799,32 @@ class RecruitView(discord.ui.View):
         if interaction.user.voice and can_move:
             try:
                 await interaction.user.move_to(self.channel)
-                await interaction.response.send_message(f"{self.channel.mention} 음성채널로 이동했습니다.", ephemeral=True)
+                await interaction.response.send_message(f"{self.channel.mention} ?뚯꽦梨꾨꼸濡??대룞?덉뒿?덈떎.", ephemeral=True)
                 return
             except (discord.Forbidden, discord.HTTPException):
                 pass
 
         invite = await self.channel.create_invite(max_age=300, max_uses=1)
-        await interaction.response.send_message(f"바로 이동 권한이 없어 초대 링크를 드릴게요: {invite.url}", ephemeral=True)
+        await interaction.response.send_message(f"諛붾줈 ?대룞 沅뚰븳???놁뼱 珥덈? 留곹겕瑜??쒕┫寃뚯슂: {invite.url}", ephemeral=True)
 
-    @discord.ui.button(label="모집종료", style=discord.ButtonStyle.red)
+    @discord.ui.button(label="紐⑥쭛醫낅즺", style=discord.ButtonStyle.red)
     async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user != self.host:
-            await interaction.response.send_message("모집자만 종료할 수 있습니다.", ephemeral=True)
+            await interaction.response.send_message("紐⑥쭛?먮쭔 醫낅즺?????덉뒿?덈떎.", ephemeral=True)
             return
         await interaction.response.defer()
         await self.auto_close()
 
 
-class GeneralRecruitModal(discord.ui.Modal, title="종겜 구인"):
+class GeneralRecruitModal(discord.ui.Modal, title="醫낃쿇 援ъ씤"):
     game_name = discord.ui.TextInput(
-        label="게임 이름",
-        placeholder="예: 롤, 발로란트, 마크",
+        label="寃뚯엫 ?대쫫",
+        placeholder="?? 濡? 諛쒕줈??? 留덊겕",
         max_length=100,
     )
     message_content = discord.ui.TextInput(
-        label="하고 싶은 말",
-        placeholder="예: 2판만 가볍게 하실 분",
+        label="구인 메모",
+        placeholder="예: 2명만 가볍게 하실 분",
         style=discord.TextStyle.paragraph,
         max_length=500,
         required=False,
@@ -2831,7 +2832,7 @@ class GeneralRecruitModal(discord.ui.Modal, title="종겜 구인"):
 
     async def on_submit(self, interaction: discord.Interaction):
         if not interaction.user.voice:
-            await interaction.response.send_message("음성채널 먼저 들어가세요.", ephemeral=True)
+            await interaction.response.send_message("?뚯꽦梨꾨꼸 癒쇱? ?ㅼ뼱媛?몄슂.", ephemeral=True)
             return
 
         await create_recruit_post(
@@ -2846,9 +2847,9 @@ class GeneralRecruitModal(discord.ui.Modal, title="종겜 구인"):
         )
 
 
-class WelcomeDmModal(discord.ui.Modal, title="환영 DM 설정"):
+class WelcomeDmModal(discord.ui.Modal, title="?섏쁺 DM ?ㅼ젙"):
     content = discord.ui.TextInput(
-        label="환영 DM 문구",
+        label="?섏쁺 DM 臾멸뎄",
         placeholder="여러 줄로 입력하세요. {user}, {guide_channel} 사용 가능",
         style=discord.TextStyle.paragraph,
         max_length=2000,
@@ -2857,13 +2858,13 @@ class WelcomeDmModal(discord.ui.Modal, title="환영 DM 설정"):
 
     async def on_submit(self, interaction: discord.Interaction):
         set_template(interaction.guild.id, "welcome_dm", str(self.content).strip())
-        await interaction.response.send_message("환영 DM 문구를 저장했습니다.", ephemeral=True)
+        await interaction.response.send_message("?섏쁺 DM 臾멸뎄瑜???ν뻽?듬땲??", ephemeral=True)
 
 
-class ProtectionPurchaseModal(discord.ui.Modal, title="강화보호권 구매"):
+class ProtectionPurchaseModal(discord.ui.Modal, title="媛뺥솕蹂댄샇沅?援щℓ"):
     quantity = discord.ui.TextInput(
-        label="구매 수량",
-        placeholder="예: 1",
+        label="援щℓ ?섎웾",
+        placeholder="?? 1",
         required=True,
         max_length=5,
     )
@@ -2877,18 +2878,18 @@ class ProtectionPurchaseModal(discord.ui.Modal, title="강화보호권 구매"):
         try:
             quantity = int(str(self.quantity).strip())
         except ValueError:
-            await interaction.response.send_message("구매 수량은 숫자로 입력해주세요.", ephemeral=True)
+            await interaction.response.send_message("援щℓ ?섎웾? ?レ옄濡??낅젰?댁＜?몄슂.", ephemeral=True)
             return
 
         if quantity <= 0:
-            await interaction.response.send_message("구매 수량은 1 이상이어야 합니다.", ephemeral=True)
+            await interaction.response.send_message("援щℓ ?섎웾? 1 ?댁긽?댁뼱???⑸땲??", ephemeral=True)
             return
 
         inventory = get_weapon_inventory(self.guild_id, self.user_id)
         current_level = inventory["weapon_level"]
 
         if current_level <= 0:
-            await interaction.response.send_message("보유 중인 무기가 없습니다.", ephemeral=True)
+            await interaction.response.send_message("蹂댁쑀 以묒씤 臾닿린媛 ?놁뒿?덈떎.", ephemeral=True)
             return
 
         tier = get_protection_tier(current_level)
@@ -2896,7 +2897,7 @@ class ProtectionPurchaseModal(discord.ui.Modal, title="강화보호권 구매"):
 
         if current_level != purchase_level:
             await interaction.response.send_message(
-                f"보호권은 `{purchase_level}강`일 때만 구매할 수 있습니다.",
+                f"蹂댄샇沅뚯? `{purchase_level}媛????뚮쭔 援щℓ?????덉뒿?덈떎.",
                 ephemeral=True,
             )
             return
@@ -2906,7 +2907,7 @@ class ProtectionPurchaseModal(discord.ui.Modal, title="강화보호권 구매"):
 
         if not can_afford(self.user_id, total_cost):
             await interaction.response.send_message(
-                f"보호권 구매 비용 `{format_money(total_cost)}`이 부족합니다.",
+                f"蹂댄샇沅?援щℓ 鍮꾩슜 `{format_money(total_cost)}`??遺議깊빀?덈떎.",
                 ephemeral=True,
             )
             return
@@ -2924,12 +2925,12 @@ class ProtectionPurchaseModal(discord.ui.Modal, title="강화보호권 구매"):
 
 class WeaponUpgradeButton(discord.ui.Button):
     def __init__(self):
-        super().__init__(label="강화", style=discord.ButtonStyle.success)
+        super().__init__(label="媛뺥솕", style=discord.ButtonStyle.success)
 
     async def callback(self, interaction: discord.Interaction):
         view = self.view
         if interaction.user.id != view.user_id:
-            await interaction.response.send_message("이 버튼은 명령어를 사용한 사람만 누를 수 있습니다.", ephemeral=True)
+            await interaction.response.send_message("??踰꾪듉? 紐낅졊?대? ?ъ슜???щ엺留??꾨? ???덉뒿?덈떎.", ephemeral=True)
             return
 
         inventory = get_weapon_inventory(view.guild_id, view.user_id)
@@ -2945,17 +2946,17 @@ class WeaponUpgradeButton(discord.ui.Button):
 
 
         if current_level >= 21:
-            await interaction.response.send_message("이미 최대 강화 단계입니다.", ephemeral=True)
+            await interaction.response.send_message("?대? 理쒕? 媛뺥솕 ?④퀎?낅땲??", ephemeral=True)
             return
 
         upgrade_cost = get_upgrade_cost(current_level)
         if upgrade_cost is None:
-            await interaction.response.send_message("강화 비용 정보를 찾을 수 없습니다.", ephemeral=True)
+            await interaction.response.send_message("媛뺥솕 鍮꾩슜 ?뺣낫瑜?李얠쓣 ???놁뒿?덈떎.", ephemeral=True)
             return
 
         if not can_afford(view.user_id, upgrade_cost):
             await interaction.response.send_message(
-                f"강화 비용 `{format_money(upgrade_cost)}`이 부족합니다.",
+                f"媛뺥솕 鍮꾩슜 `{format_money(upgrade_cost)}`??遺議깊빀?덈떎.",
                 ephemeral=True,
             )
             return
@@ -2975,41 +2976,41 @@ class WeaponUpgradeButton(discord.ui.Button):
 
         if result == "success":
             set_weapon_level(view.guild_id, view.user_id, target_level)
-            message_text = f"강화 성공! `{current_level}강 {before_name}` -> `{target_level}강 {target_name}`"
+            message_text = f"媛뺥솕 ?깃났! `{current_level}媛?{before_name}` -> `{target_level}媛?{target_name}`"
             color = 0x2ECC71
         elif result == "down":
             if protection_count > 0:
                 consume_protection_count(view.guild_id, view.user_id, current_tier, 1)
                 used_protection = True
-                message_text = f"강화 실패! 보호권이 자동 사용되어 하락이 방지되었습니다. 현재 무기: `{current_level}강 {before_name}`"
+                message_text = f"媛뺥솕 ?ㅽ뙣! 蹂댄샇沅뚯씠 ?먮룞 ?ъ슜?섏뼱 ?섎씫??諛⑹??섏뿀?듬땲?? ?꾩옱 臾닿린: `{current_level}媛?{before_name}`"
                 color = 0x3498DB
             else:
                 new_level = max(1, current_level - 1)
                 set_weapon_level(view.guild_id, view.user_id, new_level)
-                message_text = f"강화 실패! 단계가 하락했습니다. `{current_level}강 {before_name}` -> `{new_level}강 {get_weapon_name(new_level)}`"
+                message_text = f"媛뺥솕 ?ㅽ뙣! ?④퀎媛 ?섎씫?덉뒿?덈떎. `{current_level}媛?{before_name}` -> `{new_level}媛?{get_weapon_name(new_level)}`"
                 color = 0xE67E22
         elif result == "destroy":
             if protection_count > 0:
                 consume_protection_count(view.guild_id, view.user_id, current_tier, 1)
                 used_protection = True
-                message_text = f"강화 실패! 보호권이 자동 사용되어 파괴가 방지되었습니다. 현재 무기: `{current_level}강 {before_name}`"
+                message_text = f"媛뺥솕 ?ㅽ뙣! 蹂댄샇沅뚯씠 ?먮룞 ?ъ슜?섏뼱 ?뚭눼媛 諛⑹??섏뿀?듬땲?? ?꾩옱 臾닿린: `{current_level}媛?{before_name}`"
                 color = 0x3498DB
             else:
                 reset_weapon_progress(view.guild_id, view.user_id)
-                message_text = f"강화 실패! `{current_level}강 {before_name}` 무기가 파괴되었습니다."
+                message_text = f"媛뺥솕 ?ㅽ뙣! `{current_level}媛?{before_name}` 臾닿린媛 ?뚭눼?섏뿀?듬땲??"
                 color = 0xE74C3C
         else:
-            message_text = f"강화 실패! 단계는 유지되었습니다. 현재 무기: `{current_level}강 {before_name}`"
+            message_text = f"媛뺥솕 ?ㅽ뙣! ?④퀎???좎??섏뿀?듬땲?? ?꾩옱 臾닿린: `{current_level}媛?{before_name}`"
             color = 0x95A5A6
 
         add_game_history(
             interaction.guild.id,
-            "강화",
-            f"{interaction.user.display_name} - {current_level}강 {before_name} / 결과:{result}{' / 보호권사용' if used_protection else ''}"
+            "媛뺥솕",
+            f"{interaction.user.display_name} - {current_level}강 {before_name} / 결과:{result}{' / 보호권 사용' if used_protection else ''}"
         )
 
         embed = build_upgrade_embed(view.guild_id, view.user_id)
-        embed.title = "🔧 무기 강화 결과"
+        embed.title = "?뵩 臾닿린 媛뺥솕 寃곌낵"
         embed.color = color
         embed.description = message_text
 
@@ -3018,12 +3019,12 @@ class WeaponUpgradeButton(discord.ui.Button):
 
 class ProtectionPurchaseButton(discord.ui.Button):
     def __init__(self):
-        super().__init__(label="보호권구매", style=discord.ButtonStyle.primary)
+        super().__init__(label="보호권 구매", style=discord.ButtonStyle.primary)
 
     async def callback(self, interaction: discord.Interaction):
         view = self.view
         if interaction.user.id != view.user_id:
-            await interaction.response.send_message("이 버튼은 명령어를 사용한 사람만 누를 수 있습니다.", ephemeral=True)
+            await interaction.response.send_message("이 버튼은 명령어를 사용한 본인만 누를 수 있습니다.", ephemeral=True)
             return
 
         await interaction.response.send_modal(ProtectionPurchaseModal(view.guild_id, view.user_id))
@@ -3044,55 +3045,55 @@ class ScrimSignupView(discord.ui.View):
                 if member is not None:
                     participants.append(member.mention)
                 else:
-                    participants.append(f"알 수 없는 유저 ({user_id})")
+                    participants.append(f"?????녿뒗 ?좎? ({user_id})")
 
             participant_text = "\n".join(
                 f"{idx}. {name}" for idx, name in enumerate(participants, start=1)
             )
         else:
-            participant_text = "아직 참여자가 없습니다."
+            participant_text = "?꾩쭅 李몄뿬?먭? ?놁뒿?덈떎."
 
         if len(embed.fields) >= 1:
-            embed.set_field_at(0, name="참여자 목록", value=participant_text, inline=False)
+            embed.set_field_at(0, name="李몄뿬??紐⑸줉", value=participant_text, inline=False)
         else:
-            embed.add_field(name="참여자 목록", value=participant_text, inline=False)
+            embed.add_field(name="李몄뿬??紐⑸줉", value=participant_text, inline=False)
 
         for item in self.children:
             if item.custom_id == "scrim_signup_button":
-                item.label = f"참여하기 ({len(user_ids)})"
+                item.label = f"李몄뿬?섍린 ({len(user_ids)})"
 
         await message.edit(embed=embed, view=self)
 
-    @discord.ui.button(label="참여하기 (0)", style=discord.ButtonStyle.success, custom_id="scrim_signup_button")
+    @discord.ui.button(label="李몄뿬?섍린 (0)", style=discord.ButtonStyle.success, custom_id="scrim_signup_button")
     async def signup(self, interaction: discord.Interaction, button: discord.ui.Button):
         if has_scrim_signup(interaction.message.id, interaction.user.id):
-            await interaction.response.send_message("이미 참여한 상태입니다.", ephemeral=True)
+            await interaction.response.send_message("?대? 李몄뿬???곹깭?낅땲??", ephemeral=True)
             return
 
         add_scrim_signup(interaction.message.id, interaction.user.id)
         await self.update_embed(interaction.message)
-        await interaction.response.send_message("내전 참여가 등록되었습니다.", ephemeral=True)
+        await interaction.response.send_message("?댁쟾 李몄뿬媛 ?깅줉?섏뿀?듬땲??", ephemeral=True)
 
-    @discord.ui.button(label="참여취소", style=discord.ButtonStyle.danger, custom_id="scrim_cancel_button")
+    @discord.ui.button(label="李몄뿬痍⑥냼", style=discord.ButtonStyle.danger, custom_id="scrim_cancel_button")
     async def cancel_signup(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not has_scrim_signup(interaction.message.id, interaction.user.id):
-            await interaction.response.send_message("현재 참여한 상태가 아닙니다.", ephemeral=True)
+            await interaction.response.send_message("?꾩옱 李몄뿬???곹깭媛 ?꾨떃?덈떎.", ephemeral=True)
             return
 
         remove_scrim_signup(interaction.message.id, interaction.user.id)
         await self.update_embed(interaction.message)
-        await interaction.response.send_message("내전 참여가 취소되었습니다.", ephemeral=True)
+        await interaction.response.send_message("?댁쟾 李몄뿬媛 痍⑥냼?섏뿀?듬땲??", ephemeral=True)
 
-class ScrimNoticeModal(discord.ui.Modal, title="내전 공지 작성"):
+class ScrimNoticeModal(discord.ui.Modal, title="?댁쟾 怨듭? ?묒꽦"):
     title_input = discord.ui.TextInput(
-        label="제목",
-        placeholder="예: 오늘 저녁 9시 내전 모집",
+        label="?쒕ぉ",
+        placeholder="?? ?ㅻ뒛 ???9???댁쟾 紐⑥쭛",
         max_length=100,
         required=True,
     )
     body_input = discord.ui.TextInput(
-        label="본문",
-        placeholder="예: 참여하실 분은 아래 버튼을 눌러주세요.",
+        label="蹂몃Ц",
+        placeholder="?? 李몄뿬?섏떎 遺꾩? ?꾨옒 踰꾪듉???뚮윭二쇱꽭??",
         style=discord.TextStyle.paragraph,
         max_length=2000,
         required=True,
@@ -3104,10 +3105,10 @@ class ScrimNoticeModal(discord.ui.Modal, title="내전 공지 작성"):
             description=str(self.body_input).strip(),
             color=0x5865F2,
         )
-        embed.add_field(name="참여자 목록", value="아직 참여자가 없습니다.", inline=False)
+        embed.add_field(name="李몄뿬??紐⑸줉", value="?꾩쭅 李몄뿬?먭? ?놁뒿?덈떎.", inline=False)
 
         await interaction.channel.send(embed=embed, view=ScrimSignupView())
-        await interaction.response.send_message("내전 공지를 등록했습니다.", ephemeral=True)
+        await interaction.response.send_message("?댁쟾 怨듭?瑜??깅줉?덉뒿?덈떎.", ephemeral=True)
 
 
 
@@ -3127,39 +3128,39 @@ class LaborWorkView(discord.ui.View):
         self.guild_id = guild_id
         self.user_id = user_id
 
-    @discord.ui.button(label="노동하기", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="?몃룞?섍린", style=discord.ButtonStyle.primary)
     async def work(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("이 버튼은 명령어를 사용한 사람만 누를 수 있습니다.", ephemeral=True)
+            await interaction.response.send_message("??踰꾪듉? 紐낅졊?대? ?ъ슜???щ엺留??꾨? ???덉뒿?덈떎.", ephemeral=True)
             return
 
         penalty, resolved = increment_labor_count(self.guild_id, self.user_id)
         if penalty is None:
-            await interaction.response.send_message("진행 중인 노동 패널티가 없습니다.", ephemeral=True)
+            await interaction.response.send_message("吏꾪뻾 以묒씤 ?몃룞 ?⑤꼸?곌? ?놁뒿?덈떎.", ephemeral=True)
             return
 
         embed = build_labor_embed(interaction.user, penalty)
 
         if resolved:
-            embed.title = "✅ 노동 완료"
+            embed.title = "???몃룞 ?꾨즺"
             embed.color = 0x2ECC71
             embed.add_field(
-                name="결과",
-                value=f"필요 노동 횟수를 모두 채워 신용불량자 상태가 해제되고 `{INITIAL_CREDIT_GRADE}등급`으로 초기화되었습니다.",
+                name="寃곌낵",
+                value=f"?꾩슂 ?몃룞 ?잛닔瑜?紐⑤몢 梨꾩썙 ?좎슜遺덈웾???곹깭媛 ?댁젣?섍퀬 `{INITIAL_CREDIT_GRADE}?깃툒`?쇰줈 珥덇린?붾릺?덉뒿?덈떎.",
                 inline=False,
             )
             for item in self.children:
                 item.disabled = True
         else:
-            embed.add_field(name="결과", value="노동 1회를 완료했습니다.", inline=False)
+            embed.add_field(name="寃곌낵", value="?몃룞 1?뚮? ?꾨즺?덉뒿?덈떎.", inline=False)
 
         await interaction.response.edit_message(embed=embed, view=self)
 
 
-class StickyMessageModal(discord.ui.Modal, title="고정메시지 설정"):
+class StickyMessageModal(discord.ui.Modal, title="怨좎젙硫붿떆吏 ?ㅼ젙"):
     content = discord.ui.TextInput(
-        label="고정할 메시지 내용",
-        placeholder="여기에 여러 줄로 입력하세요.",
+        label="怨좎젙??硫붿떆吏 ?댁슜",
+        placeholder="?ш린???щ윭 以꾨줈 ?낅젰?섏꽭??",
         style=discord.TextStyle.paragraph,
         max_length=2000,
         required=True,
@@ -3180,7 +3181,7 @@ class StickyMessageModal(discord.ui.Modal, title="고정메시지 설정"):
         set_sticky_message(interaction.guild.id, interaction.channel.id, content, sticky_msg.id)
 
         await interaction.response.send_message(
-            f"{interaction.channel.mention} 채널의 고정메시지를 설정했습니다.",
+            f"{interaction.channel.mention} 梨꾨꼸??怨좎젙硫붿떆吏瑜??ㅼ젙?덉뒿?덈떎.",
             ephemeral=True,
         )
 
@@ -3198,7 +3199,7 @@ async def create_recruit_post(
     players, spectators = count_members(voice_channel)
 
     embed = discord.Embed(
-        title=f"🎮 {game_name} 모집중!!",
+        title=f"?렜 {game_name} 紐⑥쭛以?!",
         description=build_description(host, voice_channel, players, spectators, message_content, max_players),
         color=get_recruit_color(players, max_players),
     )
@@ -3232,92 +3233,92 @@ async def create_recruit_post(
 @app_commands.checks.has_permissions(administrator=True)
 async def set_birthday_channel(interaction: discord.Interaction):
     set_guild_setting(interaction.guild.id, "birthday_channel_id", str(interaction.channel.id))
-    await interaction.response.send_message(f"생일 알림 채널을 {interaction.channel.mention} 으로 설정했습니다.", ephemeral=True)
+    await interaction.response.send_message(f"?앹씪 ?뚮┝ 梨꾨꼸??{interaction.channel.mention} ?쇰줈 ?ㅼ젙?덉뒿?덈떎.", ephemeral=True)
 
 
 @bot.tree.command(name="세팅등업로그", description="현재 채널을 등업 로그 채널로 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_upgrade_log_channel(interaction: discord.Interaction):
     set_guild_setting(interaction.guild.id, "upgrade_log_channel_id", str(interaction.channel.id))
-    await interaction.response.send_message(f"등업 로그 채널을 {interaction.channel.mention} 으로 설정했습니다.", ephemeral=True)
+    await interaction.response.send_message(f"?깆뾽 濡쒓렇 梨꾨꼸??{interaction.channel.mention} ?쇰줈 ?ㅼ젙?덉뒿?덈떎.", ephemeral=True)
 
 
 @bot.tree.command(name="세팅퇴장로그", description="현재 채널을 퇴장 로그 채널로 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_leave_log_channel(interaction: discord.Interaction):
     set_guild_setting(interaction.guild.id, "leave_log_channel_id", str(interaction.channel.id))
-    await interaction.response.send_message(f"퇴장 로그 채널을 {interaction.channel.mention} 으로 설정했습니다.", ephemeral=True)
+    await interaction.response.send_message(f"?댁옣 濡쒓렇 梨꾨꼸??{interaction.channel.mention} ?쇰줈 ?ㅼ젙?덉뒿?덈떎.", ephemeral=True)
 
 
-@bot.tree.command(name="세팅규칙로그", description="현재 채널을 규칙/신입 알림 채널로 설정합니다.")
+@bot.tree.command(name="세팅규칙로그", description="현재 채널을 규칙/신입 알림 로그 채널로 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_rule_log_channel(interaction: discord.Interaction):
     set_guild_setting(interaction.guild.id, "rule_log_channel_id", str(interaction.channel.id))
-    await interaction.response.send_message(f"규칙 로그 채널을 {interaction.channel.mention} 으로 설정했습니다.", ephemeral=True)
+    await interaction.response.send_message(f"洹쒖튃 濡쒓렇 梨꾨꼸??{interaction.channel.mention} ?쇰줈 ?ㅼ젙?덉뒿?덈떎.", ephemeral=True)
 
 
 @bot.tree.command(name="세팅구인채널", description="현재 채널을 구인 채널로 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_recruit_channel(interaction: discord.Interaction):
     set_guild_setting(interaction.guild.id, "recruit_channel_id", str(interaction.channel.id))
-    await interaction.response.send_message(f"구인 채널을 {interaction.channel.mention} 으로 설정했습니다.", ephemeral=True)
+    await interaction.response.send_message(f"援ъ씤 梨꾨꼸??{interaction.channel.mention} ?쇰줈 ?ㅼ젙?덉뒿?덈떎.", ephemeral=True)
 
 @bot.tree.command(name="세팅몰빵결과채널", description="현재 채널을 몰빵게임 결과 채널로 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_all_in_result_channel(interaction: discord.Interaction):
     set_guild_setting(interaction.guild.id, "all_in_result_channel_id", str(interaction.channel.id))
     await interaction.response.send_message(
-        f"몰빵게임 결과 채널을 {interaction.channel.mention} 으로 설정했습니다.",
+        f"紐곕뭇寃뚯엫 寃곌낵 梨꾨꼸??{interaction.channel.mention} ?쇰줈 ?ㅼ젙?덉뒿?덈떎.",
         ephemeral=True,
     )
 
-@bot.tree.command(name="세팅가입안내", description="현재 채널을 가입 안내 채널로 설정합니다.")
+@bot.tree.command(name="세팅가이드안내", description="현재 채널을 가이드 안내 채널로 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_welcome_guide_channel(interaction: discord.Interaction):
     set_guild_setting(interaction.guild.id, "welcome_guide_channel_id", str(interaction.channel.id))
-    await interaction.response.send_message(f"가입 안내 채널을 {interaction.channel.mention} 으로 설정했습니다.", ephemeral=True)
+    await interaction.response.send_message(f"媛???덈궡 梨꾨꼸??{interaction.channel.mention} ?쇰줈 ?ㅼ젙?덉뒿?덈떎.", ephemeral=True)
 
 
-@bot.tree.command(name="세팅환영메시지채널", description="현재 채널을 환영메시지 송출 채널로 설정합니다.")
+@bot.tree.command(name="세팅환영메시지채널", description="현재 채널을 환영 메시지 출력 채널로 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_welcome_message_channel(interaction: discord.Interaction):
     set_guild_setting(interaction.guild.id, "welcome_message_channel_id", str(interaction.channel.id))
-    await interaction.response.send_message(f"환영메시지 채널을 {interaction.channel.mention} 으로 설정했습니다.", ephemeral=True)
+    await interaction.response.send_message(f"?섏쁺硫붿떆吏 梨꾨꼸??{interaction.channel.mention} ?쇰줈 ?ㅼ젙?덉뒿?덈떎.", ephemeral=True)
 
 
 @bot.tree.command(name="세팅규칙역할", description="규칙 확인 시 지급할 역할을 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_rule_role(interaction: discord.Interaction, role: discord.Role):
     set_guild_setting(interaction.guild.id, "rule_role_id", str(role.id))
-    await interaction.response.send_message(f"규칙 역할을 {role.mention} 으로 설정했습니다.", ephemeral=True)
+    await interaction.response.send_message(f"洹쒖튃 ??븷??{role.mention} ?쇰줈 ?ㅼ젙?덉뒿?덈떎.", ephemeral=True)
 
 
 @bot.tree.command(name="세팅신입역할", description="신입 추적용 역할을 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_new_member_role(interaction: discord.Interaction, role: discord.Role):
     set_guild_setting(interaction.guild.id, "new_member_role_id", str(role.id))
-    await interaction.response.send_message(f"신입 역할을 {role.mention} 으로 설정했습니다.", ephemeral=True)
+    await interaction.response.send_message(f"?좎엯 ??븷??{role.mention} ?쇰줈 ?ㅼ젙?덉뒿?덈떎.", ephemeral=True)
 
 
 @bot.tree.command(name="세팅생일역할", description="생일 역할을 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_birthday_role(interaction: discord.Interaction, role: discord.Role):
     set_guild_setting(interaction.guild.id, "birthday_role_id", str(role.id))
-    await interaction.response.send_message(f"생일 역할을 {role.mention} 으로 설정했습니다.", ephemeral=True)
+    await interaction.response.send_message(f"?앹씪 ??븷??{role.mention} ?쇰줈 ?ㅼ젙?덉뒿?덈떎.", ephemeral=True)
 
 
-@bot.tree.command(name="세팅클랜원역할", description="클랜원 등업 역할을 설정합니다.")
+@bot.tree.command(name="세팅클랜등업역할", description="클랜 등업 역할을 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_upgrade_clan_role(interaction: discord.Interaction, role: discord.Role):
     set_guild_setting(interaction.guild.id, "upgrade_clan_role_id", str(role.id))
-    await interaction.response.send_message(f"클랜원 등업 역할을 {role.mention} 으로 설정했습니다.", ephemeral=True)
+    await interaction.response.send_message(f"?대옖???깆뾽 ??븷??{role.mention} ?쇰줈 ?ㅼ젙?덉뒿?덈떎.", ephemeral=True)
 
 
-@bot.tree.command(name="세팅게스트역할", description="게스트 등업 역할을 설정합니다.")
+@bot.tree.command(name="세팅게스트등업역할", description="게스트 등업 역할을 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_upgrade_guest_role(interaction: discord.Interaction, role: discord.Role):
     set_guild_setting(interaction.guild.id, "upgrade_guest_role_id", str(role.id))
-    await interaction.response.send_message(f"게스트 등업 역할을 {role.mention} 으로 설정했습니다.", ephemeral=True)
+    await interaction.response.send_message(f"寃뚯뒪???깆뾽 ??븷??{role.mention} ?쇰줈 ?ㅼ젙?덉뒿?덈떎.", ephemeral=True)
 
 
 @bot.tree.command(name="세팅시간대역할", description="시간대 버튼에 연결할 역할을 설정합니다.")
@@ -3326,14 +3327,14 @@ async def set_upgrade_guest_role(interaction: discord.Interaction, role: discord
 async def set_time_role_command(interaction: discord.Interaction, slot_name: str, role: discord.Role):
     slot_name = slot_name.lower().strip()
     if slot_name not in TIME_SLOT_CHOICES:
-        await interaction.response.send_message("slot_name은 morning, afternoon, evening, night, dawn 중 하나여야 합니다.", ephemeral=True)
+        await interaction.response.send_message("slot_name? morning, afternoon, evening, night, dawn 以??섎굹?ъ빞 ?⑸땲??", ephemeral=True)
         return
 
     set_time_role(interaction.guild.id, slot_name, role.id)
-    await interaction.response.send_message(f"{TIME_SLOT_LABELS[slot_name]} 역할을 {role.mention} 으로 설정했습니다.", ephemeral=True)
+    await interaction.response.send_message(f"{TIME_SLOT_LABELS[slot_name]} ??븷??{role.mention} ?쇰줈 ?ㅼ젙?덉뒿?덈떎.", ephemeral=True)
 
 
-@bot.tree.command(name="세팅환영dm", description="등업 시 보낼 DM 문구를 설정합니다.")
+@bot.tree.command(name="세팅환영dm", description="유저에게 보낼 환영 DM 문구를 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_welcome_dm_template(interaction: discord.Interaction):
     await interaction.response.send_modal(WelcomeDmModal())
@@ -3343,7 +3344,7 @@ async def set_welcome_dm_template(interaction: discord.Interaction):
 @app_commands.checks.has_permissions(administrator=True)
 async def set_rule_button_template(interaction: discord.Interaction, content: str):
     set_template(interaction.guild.id, "rule_button_text", content)
-    await interaction.response.send_message("규칙 안내문을 저장했습니다.", ephemeral=True)
+    await interaction.response.send_message("洹쒖튃 ?덈궡臾몄쓣 ??ν뻽?듬땲??", ephemeral=True)
 
 
 @bot.tree.command(name="세팅등업패널문구", description="등업 패널 문구를 설정합니다.")
@@ -3356,53 +3357,53 @@ async def set_upgrade_panel_template(interaction: discord.Interaction):
 @app_commands.checks.has_permissions(administrator=True)
 async def set_probation_notice_template(interaction: discord.Interaction, content: str):
     set_template(interaction.guild.id, "probation_notice_text", content)
-    await interaction.response.send_message("신입 알림 문구를 저장했습니다.", ephemeral=True)
+    await interaction.response.send_message("?좎엯 ?뚮┝ 臾멸뎄瑜???ν뻽?듬땲??", ephemeral=True)
 
 
 @bot.tree.command(name="세팅신입경과일", description="신입 역할 경과 알림 일수를 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_probation_days(interaction: discord.Interaction, days: int):
     if days < 1:
-        await interaction.response.send_message("일수는 1 이상이어야 합니다.", ephemeral=True)
+        await interaction.response.send_message("?쇱닔??1 ?댁긽?댁뼱???⑸땲??", ephemeral=True)
         return
 
     set_guild_setting(interaction.guild.id, "probation_days", str(days))
     await interaction.response.send_message(
-        f"신입 역할 경과일을 {days}일로 설정했습니다.",
+        f"?좎엯 ??븷 寃쎄낵?쇱쓣 {days}?쇰줈 ?ㅼ젙?덉뒿?덈떎.",
         ephemeral=True,
     )
 
 
-@bot.tree.command(name="적금세팅", description="적금 기간과 이자율을 설정합니다.")
+@bot.tree.command(name="?곴툑?명똿", description="?곴툑 湲곌컙怨??댁옄?⑥쓣 ?ㅼ젙?⑸땲??")
 @app_commands.checks.has_permissions(administrator=True)
 async def savings_setting(interaction: discord.Interaction, days: int, interest_rate: int):
     if days < 1:
-        await interaction.response.send_message("적금 기간은 1일 이상이어야 합니다.", ephemeral=True)
+        await interaction.response.send_message("?곴툑 湲곌컙? 1???댁긽?댁뼱???⑸땲??", ephemeral=True)
         return
     if interest_rate < 0:
-        await interaction.response.send_message("이자율은 0 이상이어야 합니다.", ephemeral=True)
+        await interaction.response.send_message("?댁옄?⑥? 0 ?댁긽?댁뼱???⑸땲??", ephemeral=True)
         return
 
     set_guild_setting(interaction.guild.id, "savings_days", str(days))
     set_guild_setting(interaction.guild.id, "savings_interest_rate", str(interest_rate))
     await interaction.response.send_message(
-        f"적금 설정을 저장했습니다.\n기간: `{days}일`\n이자율: `{interest_rate}%`",
+        f"?곴툑 ?ㅼ젙????ν뻽?듬땲??\n湲곌컙: `{days}??\n?댁옄?? `{interest_rate}%`",
         ephemeral=True,
     )
 
 
-@bot.tree.command(name="설정확인", description="현재 채널 설정을 확인합니다.")
+@bot.tree.command(name="?ㅼ젙?뺤씤", description="?꾩옱 梨꾨꼸 ?ㅼ젙???뺤씤?⑸땲??")
 @app_commands.checks.has_permissions(administrator=True)
 async def show_settings(interaction: discord.Interaction):
     guild_id = interaction.guild.id
     keys = [
-        ("생일 알림", "birthday_channel_id"),
-        ("등업 로그", "upgrade_log_channel_id"),
-        ("퇴장 로그", "leave_log_channel_id"),
-        ("규칙 로그", "rule_log_channel_id"),
-        ("구인 채널", "recruit_channel_id"),
-        ("가입 안내", "welcome_guide_channel_id"),
-        ("환영메시지 채널", "welcome_message_channel_id"),
+        ("?앹씪 ?뚮┝", "birthday_channel_id"),
+        ("?깆뾽 濡쒓렇", "upgrade_log_channel_id"),
+        ("?댁옣 濡쒓렇", "leave_log_channel_id"),
+        ("洹쒖튃 濡쒓렇", "rule_log_channel_id"),
+        ("援ъ씤 梨꾨꼸", "recruit_channel_id"),
+        ("媛???덈궡", "welcome_guide_channel_id"),
+        ("?섏쁺硫붿떆吏 梨꾨꼸", "welcome_message_channel_id"),
     ]
 
     def fmt(channel_id):
@@ -3420,11 +3421,11 @@ async def show_settings(interaction: discord.Interaction):
 async def show_role_settings(interaction: discord.Interaction):
     guild_id = interaction.guild.id
     keys = [
-        ("규칙 역할", "rule_role_id"),
-        ("신입 역할", "new_member_role_id"),
-        ("생일 역할", "birthday_role_id"),
-        ("클랜원 등업 역할", "upgrade_clan_role_id"),
-        ("게스트 등업 역할", "upgrade_guest_role_id"),
+        ("洹쒖튃 ??븷", "rule_role_id"),
+        ("?좎엯 ??븷", "new_member_role_id"),
+        ("?앹씪 ??븷", "birthday_role_id"),
+        ("?대옖???깆뾽 ??븷", "upgrade_clan_role_id"),
+        ("寃뚯뒪???깆뾽 ??븷", "upgrade_guest_role_id"),
     ]
 
     def fmt(role_id):
@@ -3445,13 +3446,13 @@ async def show_role_settings(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="문구설정확인", description="현재 저장된 커스텀 문구를 확인합니다.")
+@bot.tree.command(name="문구설정확인", description="현재 등록된 커스텀 문구를 확인합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def show_template_settings(interaction: discord.Interaction):
     guild_id = interaction.guild.id
     embed = discord.Embed(title="문구 설정", color=0x9B59B6)
     embed.add_field(
-        name="환영 DM",
+        name="?섏쁺 DM",
         value=get_template_with_default(guild_id, "welcome_dm", DEFAULT_WELCOME_DM_TEXT),
         inline=False,
     )
@@ -3461,60 +3462,60 @@ async def show_template_settings(interaction: discord.Interaction):
         inline=False,
     )
     embed.add_field(
-        name="등업 패널 문구",
+        name="?깆뾽 ?⑤꼸 臾멸뎄",
         value=get_template_with_default(guild_id, "upgrade_panel_text", DEFAULT_UPGRADE_PANEL_TEXT),
         inline=False,
     )
     embed.add_field(
-        name="신입 알림 문구",
+        name="?좎엯 ?뚮┝ 臾멸뎄",
         value=get_template_with_default(guild_id, "probation_notice_text", DEFAULT_PROBATION_NOTICE_TEXT),
         inline=False,
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="환영메시지", description="특정 역할에 대한 환영메시지를 설정합니다.")
+@bot.tree.command(name="?섏쁺硫붿떆吏", description="?뱀젙 ??븷??????섏쁺硫붿떆吏瑜??ㅼ젙?⑸땲??")
 @app_commands.checks.has_permissions(administrator=True)
 async def welcome_message(interaction: discord.Interaction, role: discord.Role, content: str):
     set_welcome_message(interaction.guild.id, role.id, content)
-    await interaction.response.send_message(f"{role.mention} 역할의 환영메시지를 저장했습니다.", ephemeral=True)
+    await interaction.response.send_message(f"{role.mention} ??븷???섏쁺硫붿떆吏瑜???ν뻽?듬땲??", ephemeral=True)
 
 
-@bot.tree.command(name="환영메시지삭제", description="특정 역할의 환영메시지를 삭제합니다.")
+@bot.tree.command(name="?섏쁺硫붿떆吏??젣", description="?뱀젙 ??븷???섏쁺硫붿떆吏瑜???젣?⑸땲??")
 @app_commands.checks.has_permissions(administrator=True)
 async def delete_welcome_message_command(interaction: discord.Interaction, role: discord.Role):
     delete_welcome_message(interaction.guild.id, role.id)
-    await interaction.response.send_message(f"{role.mention} 역할의 환영메시지를 삭제했습니다.", ephemeral=True)
+    await interaction.response.send_message(f"{role.mention} ??븷???섏쁺硫붿떆吏瑜???젣?덉뒿?덈떎.", ephemeral=True)
 
 
-@bot.tree.command(name="환영메시지목록", description="등록된 환영메시지 목록을 확인합니다.")
+@bot.tree.command(name="?섏쁺硫붿떆吏紐⑸줉", description="?깅줉???섏쁺硫붿떆吏 紐⑸줉???뺤씤?⑸땲??")
 @app_commands.checks.has_permissions(administrator=True)
 async def list_welcome_messages(interaction: discord.Interaction):
     rows = get_all_welcome_messages(interaction.guild.id)
     if not rows:
-        await interaction.response.send_message("등록된 환영메시지가 없습니다.", ephemeral=True)
+        await interaction.response.send_message("?깅줉???섏쁺硫붿떆吏媛 ?놁뒿?덈떎.", ephemeral=True)
         return
 
     lines = []
     for role_id, content in rows:
         lines.append(f"<@&{role_id}> -> {content}")
 
-    embed = discord.Embed(title="환영메시지 목록", description="\n\n".join(lines), color=0x2ECC71)
+    embed = discord.Embed(title="?섏쁺硫붿떆吏 紐⑸줉", description="\n\n".join(lines), color=0x2ECC71)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="고정메시지", description="현재 채널에 항상 하단에 유지될 메시지를 설정합니다.")
+@bot.tree.command(name="怨좎젙硫붿떆吏", description="?꾩옱 梨꾨꼸????긽 ?섎떒???좎???硫붿떆吏瑜??ㅼ젙?⑸땲??")
 @app_commands.checks.has_permissions(administrator=True)
 async def sticky_message(interaction: discord.Interaction):
     await interaction.response.send_modal(StickyMessageModal())
 
 
-@bot.tree.command(name="고정해제", description="현재 채널의 고정메시지를 해제합니다.")
+@bot.tree.command(name="怨좎젙?댁젣", description="?꾩옱 梨꾨꼸??怨좎젙硫붿떆吏瑜??댁젣?⑸땲??")
 @app_commands.checks.has_permissions(administrator=True)
 async def sticky_clear(interaction: discord.Interaction):
     existing = get_sticky_message(interaction.guild.id, interaction.channel.id)
     if not existing:
-        await interaction.response.send_message("이 채널에는 설정된 고정메시지가 없습니다.", ephemeral=True)
+        await interaction.response.send_message("??梨꾨꼸?먮뒗 ?ㅼ젙??怨좎젙硫붿떆吏媛 ?놁뒿?덈떎.", ephemeral=True)
         return
 
     if existing.get("message_id"):
@@ -3525,25 +3526,25 @@ async def sticky_clear(interaction: discord.Interaction):
             pass
 
     clear_sticky_message(interaction.guild.id, interaction.channel.id)
-    await interaction.response.send_message("현재 채널의 고정메시지를 해제했습니다.", ephemeral=True)
+    await interaction.response.send_message("?꾩옱 梨꾨꼸??怨좎젙硫붿떆吏瑜??댁젣?덉뒿?덈떎.", ephemeral=True)
 
 
-@bot.tree.command(name="고정확인", description="현재 채널의 고정메시지 내용을 확인합니다.")
+@bot.tree.command(name="怨좎젙?뺤씤", description="?꾩옱 梨꾨꼸??怨좎젙硫붿떆吏 ?댁슜???뺤씤?⑸땲??")
 @app_commands.checks.has_permissions(administrator=True)
 async def sticky_check(interaction: discord.Interaction):
     existing = get_sticky_message(interaction.guild.id, interaction.channel.id)
     if not existing:
-        await interaction.response.send_message("이 채널에는 설정된 고정메시지가 없습니다.", ephemeral=True)
+        await interaction.response.send_message("??梨꾨꼸?먮뒗 ?ㅼ젙??怨좎젙硫붿떆吏媛 ?놁뒿?덈떎.", ephemeral=True)
         return
 
-    embed = discord.Embed(title="고정메시지 확인", color=0x5865F2)
-    embed.add_field(name="채널", value=interaction.channel.mention, inline=False)
-    embed.add_field(name="내용", value=existing["content"], inline=False)
+    embed = discord.Embed(title="怨좎젙硫붿떆吏 ?뺤씤", color=0x5865F2)
+    embed.add_field(name="梨꾨꼸", value=interaction.channel.mention, inline=False)
+    embed.add_field(name="?댁슜", value=existing["content"], inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="생일등록", description="유저의 생일을 등록합니다.")
-@app_commands.describe(member="생일을 등록할 유저", date="MM-DD 형식으로 입력")
+@bot.tree.command(name="?앹씪?깅줉", description="?좎????앹씪???깅줉?⑸땲??")
+@app_commands.describe(member="?앹씪???깅줉???좎?", date="MM-DD ?뺤떇?쇰줈 ?낅젰")
 async def add_birthday(interaction: discord.Interaction, member: discord.Member, date: str):
     try:
         normalized_date = normalize_birthday(date)
@@ -3553,17 +3554,17 @@ async def add_birthday(interaction: discord.Interaction, member: discord.Member,
 
     cursor.execute("INSERT OR REPLACE INTO birthdays VALUES (?,?)", (str(member.id), normalized_date))
     conn.commit()
-    await interaction.response.send_message("등록 완료", ephemeral=True)
+    await interaction.response.send_message("?깅줉 ?꾨즺", ephemeral=True)
 
 
-@bot.tree.command(name="생일삭제", description="유저의 생일 정보를 삭제합니다.")
+@bot.tree.command(name="?앹씪??젣", description="?좎????앹씪 ?뺣낫瑜???젣?⑸땲??")
 async def remove_birthday(interaction: discord.Interaction, member: discord.Member):
     cursor.execute("DELETE FROM birthdays WHERE user_id=?", (str(member.id),))
     conn.commit()
-    await interaction.response.send_message("삭제 완료", ephemeral=True)
+    await interaction.response.send_message("??젣 ?꾨즺", ephemeral=True)
 
 
-@bot.tree.command(name="생일목록", description="등록된 생일 목록을 확인합니다.")
+@bot.tree.command(name="?앹씪紐⑸줉", description="?깅줉???앹씪 紐⑸줉???뺤씤?⑸땲??")
 async def birthday_list(interaction: discord.Interaction):
     cursor.execute("SELECT * FROM birthdays")
     data = cursor.fetchall()
@@ -3584,46 +3585,46 @@ async def birthday_list(interaction: discord.Interaction):
     await interaction.response.send_message(embed=view.get_embed(), view=view)
 
 
-@bot.tree.command(name="규칙버튼", description="규칙 확인 버튼 메시지를 생성합니다.")
+@bot.tree.command(name="洹쒖튃踰꾪듉", description="洹쒖튃 ?뺤씤 踰꾪듉 硫붿떆吏瑜??앹꽦?⑸땲??")
 @app_commands.checks.has_permissions(administrator=True)
 async def rule_button(interaction: discord.Interaction):
     text = get_template_with_default(interaction.guild.id, "rule_button_text", DEFAULT_RULE_BUTTON_TEXT)
     embed = discord.Embed(description=text, color=0x2ECC71)
     await interaction.channel.send(embed=embed, view=RuleConfirmView())
-    await interaction.response.send_message("규칙 버튼 생성 완료", ephemeral=True)
+    await interaction.response.send_message("洹쒖튃 踰꾪듉 ?앹꽦 ?꾨즺", ephemeral=True)
 
 
-@bot.tree.command(name="등업패널", description="등업 신청 패널을 생성합니다.")
+@bot.tree.command(name="?깆뾽?⑤꼸", description="?깆뾽 ?좎껌 ?⑤꼸???앹꽦?⑸땲??")
 @app_commands.checks.has_permissions(administrator=True)
 async def upgrade_panel(interaction: discord.Interaction):
     text = get_template_with_default(interaction.guild.id, "upgrade_panel_text", DEFAULT_UPGRADE_PANEL_TEXT)
     embed = discord.Embed(description=text, color=0x5865F2)
     await interaction.channel.send(embed=embed, view=UpgradePanelView())
-    await interaction.response.send_message("등업 패널 생성 완료", ephemeral=True)
+    await interaction.response.send_message("?깆뾽 ?⑤꼸 ?앹꽦 ?꾨즺", ephemeral=True)
 
 
-@bot.tree.command(name="시간설정패널", description="시간대 역할 선택 패널을 생성합니다.")
+@bot.tree.command(name="?쒓컙?ㅼ젙?⑤꼸", description="?쒓컙? ??븷 ?좏깮 ?⑤꼸???앹꽦?⑸땲??")
 async def time_panel(interaction: discord.Interaction):
     embed = discord.Embed(
-        title="플레이 시간대 설정",
-        description="원하는 시간대를 선택해주세요.\n중복 선택 가능합니다.",
+        title="?뚮젅???쒓컙? ?ㅼ젙",
+        description="?먰븯???쒓컙?瑜??좏깮?댁＜?몄슂.\n以묐났 ?좏깮 媛?ν빀?덈떎.",
         color=0x5865F2,
     )
     await interaction.channel.send(embed=embed, view=TimeRoleView())
-    await interaction.response.send_message("시간 설정 패널 생성 완료", ephemeral=True)
+    await interaction.response.send_message("?쒓컙 ?ㅼ젙 ?⑤꼸 ?앹꽦 ?꾨즺", ephemeral=True)
 
 
 # ----------------------------
 # 재화 / 적금 명령어
 # ----------------------------
 
-@bot.tree.command(name="상생지원금", description="하루에 한 번 상생지원금 10,000원을 받습니다.")
+@bot.tree.command(name="?곸깮吏?먭툑", description="?섎（????踰??곸깮吏?먭툑 10,000?먯쓣 諛쏆뒿?덈떎.")
 async def daily_money(interaction: discord.Interaction):
     today = get_kst_now().strftime("%Y-%m-%d")
     cursor.execute("SELECT last_claim_date FROM daily_claims WHERE user_id=?", (str(interaction.user.id),))
     row = cursor.fetchone()
     if row and row[0] == today:
-        await interaction.response.send_message("오늘은 이미 돈을 받았습니다. 내일 다시 시도해주세요.", ephemeral=True)
+        await interaction.response.send_message("?ㅻ뒛? ?대? ?덉쓣 諛쏆븯?듬땲?? ?댁씪 ?ㅼ떆 ?쒕룄?댁＜?몄슂.", ephemeral=True)
         return
 
     ensure_wallet(interaction.user.id)
@@ -3635,30 +3636,30 @@ async def daily_money(interaction: discord.Interaction):
     conn.commit()
 
     await interaction.response.send_message(
-        f"오늘의 상생지원금 `{format_money(DAILY_REWARD)}`을 받았습니다!\n현재 잔액: `{format_money(get_balance(interaction.user.id))}`"
+        f"?ㅻ뒛???곸깮吏?먭툑 `{format_money(DAILY_REWARD)}`??諛쏆븯?듬땲??\n?꾩옱 ?붿븸: `{format_money(get_balance(interaction.user.id))}`"
     )
 
 
-@bot.tree.command(name="잔액", description="현재 내 보유 금액을 확인합니다.")
+@bot.tree.command(name="?붿븸", description="?꾩옱 ??蹂댁쑀 湲덉븸???뺤씤?⑸땲??")
 async def balance(interaction: discord.Interaction):
     await interaction.response.send_message(
-        f"{interaction.user.mention}님의 현재 잔액은 `{format_money(get_balance(interaction.user.id))}`입니다."
+        f"{interaction.user.mention}?섏쓽 ?꾩옱 ?붿븸? `{format_money(get_balance(interaction.user.id))}`?낅땲??"
     )
 
 
-@bot.tree.command(name="적금", description="현재 서버 설정 기준으로 적금을 가입합니다.")
+@bot.tree.command(name="?곴툑", description="?꾩옱 ?쒕쾭 ?ㅼ젙 湲곗??쇰줈 ?곴툑??媛?낇빀?덈떎.")
 async def savings_join(interaction: discord.Interaction, amount: int):
     if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        await interaction.response.send_message("?쒕쾭?먯꽌留??ъ슜?????덉뒿?덈떎.", ephemeral=True)
         return
     if amount <= 0:
-        await interaction.response.send_message("적금 금액은 1원 이상이어야 합니다.", ephemeral=True)
+        await interaction.response.send_message("?곴툑 湲덉븸? 1???댁긽?댁뼱???⑸땲??", ephemeral=True)
         return
     if not can_afford(interaction.user.id, amount):
-        await interaction.response.send_message("잔액이 부족합니다.", ephemeral=True)
+        await interaction.response.send_message("?붿븸??遺議깊빀?덈떎.", ephemeral=True)
         return
     if get_active_saving(interaction.guild.id, interaction.user.id) is not None:
-        await interaction.response.send_message("이미 진행 중인 적금이 있습니다. `/내적금`으로 확인해주세요.", ephemeral=True)
+        await interaction.response.send_message("?대? 吏꾪뻾 以묒씤 ?곴툑???덉뒿?덈떎. `/?댁쟻湲??쇰줈 ?뺤씤?댁＜?몄슂.", ephemeral=True)
         return
 
     days = get_savings_days(interaction.guild.id)
@@ -3681,12 +3682,12 @@ async def savings_join(interaction: discord.Interaction, amount: int):
 @bot.tree.command(name="내적금", description="현재 가입 중인 적금 정보를 확인합니다.")
 async def my_savings(interaction: discord.Interaction):
     if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        await interaction.response.send_message("?쒕쾭?먯꽌留??ъ슜?????덉뒿?덈떎.", ephemeral=True)
         return
 
     saving = get_active_saving(interaction.guild.id, interaction.user.id)
     if saving is None:
-        await interaction.response.send_message("현재 가입 중인 적금이 없습니다.", ephemeral=True)
+        await interaction.response.send_message("?꾩옱 媛??以묒씤 ?곴툑???놁뒿?덈떎.", ephemeral=True)
         return
 
     due_at = dt_from_db(saving["due_at"])
@@ -3704,17 +3705,17 @@ async def my_savings(interaction: discord.Interaction):
 @bot.tree.command(name="적금수령", description="만기된 적금을 수령합니다.")
 async def savings_claim(interaction: discord.Interaction):
     if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        await interaction.response.send_message("?쒕쾭?먯꽌留??ъ슜?????덉뒿?덈떎.", ephemeral=True)
         return
 
     saving = get_active_saving(interaction.guild.id, interaction.user.id)
     if saving is None:
-        await interaction.response.send_message("현재 수령할 적금이 없습니다.", ephemeral=True)
+        await interaction.response.send_message("?꾩옱 ?섎졊???곴툑???놁뒿?덈떎.", ephemeral=True)
         return
 
     due_at = dt_from_db(saving["due_at"])
     if get_kst_now() < due_at:
-        await interaction.response.send_message("아직 적금 만기 전입니다.", ephemeral=True)
+        await interaction.response.send_message("?꾩쭅 ?곴툑 留뚭린 ?꾩엯?덈떎.", ephemeral=True)
         return
 
     add_balance(interaction.user.id, saving["total_amount"])
@@ -3726,56 +3727,56 @@ async def savings_claim(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="랭킹", description="서버 자산 랭킹 상위 10명을 확인합니다.")
+@bot.tree.command(name="재산", description="서버 재산 상위 10명을 확인합니다.")
 async def ranking(interaction: discord.Interaction):
     cursor.execute("SELECT user_id, balance FROM balances ORDER BY balance DESC, user_id ASC LIMIT 10")
     rows = cursor.fetchall()
     if not rows:
-        await interaction.response.send_message("아직 랭킹 데이터가 없습니다.")
+        await interaction.response.send_message("?꾩쭅 ??궧 ?곗씠?곌? ?놁뒿?덈떎.")
         return
 
     lines = []
     for index, (user_id, amount) in enumerate(rows, start=1):
         member = interaction.guild.get_member(int(user_id))
-        name = member.display_name if member else f"알 수 없는 유저 ({user_id})"
-        medal = "👑 " if index == 1 else ""
+        name = member.display_name if member else f"?????녿뒗 ?좎? ({user_id})"
+        medal = "?몣 " if index == 1 else ""
         lines.append(f"{index}. {medal}{name} - {format_money(amount)}")
 
-    embed = discord.Embed(title="💰 자산 랭킹", description="\n".join(lines), color=0xF1C40F)
+    embed = discord.Embed(title="?뮥 ?먯궛 ??궧", description="\n".join(lines), color=0xF1C40F)
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="송금", description="다른 유저에게 돈을 송금합니다.")
+@bot.tree.command(name="?↔툑", description="?ㅻⅨ ?좎??먭쾶 ?덉쓣 ?↔툑?⑸땲??")
 async def transfer(interaction: discord.Interaction, member: discord.Member, amount: int):
     if member.bot:
-        await interaction.response.send_message("봇에게는 송금할 수 없습니다.", ephemeral=True)
+        await interaction.response.send_message("遊뉗뿉寃뚮뒗 ?↔툑?????놁뒿?덈떎.", ephemeral=True)
         return
     if member.id == interaction.user.id:
-        await interaction.response.send_message("자기 자신에게는 송금할 수 없습니다.", ephemeral=True)
+        await interaction.response.send_message("?먭린 ?먯떊?먭쾶???↔툑?????놁뒿?덈떎.", ephemeral=True)
         return
     if amount <= 0:
-        await interaction.response.send_message("송금 금액은 1원 이상이어야 합니다.", ephemeral=True)
+        await interaction.response.send_message("?↔툑 湲덉븸? 1???댁긽?댁뼱???⑸땲??", ephemeral=True)
         return
     if not can_afford(interaction.user.id, amount):
-        await interaction.response.send_message("잔액이 부족합니다.", ephemeral=True)
+        await interaction.response.send_message("?붿븸??遺議깊빀?덈떎.", ephemeral=True)
         return
 
     add_balance(interaction.user.id, -amount)
     add_balance(member.id, amount)
     await interaction.response.send_message(
-        f"{member.mention}님에게 `{format_money(amount)}`을 송금했습니다.\n현재 잔액: `{format_money(get_balance(interaction.user.id))}`"
+        f"{member.mention}?섏뿉寃?`{format_money(amount)}`???↔툑?덉뒿?덈떎.\n?꾩옱 ?붿븸: `{format_money(get_balance(interaction.user.id))}`"
     )
 
 
-@bot.tree.command(name="돈지급", description="서버 관리자 이상이 여러 유저에게 같은 금액을 지급합니다.")
+@bot.tree.command(name="돈주기", description="서버 관리자 이상이 여러 유저에게 같은 금액을 지급합니다.")
 @app_commands.rename(targets="대상들", amount="금액")
 @app_commands.describe(
-    targets="멘션 또는 ID를 공백/쉼표로 구분해서 입력",
-    amount="각 유저에게 지급할 금액",
+    targets="硫섏뀡 ?먮뒗 ID瑜?怨듬갚/?쇳몴濡?援щ텇?댁꽌 ?낅젰",
+    amount="媛??좎??먭쾶 吏湲됲븷 湲덉븸",
 )
 async def grant_money(interaction: discord.Interaction, targets: str, amount: int):
     if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        await interaction.response.send_message("?쒕쾭?먯꽌留??ъ슜?????덉뒿?덈떎.", ephemeral=True)
         return
 
     if not (
@@ -3783,11 +3784,11 @@ async def grant_money(interaction: discord.Interaction, targets: str, amount: in
         or interaction.user.guild_permissions.administrator
         or interaction.user.guild_permissions.manage_guild
     ):
-        await interaction.response.send_message("이 명령어는 서버 관리자 이상만 사용할 수 있습니다.", ephemeral=True)
+        await interaction.response.send_message("??紐낅졊?대뒗 ?쒕쾭 愿由ъ옄 ?댁긽留??ъ슜?????덉뒿?덈떎.", ephemeral=True)
         return
 
     if amount <= 0:
-        await interaction.response.send_message("지급 금액은 1원 이상이어야 합니다.", ephemeral=True)
+        await interaction.response.send_message("吏湲?湲덉븸? 1???댁긽?댁뼱???⑸땲??", ephemeral=True)
         return
 
     raw_ids = []
@@ -3798,7 +3799,7 @@ async def grant_money(interaction: discord.Interaction, targets: str, amount: in
 
     if not raw_ids:
         await interaction.response.send_message(
-            "대상을 한 명 이상 입력해주세요. 예: `@유저1 @유저2 @유저3`",
+            "??곸쓣 ??紐??댁긽 ?낅젰?댁＜?몄슂. ?? `@?좎?1 @?좎?2 @?좎?3`",
             ephemeral=True,
         )
         return
@@ -3817,34 +3818,34 @@ async def grant_money(interaction: discord.Interaction, targets: str, amount: in
         success_members.append(member.mention)
 
     if not success_members:
-        await interaction.response.send_message("지급 가능한 유저가 없습니다.", ephemeral=True)
+        await interaction.response.send_message("吏湲?媛?ν븳 ?좎?媛 ?놁뒿?덈떎.", ephemeral=True)
         return
 
     lines = [
-        f"총 {len(success_members)}명에게 각각 `{format_money(amount)}`을 지급했습니다.",
-        f"대상: {', '.join(success_members)}",
+        f"珥?{len(success_members)}紐낆뿉寃?媛곴컖 `{format_money(amount)}`??吏湲됲뻽?듬땲??",
+        f"??? {', '.join(success_members)}",
     ]
 
     if skipped_members:
-        lines.append(f"제외됨: {', '.join(skipped_members)}")
+        lines.append(f"?쒖쇅?? {', '.join(skipped_members)}")
 
     await interaction.response.send_message("\n".join(lines))
 
 
 
 
-@bot.tree.command(name="돈삭제", description="서버 주인이 특정 유저의 돈을 차감합니다.")
+@bot.tree.command(name="돈삭제", description="서버 주인이 특정 유저의 재화를 차감합니다.")
 async def remove_money(interaction: discord.Interaction, member: discord.Member, amount: int):
     if interaction.guild is None or interaction.user.id != interaction.guild.owner_id:
-        await interaction.response.send_message("이 명령어는 서버 주인만 사용할 수 있습니다.", ephemeral=True)
+        await interaction.response.send_message("??紐낅졊?대뒗 ?쒕쾭 二쇱씤留??ъ슜?????덉뒿?덈떎.", ephemeral=True)
         return
 
     if member.bot:
-        await interaction.response.send_message("봇의 돈은 삭제할 수 없습니다.", ephemeral=True)
+        await interaction.response.send_message("遊뉗쓽 ?덉? ??젣?????놁뒿?덈떎.", ephemeral=True)
         return
 
     if amount <= 0:
-        await interaction.response.send_message("차감 금액은 1원 이상이어야 합니다.", ephemeral=True)
+        await interaction.response.send_message("李④컧 湲덉븸? 1???댁긽?댁뼱???⑸땲??", ephemeral=True)
         return
 
     current_balance = get_balance(member.id)
@@ -3852,28 +3853,28 @@ async def remove_money(interaction: discord.Interaction, member: discord.Member,
     add_balance(member.id, -deducted_amount)
 
     await interaction.response.send_message(
-        f"{member.mention}님에게서 `{format_money(deducted_amount)}`을 차감했습니다.\n"
-        f"{member.mention}님의 현재 잔액: `{format_money(get_balance(member.id))}`"
+        f"{member.mention}?섏뿉寃뚯꽌 `{format_money(deducted_amount)}`??李④컧?덉뒿?덈떎.\n"
+        f"{member.mention}?섏쓽 ?꾩옱 ?붿븸: `{format_money(get_balance(member.id))}`"
     )
 
 
 # ----------------------------
-# 도박 명령어
+# 게임 명령어
 # ----------------------------
 
-@bot.tree.command(name="슬롯", description="입력한 금액으로 슬롯머신을 돌립니다.")
+@bot.tree.command(name="?щ’", description="?낅젰??湲덉븸?쇰줈 ?щ’癒몄떊???뚮┰?덈떎.")
 async def slot(interaction: discord.Interaction, amount: int):
     if not await ensure_not_blacklisted_for_gambling(interaction):
         return
     if amount < MIN_BET:
-        await interaction.response.send_message(f"최소 배팅 금액은 `{format_money(MIN_BET)}`입니다.", ephemeral=True)
+        await interaction.response.send_message(f"理쒖냼 諛고똿 湲덉븸? `{format_money(MIN_BET)}`?낅땲??", ephemeral=True)
         return
     if not can_afford(interaction.user.id, amount):
-        await interaction.response.send_message("잔액이 부족합니다.", ephemeral=True)
+        await interaction.response.send_message("?붿븸??遺議깊빀?덈떎.", ephemeral=True)
         return
 
     add_balance(interaction.user.id, -amount)
-    symbols = ["🍒", "🍋", "🍉", "⭐", "💎", "7️⃣"]
+    symbols = ["체리", "레몬", "포도", "사과", "클로버", "7"]
 
     first = random.choice(symbols)
     second = first if random.random() < 0.05 else random.choice(symbols)
@@ -3883,9 +3884,9 @@ async def slot(interaction: discord.Interaction, amount: int):
     multiplier = 0
 
     if len(set(result)) == 1:
-        if result[0] == "7️⃣":
+        if result[0] == "7":
             multiplier = 12
-        elif result[0] == "💎":
+        elif result[0] == "클로버":
             multiplier = 8
         else:
             multiplier = 6
@@ -3894,9 +3895,9 @@ async def slot(interaction: discord.Interaction, amount: int):
         pair_symbol = max(counts, key=counts.get)
 
         if counts[pair_symbol] == 2:
-            if pair_symbol == "7️⃣":
+            if pair_symbol == "7":
                 multiplier = 1.7
-            elif pair_symbol == "💎":
+            elif pair_symbol == "클로버":
                 multiplier = 1.4
             else:
                 multiplier = 1.15
@@ -3914,10 +3915,10 @@ async def slot(interaction: discord.Interaction, amount: int):
         desc = f"`{' | '.join(result)}`\n\n아쉽네요... `{format_money(amount)}`을 잃었습니다.\n현재 잔액: `{format_money(balance_now)}`"
         color = 0xE74C3C
     elif len(set(result)) == 1:
-        desc = f"`{' | '.join(result)}`\n\n대박! `{multiplier}배` 당첨으로 `{format_money(winnings)}`을 받았습니다.\n현재 잔액: `{format_money(balance_now)}`"
+        desc = f"`{' | '.join(result)}`\n\n대박! `{multiplier}배` 당첨으로 `{format_money(winnings)}`을 획득했습니다.\n현재 잔액: `{format_money(balance_now)}`"
         color = 0x2ECC71
     else:
-        desc = f"`{' | '.join(result)}`\n\n2개 일치! `{multiplier}배` 보상으로 `{format_money(winnings)}`을 받았습니다.\n현재 잔액: `{format_money(balance_now)}`"
+        desc = f"`{' | '.join(result)}`\n\n2개 일치! `{multiplier}배` 보상으로 `{format_money(winnings)}`을 획득했습니다.\n현재 잔액: `{format_money(balance_now)}`"
         color = 0x3498DB
 
     add_game_history(
@@ -3931,24 +3932,24 @@ async def slot(interaction: discord.Interaction, amount: int):
 
 
 
-@bot.tree.command(name="동전", description="입력한 금액으로 동전 앞뒤 맞추기를 합니다.")
+@bot.tree.command(name="?숈쟾", description="?낅젰??湲덉븸?쇰줈 ?숈쟾 ?욌뮘 留욎텛湲곕? ?⑸땲??")
 async def coin(interaction: discord.Interaction, amount: int):
     if not await ensure_not_blacklisted_for_gambling(interaction):
         return
     if amount < MIN_BET:
-        await interaction.response.send_message(f"최소 배팅 금액은 `{format_money(MIN_BET)}`입니다.", ephemeral=True)
+        await interaction.response.send_message(f"理쒖냼 諛고똿 湲덉븸? `{format_money(MIN_BET)}`?낅땲??", ephemeral=True)
         return
     if not can_afford(interaction.user.id, amount):
-        await interaction.response.send_message("잔액이 부족합니다.", ephemeral=True)
+        await interaction.response.send_message("?붿븸??遺議깊빀?덈떎.", ephemeral=True)
         return
 
     add_balance(interaction.user.id, -amount)
     embed = discord.Embed(
         title="🪙 동전 던지기",
         description=(
-            f"배팅 금액: `{format_money(amount)}`\n"
+            f"베팅 금액: `{format_money(amount)}`\n"
             "아래 버튼에서 `앞` 또는 `뒤`를 선택해주세요.\n"
-            "당첨 시 1.8배를 지급합니다.\n"
+            "승리 시 1.8배를 지급합니다.\n"
             f"{COIN_FLIP_TIMEOUT}초 안에 선택하지 않으면 자동 취소되고 돈이 반환됩니다."
         ),
         color=0xF1C40F,
@@ -3956,19 +3957,19 @@ async def coin(interaction: discord.Interaction, amount: int):
     await interaction.response.send_message(embed=embed, view=CoinFlipView(interaction.user.id, amount))
 
 
-@bot.tree.command(name="룰렛", description="룰렛에 배팅하고 색상을 선택합니다.")
+@bot.tree.command(name="룰렛", description="룰렛에 베팅하고 색상을 선택합니다.")
 async def roulette(interaction: discord.Interaction, amount: int):
     if not await ensure_not_blacklisted_for_gambling(interaction):
         return
     if amount < MIN_BET:
         await interaction.response.send_message(
-            f"최소 배팅 금액은 `{format_money(MIN_BET)}`입니다.",
+            f"理쒖냼 諛고똿 湲덉븸? `{format_money(MIN_BET)}`?낅땲??",
             ephemeral=True,
         )
         return
 
     if not can_afford(interaction.user.id, amount):
-        await interaction.response.send_message("잔액이 부족합니다.", ephemeral=True)
+        await interaction.response.send_message("?붿븸??遺議깊빀?덈떎.", ephemeral=True)
         return
 
     add_balance(interaction.user.id, -amount)
@@ -3976,15 +3977,15 @@ async def roulette(interaction: discord.Interaction, amount: int):
     embed = discord.Embed(
         title="🎡 룰렛",
         description=(
-            f"배팅 금액: `{format_money(amount)}`\n\n"
-            "색상을 선택하세요.\n\n"
-            "🔴 빨강: 당첨 시 2.5배\n"
-            "🟡 노랑: 당첨 시 3.4배\n"
-            "🔵 파랑: 당첨 시 4.4배\n"
-            "⚫ 검정: 당첨 시 6.5배\n"
-            "🟢 초록: 당첨 시 9.5배\n\n"
+            f"베팅 금액: `{format_money(amount)}`\n\n"
+            "색상을 선택해주세요.\n\n"
+            "🟥 빨강: 승리 시 2.5배\n"
+            "🟨 노랑: 승리 시 3.4배\n"
+            "🟦 파랑: 승리 시 4.4배\n"
+            "⬛ 검정: 승리 시 6.5배\n"
+            "🟩 초록: 승리 시 9.5배\n\n"
             "빨강은 가장 안전하고,\n"
-            "점점 확률은 낮아지지만 배당은 높아집니다.\n"
+            "뒤로 갈수록 확률은 낮아지지만 배당은 높아집니다.\n"
         ),
         color=0xF1C40F,
     )
@@ -3995,84 +3996,84 @@ async def roulette(interaction: discord.Interaction, amount: int):
     )
 
 
-@bot.tree.command(name="세팅대기방추가", description="대기방 음성채널을 등록합니다.")
+@bot.tree.command(name="?명똿?湲곕갑異붽?", description="?湲곕갑 ?뚯꽦梨꾨꼸???깅줉?⑸땲??")
 @app_commands.checks.has_permissions(administrator=True)
 async def add_waiting_room_command(interaction: discord.Interaction, channel: discord.VoiceChannel):
     add_waiting_room(interaction.guild.id, channel.id)
     await interaction.response.send_message(
-        f"{channel.mention} 채널을 대기방으로 등록했습니다.",
+        f"{channel.mention} 梨꾨꼸???湲곕갑?쇰줈 ?깅줉?덉뒿?덈떎.",
         ephemeral=True,
     )
 
 
-@bot.tree.command(name="세팅대기방삭제", description="등록된 대기방을 제거합니다.")
+@bot.tree.command(name="?명똿?湲곕갑??젣", description="?깅줉???湲곕갑???쒓굅?⑸땲??")
 @app_commands.checks.has_permissions(administrator=True)
 async def remove_waiting_room_command(interaction: discord.Interaction, channel: discord.VoiceChannel):
     remove_waiting_room(interaction.guild.id, channel.id)
     await interaction.response.send_message(
-        f"{channel.mention} 채널을 대기방에서 제거했습니다.",
+        f"{channel.mention} 梨꾨꼸???湲곕갑?먯꽌 ?쒓굅?덉뒿?덈떎.",
         ephemeral=True,
     )
 
 
-@bot.tree.command(name="대기방목록", description="현재 등록된 대기방 목록을 확인합니다.")
+@bot.tree.command(name="?湲곕갑紐⑸줉", description="?꾩옱 ?깅줉???湲곕갑 紐⑸줉???뺤씤?⑸땲??")
 @app_commands.checks.has_permissions(administrator=True)
 async def list_waiting_rooms(interaction: discord.Interaction):
     room_ids = get_waiting_rooms(interaction.guild.id)
     if not room_ids:
-        await interaction.response.send_message("등록된 대기방이 없습니다.", ephemeral=True)
+        await interaction.response.send_message("?깅줉???湲곕갑???놁뒿?덈떎.", ephemeral=True)
         return
 
     lines = [f"<#{room_id}>" for room_id in room_ids]
-    embed = discord.Embed(title="등록된 대기방 목록", description="\n".join(lines), color=0x3498DB)
+    embed = discord.Embed(title="?깅줉???湲곕갑 紐⑸줉", description="\n".join(lines), color=0x3498DB)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="팀", description="랜덤 팀 생성")
+@bot.tree.command(name="팀", description="랜덤 팀을 생성합니다.")
 async def team(interaction: discord.Interaction):
-    embed = discord.Embed(title="👥 팀 생성", description="팀 인원을 선택하세요", color=0x3498DB)
+    embed = discord.Embed(title="👥 팀 생성", description="팀 인원을 선택해주세요.", color=0x3498DB)
     await interaction.response.send_message(embed=embed, view=TeamSelectView())
 
-@bot.tree.command(name="팀섞기규칙설정", description="관전자 제외용 접두사를 설정합니다.")
+@bot.tree.command(name="팀섞기규칙설정", description="관전자 제외용 접두어를 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
-@app_commands.rename(prefixes="접두사들")
-@app_commands.describe(prefixes="쉼표로 구분해서 입력하세요. 예: 📺관전중,🚫휴식중")
+@app_commands.rename(prefixes="접두어들")
+@app_commands.describe(prefixes="쉼표로 구분해서 입력하세요. 예: 관전자,휴식중")
 async def set_team_mix_rule(interaction: discord.Interaction, prefixes: str):
     prefix_list = [item.strip() for item in prefixes.split(",") if item.strip()]
 
     if not prefix_list:
         await interaction.response.send_message(
-            "접두사를 하나 이상 입력해주세요. 예: `📺관전중,🚫휴식중`",
+            "접두어를 하나 이상 입력해주세요. 예: `관전자,휴식중`",
             ephemeral=True,
         )
         return
 
     set_guild_setting(interaction.guild.id, "spectator_prefixes", ",".join(prefix_list))
     await interaction.response.send_message(
-        f"팀섞기 관전자 접두사를 설정했습니다: {', '.join(f'[{p}]' for p in prefix_list)}",
+        f"팀섞기 관전자 접두어를 설정했습니다: {', '.join(f'[{p}]' for p in prefix_list)}",
         ephemeral=True,
     )
 
-@bot.tree.command(name="팀섞기규칙확인", description="현재 관전자 제외 접두사를 확인합니다.")
+@bot.tree.command(name="팀섞기규칙확인", description="현재 관전자 제외 접두어를 확인합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def show_team_mix_rule(interaction: discord.Interaction):
     prefixes = get_spectator_prefixes(interaction.guild.id)
     await interaction.response.send_message(
-        f"현재 관전자 접두사: {', '.join(f'[{p}]' for p in prefixes)}",
+        f"현재 관전자 접두어: {', '.join(f'[{p}]' for p in prefixes)}",
         ephemeral=True,
     )
 
-@bot.tree.command(name="구인", description="배그 구인")
+@bot.tree.command(name="援ъ씤", description="諛곌렇 援ъ씤")
 async def recruit(interaction: discord.Interaction, message: str):
     recruit_channel_id = get_guild_setting_channel_id(interaction.guild.id, "recruit_channel_id")
     if recruit_channel_id is None:
-        await interaction.response.send_message("구인 채널이 아직 설정되지 않았습니다.", ephemeral=True)
+        await interaction.response.send_message("援ъ씤 梨꾨꼸???꾩쭅 ?ㅼ젙?섏? ?딆븯?듬땲??", ephemeral=True)
         return
     if interaction.channel.id != recruit_channel_id:
-        await interaction.response.send_message("구인 채널에서만 사용 가능합니다.", ephemeral=True)
+        await interaction.response.send_message("援ъ씤 梨꾨꼸?먯꽌留??ъ슜 媛?ν빀?덈떎.", ephemeral=True)
         return
     if not interaction.user.voice:
-        await interaction.response.send_message("음성채널 먼저 들어가세요.", ephemeral=True)
+        await interaction.response.send_message("?뚯꽦梨꾨꼸 癒쇱? ?ㅼ뼱媛?몄슂.", ephemeral=True)
         return
 
     await create_recruit_post(
@@ -4087,42 +4088,42 @@ async def recruit(interaction: discord.Interaction, message: str):
     )
 
 
-@bot.tree.command(name="종겜구인", description="원하는 게임으로 구인 글 작성")
+@bot.tree.command(name="醫낃쿇援ъ씤", description="?먰븯??寃뚯엫?쇰줈 援ъ씤 湲 ?묒꽦")
 async def general_recruit(interaction: discord.Interaction):
     await interaction.response.send_modal(GeneralRecruitModal())
 
 
-@bot.tree.command(name="보급", description="배그 보급상자를 열어 결과에 따라 보상을 받습니다.")
+@bot.tree.command(name="蹂닿툒", description="諛곌렇 蹂닿툒?곸옄瑜??댁뼱 寃곌낵???곕씪 蹂댁긽??諛쏆뒿?덈떎.")
 async def supply_drop(interaction: discord.Interaction, amount: int):
     if not await ensure_not_blacklisted_for_gambling(interaction):
         return
     if amount < MIN_BET:
         await interaction.response.send_message(
-            f"최소 배팅 금액은 `{format_money(MIN_BET)}`입니다.",
+            f"理쒖냼 諛고똿 湲덉븸? `{format_money(MIN_BET)}`?낅땲??",
             ephemeral=True,
         )
         return
 
     if not can_afford(interaction.user.id, amount):
-        await interaction.response.send_message("잔액이 부족합니다.", ephemeral=True)
+        await interaction.response.send_message("?붿븸??遺議깊빀?덈떎.", ephemeral=True)
         return
 
     add_balance(interaction.user.id, -amount)
 
     embed = discord.Embed(
-        title="📦 보급",
+        title="?벀 蹂닿툒",
         description=(
-            f"배팅 금액: `{format_money(amount)}`\n\n"
-            "✈️ 하늘에서 보급이 떨어지고 있습니다...\n"
-            "📦 상자를 열어 어떤 아이템을 챙길 수 있을지 확인하세요.\n\n"
-            "가능한 결과:\n"
-            "▫️ 빈 상자\n"
-            "▫️ 1뚝\n"
-            "▫️ 2뚝\n"
-            "▫️ 3뚝\n"
-            "▫️ 보급 총기 획득\n"
-            "▫️ 풀세트 보급 대박\n\n"
-            "버튼을 눌러 보급상자를 개봉하세요."
+            f"諛고똿 湲덉븸: `{format_money(amount)}`\n\n"
+            "?덌툘 ?섎뒛?먯꽌 蹂닿툒???⑥뼱吏怨??덉뒿?덈떎...\n"
+            "?벀 ?곸옄瑜??댁뼱 ?대뼡 ?꾩씠?쒖쓣 梨숆만 ???덉쓣吏 ?뺤씤?섏꽭??\n\n"
+            "媛?ν븳 寃곌낵:\n"
+            "?ワ툘 鍮??곸옄\n"
+            "?ワ툘 1??n"
+            "?ワ툘 2??n"
+            "?ワ툘 3??n"
+            "?ワ툘 蹂닿툒 珥앷린 ?띾뱷\n"
+            "?ワ툘 ??명듃 蹂닿툒 ?諛?n\n"
+            "踰꾪듉???뚮윭 蹂닿툒?곸옄瑜?媛쒕큺?섏꽭??"
         ),
         color=0xF39C12,
     )
@@ -4132,18 +4133,18 @@ async def supply_drop(interaction: discord.Interaction, amount: int):
         view=SupplyDropView(interaction.user.id, amount),
     )
 
-@bot.tree.command(name="문의패널", description="문의/신고/건의 티켓 패널을 생성합니다.")
+@bot.tree.command(name="臾몄쓽?⑤꼸", description="臾몄쓽/?좉퀬/嫄댁쓽 ?곗폆 ?⑤꼸???앹꽦?⑸땲??")
 @app_commands.checks.has_permissions(administrator=True)
 async def inquiry_panel(interaction: discord.Interaction):
     embed = discord.Embed(
-        title="문의 안내",
-        description="문의하기 입니다. 아래 항목을 선택해 주세요.",
+        title="臾몄쓽 ?덈궡",
+        description="臾몄쓽?섍린 ?낅땲?? ?꾨옒 ??ぉ???좏깮??二쇱꽭??",
         color=0x3498DB,
     )
     await interaction.channel.send(embed=embed, view=InquiryPanelView())
-    await interaction.response.send_message("문의 패널 생성 완료", ephemeral=True)
+    await interaction.response.send_message("臾몄쓽 ?⑤꼸 ?앹꽦 ?꾨즺", ephemeral=True)
 
-@bot.tree.command(name="닉네임패널생성", description="닉네임 접두사 적용 패널을 생성합니다.")
+@bot.tree.command(name="닉네임패널생성", description="닉네임 접두어 적용 패널을 생성합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def create_nickname_panel(
     interaction: discord.Interaction,
@@ -4155,21 +4156,21 @@ async def create_nickname_panel(
 
     if not prefix_list:
         await interaction.response.send_message(
-            "접두사를 하나 이상 입력해주세요. 예: `📺관전중,🔴빨코,🟢초코`",
+            "접두어를 하나 이상 입력해주세요. 예: `관전자,빨팀,파팀`",
             ephemeral=True,
         )
         return
 
     if len(prefix_list) > 24:
         await interaction.response.send_message(
-            "접두사는 최대 24개까지만 설정할 수 있습니다.",
+            "접두어는 최대 24개까지만 설정할 수 있습니다.",
             ephemeral=True,
         )
         return
 
     embed = discord.Embed(
         title=menu_name,
-        description="원하는 접두사를 선택해주세요.",
+        description="원하는 접두어를 선택해주세요.",
         color=0x5865F2,
     )
 
@@ -4187,22 +4188,22 @@ async def create_nickname_panel(
         prefix_list,
     )
 
-@bot.tree.command(name="확률표", description="현재 게임들의 확률과 배당을 확인합니다.")
+@bot.tree.command(name="배당표", description="현재 게임들의 확률과 배당을 확인합니다.")
 async def probability_table(interaction: discord.Interaction):
-    embed = discord.Embed(title="🎲 게임 확률표", color=0x3498DB)
+    embed = discord.Embed(title="🎰 게임 배당표", color=0x3498DB)
 
     embed.add_field(
-        name="슬롯",
+        name="?щ’",
         value=(
-            "3개 동일: 약 4.34%\n"
-            "7️⃣ 7️⃣ 7️⃣ : 약 0.72% / 12배\n"
-            "💎 💎 💎 : 약 0.72% / 8배\n"
-            "기타 3개 동일 : 각각 약 0.72% / 6배\n\n"
-            "정확히 2개 일치: 약 45.52%\n"
-            "7️⃣ 7️⃣ : 약 7.59% / 1.7배\n"
-            "💎 💎 : 약 7.59% / 1.4배\n"
-            "기타 2개 일치 : 각각 약 7.59% / 1.15배\n\n"
-            "완전 꽝 : 약 50.14%"
+            "3媛??숈씪: ??4.34%\n"
+            "7截뤴깵 7截뤴깵 7截뤴깵 : ??0.72% / 12諛?n"
+            "?뭿 ?뭿 ?뭿 : ??0.72% / 8諛?n"
+            "湲고? 3媛??숈씪 : 媛곴컖 ??0.72% / 6諛?n\n"
+            "?뺥솗??2媛??쇱튂: ??45.52%\n"
+            "7截뤴깵 7截뤴깵 : ??7.59% / 1.7諛?n"
+            "?뭿 ?뭿 : ??7.59% / 1.4諛?n"
+            "湲고? 2媛??쇱튂 : 媛곴컖 ??7.59% / 1.15諛?n\n"
+            "?꾩쟾 苑?: ??50.14%"
         ),
         inline=False,
     )
@@ -4210,24 +4211,24 @@ async def probability_table(interaction: discord.Interaction):
 
     embed.add_field(
         name="동전",
-        value="앞/뒤 50% 확률\n당첨 시 1.8배",
+        value="앞/뒤 50% 확률\n승리 시 1.8배",
         inline=False,
     )
 
     embed.add_field(
-        name="룰렛",
+        name="猷곕젢",
         value=(
-            "🔴 빨강 35% / 2.5배\n"
-            "🟡 노랑 25% / 3.4배\n"
-            "🔵 파랑 19% / 4.4배\n"
-            "⚫ 검정 12% / 6.5배\n"
-            "🟢 초록 9% / 9.5배"
+            "빨강 35% / 2.5배\n"
+            "노랑 25% / 3.4배\n"
+            "파랑 19% / 4.4배\n"
+            "검정 12% / 6.5배\n"
+            "초록 9% / 9.5배"
         ),
         inline=False,
     )
 
     embed.add_field(
-        name="보급",
+        name="蹂닿툒",
         value=(
             "빈 상자 38% / 0배\n"
             "1뚝 24% / 0.9배\n"
@@ -4240,20 +4241,20 @@ async def probability_table(interaction: discord.Interaction):
     )
 
     embed.add_field(
-        name="몰빵게임",
+        name="紐곕뭇寃뚯엫",
         value=(
-            f"참가비 `{format_money(ALL_IN_COST)}`\n"
-            "하루 동안 참가한 사람 중 1명 무작위 추첨\n"
-            "그날 참가자들이 낸 금액 전부를 당첨자 1명이 가져갑니다."
+            f"李멸?鍮?`{format_money(ALL_IN_COST)}`\n"
+            "?섎（ ?숈븞 李멸????щ엺 以?1紐?臾댁옉??異붿꺼\n"
+            "洹몃궇 李멸??먮뱾????湲덉븸 ?꾨?瑜??뱀꺼??1紐낆씠 媛?멸컩?덈떎."
         ),
         inline=False,
     )
   
     embed.add_field(
-        name="덕몽",
+        name="?뺣そ",
         value=(
             "오리 33.33% / 2배 회수\n"
-            "팰리컨 33.33% / 원금 반환\n"
+            "너리콘 33.33% / 원금 반환\n"
             "거위 33.33% / 전부 잃음"
         ),
         inline=False,
@@ -4263,10 +4264,10 @@ async def probability_table(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="족보", description="최근 게임 결과를 확인합니다.")
+@bot.tree.command(name="전적", description="최근 게임 결과를 확인합니다.")
 async def game_history_command(interaction: discord.Interaction):
     embed = discord.Embed(
-        title="📜 족보",
+        title="📜 전적",
         description="확인할 게임을 선택해주세요.",
         color=0x5865F2,
     )
@@ -4277,23 +4278,23 @@ async def game_history_command(interaction: discord.Interaction):
     )
 
 
-@bot.tree.command(name="몰빵참여", description="오늘의 몰빵게임에 참여합니다.")
+@bot.tree.command(name="紐곕뭇李몄뿬", description="?ㅻ뒛??紐곕뭇寃뚯엫??李몄뿬?⑸땲??")
 async def join_all_in_game(interaction: discord.Interaction):
     if not await ensure_not_blacklisted_for_gambling(interaction):
         return
     if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        await interaction.response.send_message("?쒕쾭?먯꽌留??ъ슜?????덉뒿?덈떎.", ephemeral=True)
         return
 
     today = get_today_kst_date_str()
 
     if has_all_in_entry(today, interaction.guild.id, interaction.user.id):
-        await interaction.response.send_message("오늘은 이미 몰빵게임에 참여했습니다.", ephemeral=True)
+        await interaction.response.send_message("?ㅻ뒛? ?대? 紐곕뭇寃뚯엫??李몄뿬?덉뒿?덈떎.", ephemeral=True)
         return
 
     if not can_afford(interaction.user.id, ALL_IN_COST):
         await interaction.response.send_message(
-            f"몰빵게임 참가비 `{format_money(ALL_IN_COST)}`이 부족합니다.",
+            f"紐곕뭇寃뚯엫 李멸?鍮?`{format_money(ALL_IN_COST)}`??遺議깊빀?덈떎.",
             ephemeral=True,
         )
         return
@@ -4305,27 +4306,27 @@ async def join_all_in_game(interaction: discord.Interaction):
     pool_amount = sum(amount for _, amount in entries)
 
     await interaction.response.send_message(
-        f"{interaction.user.mention}님이 오늘의 몰빵게임에 참여했습니다.\n"
-        f"참가비: `{format_money(ALL_IN_COST)}`\n"
-        f"현재 참가자 수: `{len(entries)}명`\n"
-        f"현재 누적 상금: `{format_money(pool_amount)}`"
+        f"{interaction.user.mention}?섏씠 ?ㅻ뒛??紐곕뭇寃뚯엫??李몄뿬?덉뒿?덈떎.\n"
+        f"李멸?鍮? `{format_money(ALL_IN_COST)}`\n"
+        f"?꾩옱 李멸????? `{len(entries)}紐?\n"
+        f"?꾩옱 ?꾩쟻 ?곴툑: `{format_money(pool_amount)}`"
     )
 
 
-@bot.tree.command(name="돈지급내역", description="특정 인원의 돈지급 내역을 확인합니다.")
+@bot.tree.command(name="돈주기내역", description="특정 인원의 돈 지급 내역을 확인합니다.")
 @app_commands.rename(member="인원")
 @app_commands.describe(member="조회할 인원")
 async def money_grant_history(interaction: discord.Interaction, member: discord.Member):
     rows = get_money_grant_logs(interaction.guild.id, member.id, 20)
 
     if not rows:
-        await interaction.response.send_message("지급 내역이 없습니다.", ephemeral=True)
+        await interaction.response.send_message("吏湲??댁뿭???놁뒿?덈떎.", ephemeral=True)
         return
 
     lines = []
     for giver_user_id, amount, created_at in rows:
         giver = interaction.guild.get_member(int(giver_user_id))
-        giver_name = giver.display_name if giver else f"알 수 없는 유저 ({giver_user_id})"
+        giver_name = giver.display_name if giver else f"?????녿뒗 ?좎? ({giver_user_id})"
         try:
             created_text = dt_from_db(created_at).strftime("%Y-%m-%d %H:%M")
         except Exception:
@@ -4333,7 +4334,7 @@ async def money_grant_history(interaction: discord.Interaction, member: discord.
         lines.append(f"[{created_text}] {giver_name} -> {format_money(amount)}")
 
     embed = discord.Embed(
-        title=f"💸 {member.display_name}님의 돈지급 내역",
+        title=f"?뮯 {member.display_name}?섏쓽 ?덉?湲??댁뿭",
         description="\n".join(lines),
         color=0xF1C40F,
     )
@@ -4343,15 +4344,15 @@ async def money_grant_history(interaction: discord.Interaction, member: discord.
 # 신용 / 대출 명령어
 # ----------------------------
 
-@bot.tree.command(name="일수", description="현재 신용등급 기준으로 대출을 받습니다.")
+@bot.tree.command(name="대출", description="현재 신용등급 기준으로 대출을 받습니다.")
 @app_commands.rename(amount="금액")
 async def loan_money(interaction: discord.Interaction, amount: int):
     if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        await interaction.response.send_message("?쒕쾭?먯꽌留??ъ슜?????덉뒿?덈떎.", ephemeral=True)
         return
 
     if amount <= 0:
-        await interaction.response.send_message("대출 금액은 1원 이상이어야 합니다.", ephemeral=True)
+        await interaction.response.send_message("?異?湲덉븸? 1???댁긽?댁뼱???⑸땲??", ephemeral=True)
         return
 
     profile = get_credit_profile(interaction.user.id)
@@ -4359,14 +4360,14 @@ async def loan_money(interaction: discord.Interaction, amount: int):
 
     if active_loan is not None:
         await interaction.response.send_message(
-            "이미 상환되지 않은 대출이 있습니다. `/중도상환`으로 먼저 갚아주세요.",
+            "?대? ?곹솚?섏? ?딆? ?異쒖씠 ?덉뒿?덈떎. `/以묐룄?곹솚`?쇰줈 癒쇱? 媛싳븘二쇱꽭??",
             ephemeral=True,
         )
         return
 
     if profile["is_blacklisted"]:
         await interaction.response.send_message(
-            "현재 신용불량자 상태입니다. 기존 대출을 모두 상환하기 전까지 새 대출이 불가능합니다.",
+            "?꾩옱 ?좎슜遺덈웾???곹깭?낅땲?? 湲곗〈 ?異쒖쓣 紐⑤몢 ?곹솚?섍린 ?꾧퉴吏 ???異쒖씠 遺덇??ν빀?덈떎.",
             ephemeral=True,
         )
         return
@@ -4377,7 +4378,7 @@ async def loan_money(interaction: discord.Interaction, amount: int):
 
     if amount > max_amount:
         await interaction.response.send_message(
-            f"현재 {grade}등급의 최대 대출 가능 금액은 `{format_money(max_amount)}`입니다.",
+            f"?꾩옱 {grade}?깃툒??理쒕? ?異?媛??湲덉븸? `{format_money(max_amount)}`?낅땲??",
             ephemeral=True,
         )
         return
@@ -4412,13 +4413,13 @@ async def loan_money(interaction: discord.Interaction, amount: int):
 async def repay_loan_command(interaction: discord.Interaction):
     active_loan = get_active_loan(interaction.user.id)
     if active_loan is None:
-        await interaction.response.send_message("현재 상환할 대출이 없습니다.", ephemeral=True)
+        await interaction.response.send_message("?꾩옱 ?곹솚???異쒖씠 ?놁뒿?덈떎.", ephemeral=True)
         return
 
     repayment_amount = active_loan["total_repayment"]
     if not can_afford(interaction.user.id, repayment_amount):
         await interaction.response.send_message(
-            f"상환 금액 `{format_money(repayment_amount)}`이 부족합니다.",
+            f"?곹솚 湲덉븸 `{format_money(repayment_amount)}`??遺議깊빀?덈떎.",
             ephemeral=True,
         )
         return
@@ -4453,23 +4454,23 @@ async def repay_loan_command(interaction: discord.Interaction):
 
     if profile["is_blacklisted"]:
         embed.add_field(
-            name="등급 변동",
+            name="등급 변화",
             value="기존 대출을 모두 상환하여 신용불량자 상태가 해제되고 6등급으로 복귀했습니다.",
             inline=False,
         )
     elif grade_up:
         embed.add_field(
-            name="등급 변동",
+            name="등급 변화",
             value="현재 등급의 최대 한도 이상 대출을 정상 상환하여 신용등급이 1단계 상승했습니다.",
             inline=False,
         )
     else:
         required_amount = get_loan_limit_by_grade(profile["grade"])
         embed.add_field(
-            name="등급 변동",
+            name="등급 변화",
             value=(
-                "대출은 정상 상환되었지만 신용등급은 유지되었습니다.\n"
-                f"등급 상승을 위해서는 현재 등급 기준 최대 한도인 `{format_money(required_amount)}` 이상 대출 후 상환해야 합니다."
+                "대출은 정상 상환했지만 신용등급은 유지되었습니다.\n"
+                f"등급 상승을 위해서는 현재 등급 기준 최대 한도인 `{format_money(required_amount)}` 이상 대출을 상환해야 합니다."
             ),
             inline=False,
         )
@@ -4492,7 +4493,7 @@ async def my_credit(interaction: discord.Interaction):
         max_amount_text = format_money(get_loan_limit_by_grade(profile["grade"]))
         interest_text = f"{get_loan_interest_by_grade(profile['grade'])}%"
 
-    embed = discord.Embed(title="📄 내 신용 정보", color=0x5865F2)
+    embed = discord.Embed(title="📋 내 신용 정보", color=0x5865F2)
     embed.add_field(name="현재 신용등급", value=grade_text, inline=False)
     embed.add_field(name="최대 대출 가능 금액", value=max_amount_text, inline=False)
     embed.add_field(name="현재 대출 이자율", value=interest_text, inline=False)
@@ -4527,17 +4528,17 @@ async def my_credit(interaction: discord.Interaction):
 @bot.tree.command(name="노동", description="신용불량자 상태일 때 노동을 진행합니다.")
 async def labor(interaction: discord.Interaction):
     if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        await interaction.response.send_message("?쒕쾭?먯꽌留??ъ슜?????덉뒿?덈떎.", ephemeral=True)
         return
 
     profile = get_credit_profile(interaction.user.id)
     if not profile["is_blacklisted"]:
-        await interaction.response.send_message("현재 신용불량자 상태가 아닙니다.", ephemeral=True)
+        await interaction.response.send_message("?꾩옱 ?좎슜遺덈웾???곹깭媛 ?꾨떃?덈떎.", ephemeral=True)
         return
 
     penalty = ensure_active_labor_penalty(interaction.guild.id, interaction.user.id)
     if penalty is None:
-        await interaction.response.send_message("진행 중인 노동 패널티 정보가 없습니다. 관리자에게 문의해주세요.", ephemeral=True)
+        await interaction.response.send_message("吏꾪뻾 以묒씤 ?몃룞 ?⑤꼸???뺣낫媛 ?놁뒿?덈떎. 愿由ъ옄?먭쾶 臾몄쓽?댁＜?몄슂.", ephemeral=True)
         return
 
     embed = build_labor_embed(interaction.user, penalty)
@@ -4550,49 +4551,49 @@ async def labor(interaction: discord.Interaction):
 @bot.tree.command(name="노동현황", description="현재 노동 진행 현황을 확인합니다.")
 async def labor_status(interaction: discord.Interaction, member: discord.Member | None = None):
     if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        await interaction.response.send_message("?쒕쾭?먯꽌留??ъ슜?????덉뒿?덈떎.", ephemeral=True)
         return
 
     target = member or interaction.user
     penalty = ensure_active_labor_penalty(interaction.guild.id, target.id)
     if penalty is None:
-        await interaction.response.send_message("진행 중인 노동 패널티가 없습니다.", ephemeral=True)
+        await interaction.response.send_message("吏꾪뻾 以묒씤 ?몃룞 ?⑤꼸?곌? ?놁뒿?덈떎.", ephemeral=True)
         return
 
     embed = build_labor_embed(target, penalty)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-@bot.tree.command(name="덕몽", description="덕몽어스 테마의 오리를 찾아라 게임입니다.")
+@bot.tree.command(name="?뺣そ", description="?뺣そ?댁뒪 ?뚮쭏???ㅻ━瑜?李얠븘??寃뚯엫?낅땲??")
 async def duckmong(interaction: discord.Interaction, amount: int):
     if not await ensure_not_blacklisted_for_gambling(interaction):
         return
     if amount < MIN_BET:
         await interaction.response.send_message(
-            f"최소 배팅 금액은 `{format_money(MIN_BET)}`입니다.",
+            f"理쒖냼 諛고똿 湲덉븸? `{format_money(MIN_BET)}`?낅땲??",
             ephemeral=True,
         )
         return
 
     if not can_afford(interaction.user.id, amount):
-        await interaction.response.send_message("잔액이 부족합니다.", ephemeral=True)
+        await interaction.response.send_message("?붿븸??遺議깊빀?덈떎.", ephemeral=True)
         return
 
     add_balance(interaction.user.id, -amount)
 
     fake_names = random.sample(DUCKMONG_FAKE_NAMES, 3)
-    hidden_roles = ["오리", "거위", "팰리컨"]
+    hidden_roles = ["오리", "거위", "너리콘"]
     random.shuffle(hidden_roles)
     hidden_results = {fake_name: hidden_roles[idx] for idx, fake_name in enumerate(fake_names)}
 
     embed = discord.Embed(
         title="🦆 오리를 찾아라",
         description=(
-            f"배팅 금액: `{format_money(amount)}`\n\n"
+            f"베팅 금액: `{format_money(amount)}`\n\n"
             "세 직업 중 하나를 골라주세요.\n"
-            "그 안에는 오리, 거위, 팰리컨이 하나씩 숨어 있습니다.\n\n"
-            "오리: 배팅금액만큼 추가 획득\n"
+            "그 안에는 오리, 거위, 너리콘이 하나씩 숨어 있습니다.\n\n"
+            "오리: 베팅금액만큼 추가 획득\n"
             "거위: 전부 잃음\n"
-            "팰리컨: 원금 반환"
+            "너리콘: 원금 반환"
         ),
         color=0xF1C40F,
     )
@@ -4606,10 +4607,10 @@ async def duckmong(interaction: discord.Interaction, amount: int):
 # 무기 강화 명령어
 # ----------------------------
 
-@bot.tree.command(name="강화", description="현재 무기의 강화 정보와 강화 버튼을 확인합니다.")
+@bot.tree.command(name="媛뺥솕", description="?꾩옱 臾닿린??媛뺥솕 ?뺣낫? 媛뺥솕 踰꾪듉???뺤씤?⑸땲??")
 async def upgrade_weapon(interaction: discord.Interaction):
     if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        await interaction.response.send_message("?쒕쾭?먯꽌留??ъ슜?????덉뒿?덈떎.", ephemeral=True)
         return
 
     ensure_base_weapon(interaction.guild.id, interaction.user.id)
@@ -4620,17 +4621,17 @@ async def upgrade_weapon(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
-@bot.tree.command(name="무기판매", description="현재 보유 중인 무기를 판매합니다.")
+@bot.tree.command(name="臾닿린?먮ℓ", description="?꾩옱 蹂댁쑀 以묒씤 臾닿린瑜??먮ℓ?⑸땲??")
 async def sell_weapon(interaction: discord.Interaction):
     if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        await interaction.response.send_message("?쒕쾭?먯꽌留??ъ슜?????덉뒿?덈떎.", ephemeral=True)
         return
 
     inventory = get_weapon_inventory(interaction.guild.id, interaction.user.id)
     current_level = inventory["weapon_level"]
 
     if current_level <= 0:
-        await interaction.response.send_message("판매할 무기가 없습니다.", ephemeral=True)
+        await interaction.response.send_message("?먮ℓ??臾닿린媛 ?놁뒿?덈떎.", ephemeral=True)
         return
 
     weapon_name = get_weapon_name(current_level)
@@ -4639,17 +4640,17 @@ async def sell_weapon(interaction: discord.Interaction):
     add_balance(interaction.user.id, sell_price)
     reset_weapon_progress(interaction.guild.id, interaction.user.id)
 
-    embed = discord.Embed(title="💰 무기 판매 완료", color=0x2ECC71)
-    embed.add_field(name="판매 무기", value=f"{current_level}강 {weapon_name}", inline=False)
-    embed.add_field(name="판매 금액", value=format_money(sell_price), inline=False)
-    embed.add_field(name="현재 잔액", value=format_money(get_balance(interaction.user.id)), inline=False)
+    embed = discord.Embed(title="?뮥 臾닿린 ?먮ℓ ?꾨즺", color=0x2ECC71)
+    embed.add_field(name="?먮ℓ 臾닿린", value=f"{current_level}媛?{weapon_name}", inline=False)
+    embed.add_field(name="?먮ℓ 湲덉븸", value=format_money(sell_price), inline=False)
+    embed.add_field(name="?꾩옱 ?붿븸", value=format_money(get_balance(interaction.user.id)), inline=False)
 
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="강화현황", description="현재 보유 중인 무기와 보호권 수량을 확인합니다.")
+@bot.tree.command(name="媛뺥솕?꾪솴", description="?꾩옱 蹂댁쑀 以묒씤 臾닿린? 蹂댄샇沅??섎웾???뺤씤?⑸땲??")
 async def weapon_status(interaction: discord.Interaction):
     if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        await interaction.response.send_message("?쒕쾭?먯꽌留??ъ슜?????덉뒿?덈떎.", ephemeral=True)
         return
 
     inventory = get_weapon_inventory(interaction.guild.id, interaction.user.id)
@@ -4659,26 +4660,26 @@ async def weapon_status(interaction: discord.Interaction):
     total_protection_spent = inventory["total_protection_spent"]
     total_invested = total_upgrade_spent + total_protection_spent
 
-    embed = discord.Embed(title="📋 강화 현황", color=0x5865F2)
+    embed = discord.Embed(title="🔧 강화 현황", color=0x5865F2)
 
     if current_level <= 0:
         embed.add_field(name="현재 무기", value="없음", inline=False)
-        embed.add_field(name="안내", value="`/강화`를 사용하면 1강 프라이팬이 자동 지급됩니다.", inline=False)
+        embed.add_field(name="안내", value="`/강화`를 사용하면 1강 프라이팬부터 자동 지급됩니다.", inline=False)
     else:
         embed.add_field(name="현재 무기", value=f"{current_level}강 {get_weapon_name(current_level)}", inline=False)
         embed.add_field(name="판매 가격", value=format_money(get_weapon_sell_price(current_level)), inline=False)
 
         if current_level < 21:
-            embed.add_field(name="다음 강화 비용", value=format_money(get_upgrade_cost(current_level)), inline=False)
+            embed.add_field(name="?ㅼ쓬 媛뺥솕 鍮꾩슜", value=format_money(get_upgrade_cost(current_level)), inline=False)
         else:
-            embed.add_field(name="강화 상태", value="최대 강화 단계", inline=False)
+            embed.add_field(name="媛뺥솕 ?곹깭", value="理쒕? 媛뺥솕 ?④퀎", inline=False)
 
     embed.add_field(
         name="보유 보호권",
         value=(
-            f"저강 보호권: `{inventory['low_protection_count']}장`\n"
-            f"중강 보호권: `{inventory['mid_protection_count']}장`\n"
-            f"고강 보호권: `{inventory['high_protection_count']}장`"
+            f"저강 보호권 `{inventory['low_protection_count']}개`\n"
+            f"중강 보호권 `{inventory['mid_protection_count']}개`\n"
+            f"고강 보호권 `{inventory['high_protection_count']}개`"
         ),
         inline=False,
     )
@@ -4686,24 +4687,24 @@ async def weapon_status(interaction: discord.Interaction):
     embed.add_field(
         name="누적 투자",
         value=(
-            f"강화 누적: `{format_money(total_upgrade_spent)}`\n"
-            f"보호권 누적: `{format_money(total_protection_spent)}`\n"
+            f"강화 투자: `{format_money(total_upgrade_spent)}`\n"
+            f"보호권 투자: `{format_money(total_protection_spent)}`\n"
             f"총 투자: `{format_money(total_invested)}`"
         ),
         inline=False,
     )
 
-    embed.add_field(name="현재 잔액", value=format_money(get_balance(interaction.user.id)), inline=False)
+    embed.add_field(name="?꾩옱 ?붿븸", value=format_money(get_balance(interaction.user.id)), inline=False)
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="강화정보", description="1강부터 21강까지 강화 비용, 확률, 보호권 가격, 판매 가격을 확인합니다.")
+@bot.tree.command(name="媛뺥솕?뺣낫", description="1媛뺣???21媛뺢퉴吏 媛뺥솕 鍮꾩슜, ?뺣쪧, 蹂댄샇沅?媛寃? ?먮ℓ 媛寃⑹쓣 ?뺤씤?⑸땲??")
 async def weapon_info_table(interaction: discord.Interaction):
     ranges = [
-        (1, 7, "🔧 강화 정보표 (1강~7강)", 0x3498DB),
-        (8, 14, "🔧 강화 정보표 (8강~14강)", 0x5865F2),
-        (15, 21, "🔧 강화 정보표 (15강~21강)", 0x9B59B6),
+        (1, 7, "?뵩 媛뺥솕 ?뺣낫??(1媛?7媛?", 0x3498DB),
+        (8, 14, "?뵩 媛뺥솕 ?뺣낫??(8媛?14媛?", 0x5865F2),
+        (15, 21, "?뵩 媛뺥솕 ?뺣낫??(15媛?21媛?", 0x9B59B6),
     ]
 
     embeds = []
@@ -4726,18 +4727,18 @@ async def weapon_info_table(interaction: discord.Interaction):
                     continue
 
                 lines.append(
-                    f"**{level}강 {weapon_name}**\n"
-                    f"강화비용: `{format_money(cost)}`\n"
-                    f"성공 {rates['success']}% / 하락 {rates['down']}% / 파괴 {rates['destroy']}% / 유지 {rates['keep']}%\n"
-                    f"보호권: `{format_money(protection_cost)}`\n"
-                    f"판매가격: `{format_money(sell_price)}`"
+                    f"**{level}媛?{weapon_name}**\n"
+                    f"媛뺥솕鍮꾩슜: `{format_money(cost)}`\n"
+                    f"?깃났 {rates['success']}% / ?섎씫 {rates['down']}% / ?뚭눼 {rates['destroy']}% / ?좎? {rates['keep']}%\n"
+                    f"蹂댄샇沅? `{format_money(protection_cost)}`\n"
+                    f"?먮ℓ媛寃? `{format_money(sell_price)}`"
                 )
             else:
                 lines.append(
-                    f"**{level}강 {weapon_name}**\n"
-                    f"최대 강화 단계\n"
-                    f"보호권: `{format_money(protection_cost)}`\n"
-                    f"판매가격: `{format_money(sell_price)}`"
+                    f"**{level}媛?{weapon_name}**\n"
+                    f"理쒕? 媛뺥솕 ?④퀎\n"
+                    f"蹂댄샇沅? `{format_money(protection_cost)}`\n"
+                    f"?먮ℓ媛寃? `{format_money(sell_price)}`"
                 )
 
         embed.description = "\n\n".join(lines)
@@ -4749,101 +4750,216 @@ async def weapon_info_table(interaction: discord.Interaction):
 @bot.tree.command(name="도박명령어", description="도박 및 재화 시스템 관련 명령어를 확인합니다.")
 async def gambling_commands(interaction: discord.Interaction):
     embed = discord.Embed(
-        title="🎰 도박 / 재화 시스템 명령어",
+        title="🎲 도박 / 재화 시스템 명령어",
         description=(
             "재화, 대출, 적금, 강화, 도박 명령어를 한 번에 확인할 수 있습니다.\n"
-            "신용불량자 상태에서는 일부 도박 명령어가 제한됩니다."
+            "신용불량자 상태에서는 일부 도박 명령어 사용이 제한됩니다."
         ),
         color=0xF1C40F,
     )
 
     embed.add_field(
-        name="💰 재화 관리",
+        name="재화 관리",
         value=(
-            "`/상생지원금` - 하루 지원금 받기\n"
+            "`/생활지원금` - 하루 1회 지원금 받기\n"
             "`/잔액` - 현재 잔액 확인\n"
-            "`/랭킹` - 서버 자산 랭킹 확인\n"
-            "`/송금` - 다른 유저에게 송금"
+            "`/재산` - 서버 재산 순위 확인\n"
+            "`/송금` - 다른 유저에게 돈 보내기"
         ),
         inline=False,
     )
 
     embed.add_field(
-        name="🏦 적금",
+        name="적금",
         value=(
-            "`/적금 [금액]` - 현재 서버 설정 기준으로 적금 가입\n"
-            "`/내적금` - 현재 가입 중인 적금 확인\n"
-            "`/적금수령` - 만기된 적금 수령"
+            "`/적금 [금액]` - 적금 가입\n"
+            "`/내적금` - 현재 적금 확인\n"
+            "`/적금수령` - 만기 적금 수령"
         ),
         inline=False,
     )
 
     embed.add_field(
-        name="💳 대출 / 신용",
+        name="대출 / 신용",
         value=(
-            "`/일수 [금액]` - 현재 신용등급 기준으로 대출\n"
+            "`/대출 [금액]` - 현재 신용등급 기준 대출\n"
             "`/중도상환` - 현재 대출 전액 상환\n"
             "`/내신용` - 신용등급, 대출, 노동 현황 확인\n"
             "`/노동` - 신용불량자 노동 진행\n"
-            "`/노동현황` - 노동 횟수 진행 상황 확인"
+            "`/노동현황` - 노동 진행 상황 확인"
         ),
         inline=False,
     )
 
     embed.add_field(
-        name="🎲 도박 게임",
+        name="도박 / 게임",
         value=(
             "`/슬롯 [금액]` - 슬롯머신\n"
             "`/동전 [금액]` - 동전 앞뒤 맞추기\n"
-            "`/룰렛 [금액]` - 색상 배팅 룰렛\n"
-            "`/보급 [금액]` - 보급상자 게임\n"
+            "`/룰렛 [금액]` - 색상 선택 룰렛\n"
+            "`/보급 [금액]` - 보급 상자 게임\n"
             "`/덕몽 [금액]` - 오리를 찾아라\n"
-            "`/몰빵참여` - 하루 1회 몰빵게임 참여"
+            "`/몰빵참여` - 주간 몰빵게임 참여"
         ),
         inline=False,
     )
 
     embed.add_field(
-        name="🛠 강화 시스템",
+        name="강화 시스템",
         value=(
-            "`/강화` - 무기 강화 패널 열기\n"
-            "`/강화현황` - 현재 무기, 보호권, 누적 투자 확인\n"
-            "`/강화정보` - 단계별 강화 비용, 확률, 판매가 확인\n"
+            "`/강화` - 무기 강화 창 열기\n"
+            "`/강화현황` - 현재 무기, 보호권, 투자 확인\n"
+            "`/강화정보` - 단계별 비용과 확률 확인\n"
             "`/무기판매` - 현재 무기 판매"
         ),
         inline=False,
     )
 
     embed.add_field(
-        name="📜 참고 정보",
+        name="참고 정보",
         value=(
-            "`/확률표` - 게임 확률과 배당 확인\n"
-            "`/족보` - 최근 게임 결과 확인"
-        ),
-        inline=False,
-    )
-
-    embed.add_field(
-        name="🛡 관리자 전용",
-        value=(
-            "`/돈지급` - 여러 유저에게 재화 지급\n"
-            "`/돈지급내역` - 특정 유저 지급 내역 확인\n"
-            "`/돈삭제` - 특정 유저 재화 차감\n"
-            "`/적금세팅` - 적금 기간/이자율 설정\n"
-            "`/신용불량자등록` - 신용불량자 등록\n"
-            "`/신용불량자삭제` - 오등록 해제\n"
-            "`/신용초기화` - 신용등급 직접 조정"
+            "`/배당표` - 게임 확률과 배당 확인\n"
+            "`/전적` - 최근 게임 결과 확인\n"
+            "`/관리자명령어` - 관리자/일반 명령어 전체 목록"
         ),
         inline=False,
     )
 
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="내전공지", description="참여 버튼이 있는 내전 공지를 작성합니다.")
+
+@bot.tree.command(name="관리자명령어", description="관리자 명령어와 일반 명령어를 카테고리별로 확인합니다.")
+async def admin_commands_guide(interaction: discord.Interaction):
+    admin_embed = discord.Embed(
+        title="🛠 [관리자명령어]",
+        description=(
+            "서버 운영에 필요한 관리자 전용 명령어를 한눈에 볼 수 있도록 정리했습니다.\n"
+            "카테고리별로 필요한 명령어를 빠르게 찾아보세요."
+        ),
+        color=0xE74C3C,
+    )
+    admin_embed.add_field(
+        name="📌 채널 / 역할 설정",
+        value=(
+            "`/세팅생일알림`, `/세팅등업로그`, `/세팅퇴장로그`, `/세팅규칙로그`\n"
+            "`/세팅구인채널`, `/세팅몰빵결과채널`, `/세팅가이드안내`, `/세팅환영메시지채널`\n"
+            "`/세팅규칙역할`, `/세팅신입역할`, `/세팅생일역할`\n"
+            "`/세팅클랜등업역할`, `/세팅게스트등업역할`, `/세팅시간대역할`"
+        ),
+        inline=False,
+    )
+    admin_embed.add_field(
+        name="📝 문구 / 패널 설정",
+        value=(
+            "`/세팅환영dm`, `/세팅규칙안내문`, `/세팅등업패널문구`\n"
+            "`/세팅신입알림문구`, `/세팅신입경과일`, `/적금세팅`\n"
+            "`/문구설정확인`, `/설정확인`, `/역할설정확인`"
+        ),
+        inline=False,
+    )
+    admin_embed.add_field(
+        name="🎛 메시지 / 패널 생성",
+        value=(
+            "`/규칙버튼`, `/등업패널`, `/시간설정패널`, `/문의패널`\n"
+            "`/고정메시지`, `/고정해제`, `/고정확인`, `/내전공지`"
+        ),
+        inline=False,
+    )
+    admin_embed.add_field(
+        name="🎉 환영 / 문의 / 대기방 관리",
+        value=(
+            "`/환영메시지`, `/환영메시지삭제`, `/환영메시지목록`\n"
+            "`/세팅대기방추가`, `/세팅대기방삭제`, `/대기방목록`\n"
+            "`/팀섞기규칙설정`, `/팀섞기규칙확인`, `/닉네임패널생성`"
+        ),
+        inline=False,
+    )
+    admin_embed.add_field(
+        name="💰 경제 / 신용 관리",
+        value=(
+            "`/돈주기`, `/돈주기내역`, `/돈삭제`\n"
+            "`/신용불량자등록`, `/신용불량자목록`, `/신용불량자삭제`, `/신용초기화`"
+        ),
+        inline=False,
+    )
+    admin_embed.add_field(
+        name="✨ 자주 쓰는 예시",
+        value=(
+            "`/세팅등업패널문구`  여러 줄 패널 문구 설정\n"
+            "`/신용불량자등록 @유저`  해당 유저 등록\n"
+            "`/돈주기 @유저 10000`  특정 유저에게 재화 지급"
+        ),
+        inline=False,
+    )
+    admin_embed.set_footer(text="관리자 권한이 필요한 명령어만 모아두었습니다.")
+
+    general_embed = discord.Embed(
+        title="📚 [일반명령어]",
+        description=(
+            "일반 유저가 자주 사용하는 명령어를 분야별로 정리했습니다.\n"
+            "경제, 게임, 생활 기능을 빠르게 찾아 사용할 수 있습니다."
+        ),
+        color=0x3498DB,
+    )
+    general_embed.add_field(
+        name="🏠 기본 / 정보",
+        value=(
+            "`/생활지원금`, `/잔액`, `/재산`, `/송금`\n"
+            "`/도박명령어`, `/배당표`, `/전적`, `/관리자명령어`"
+        ),
+        inline=False,
+    )
+    general_embed.add_field(
+        name="🏦 적금 / 대출 / 신용",
+        value=(
+            "`/적금`, `/내적금`, `/적금수령`\n"
+            "`/대출`, `/중도상환`, `/내신용`, `/노동`, `/노동현황`"
+        ),
+        inline=False,
+    )
+    general_embed.add_field(
+        name="🎮 도박 / 게임",
+        value=(
+            "`/슬롯`, `/동전`, `/룰렛`, `/보급`, `/덕몽`\n"
+            "`/몰빵참여`, `/강화`, `/무기판매`, `/강화현황`, `/강화정보`"
+        ),
+        inline=False,
+    )
+    general_embed.add_field(
+        name="🎂 생일 / 인증 / 문의",
+        value=(
+            "`/생일등록`, `/생일삭제`, `/생일목록`\n"
+            "`/문의패널`, `/문의하기`, `/신고하기`, `/건의하기`"
+        ),
+        inline=False,
+    )
+    general_embed.add_field(
+        name="👥 구인 / 팀 / 기타",
+        value=(
+            "`/구인`, `/종겜구인`, `/팀`, `/시간설정패널`\n"
+            "`/등업패널`, `/규칙버튼`, `/닉네임패널생성`"
+        ),
+        inline=False,
+    )
+    general_embed.add_field(
+        name="✨ 자주 쓰는 예시",
+        value=(
+            "`/적금 50000`  5만원 적금\n"
+            "`/보급 10000`  1만원 보급 참여\n"
+            "`/내신용`  대출, 신용등급, 노동 현황 확인"
+        ),
+        inline=False,
+    )
+    general_embed.set_footer(text="일반 유저가 자주 쓰는 명령어만 모아두었습니다.")
+
+    await interaction.response.send_message(embeds=[admin_embed, general_embed], ephemeral=True)
+
+@bot.tree.command(name="?댁쟾怨듭?", description="李몄뿬 踰꾪듉???덈뒗 ?댁쟾 怨듭?瑜??묒꽦?⑸땲??")
 @app_commands.checks.has_permissions(administrator=True)
 async def scrim_notice(interaction: discord.Interaction):
     await interaction.response.send_modal(ScrimNoticeModal())
 
+# ----------------------------
 # ----------------------------
 # 관리자 신용 관리 명령어
 # ----------------------------
@@ -4882,7 +4998,7 @@ async def blacklist_list(interaction: discord.Interaction):
             except Exception:
                 blacklisted_text = blacklisted_at
         else:
-            blacklisted_text = "알 수 없음"
+            blacklisted_text = "기록 없음"
 
         lines.append(
             f"**{name}**\n"
@@ -4891,21 +5007,21 @@ async def blacklist_list(interaction: discord.Interaction):
         )
 
     embed = discord.Embed(
-        title="📄 신용불량자 목록",
+        title="📋 신용불량자 목록",
         description="\n\n".join(lines),
         color=0xE74C3C,
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="신용불량자삭제", description="실수로 등록한 인원을 신용불량자 목록에서 제거합니다.")
+@bot.tree.command(name="신용불량자삭제", description="오등록된 인원을 신용불량자 목록에서 제거합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def remove_blacklist(interaction: discord.Interaction, member: discord.Member):
     set_credit_blacklisted(member.id, False)
     delete_labor_penalty(interaction.guild.id, member.id)
 
     await interaction.response.send_message(
-        f"{member.mention}님의 신용불량자 등록을 해제했습니다.\n신용등급은 변경하지 않았습니다.",
+        f"{member.mention}님의 신용불량자 등록을 해제했습니다.\n신용등급은 변경하지 않습니다.",
         ephemeral=True,
     )
 
@@ -4970,7 +5086,7 @@ async def on_member_update(before: discord.Member, after: discord.Member):
 
                     role = after.guild.get_role(role_id)
                     rendered = content.replace("{user}", after.mention)
-                    rendered = rendered.replace("{role}", role.mention if role else "역할")
+                    rendered = rendered.replace("{role}", role.mention if role else "??븷")
                     await welcome_channel.send(rendered)
 
 
@@ -5002,7 +5118,7 @@ async def on_voice_state_update(member, before, after):
                 recruit_channel = member.guild.get_channel(recruit_channel_id)
                 if recruit_channel is not None:
                     await recruit_channel.send(
-                        content=f"@here 📢 {member.mention}님이 대기방 {after.channel.mention}에 들어왔습니다."
+                        content=f"@here {member.mention}님이 대기방 {after.channel.mention}에 들어왔습니다."
                     )
 
 
@@ -5108,12 +5224,12 @@ async def probation_role_check_loop():
                 conn.commit()
                 continue
 
-            joined_text = "알 수 없음"
+            joined_text = "기록 없음"
             if member.joined_at is not None:
                 joined_text = member.joined_at.astimezone(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S KST")
 
             embed = discord.Embed(
-                title=f"⏰ 신입 역할 {probation_days}일 경과 알림",
+                title=f"🔔 신입 역할 {probation_days}일 경과 알림",
                 description=notice_text,
                 color=0xF1C40F,
                 timestamp=now,
@@ -5151,8 +5267,8 @@ async def birthday_loop():
                             continue
 
                         embed = discord.Embed(
-                            title="🎂 오늘의 주인공 등장!",
-                            description=f"오늘은 {member.mention}님의 생일입니다! 축하해주세요!",
+                            title="?럟 ?ㅻ뒛??二쇱씤怨??깆옣!",
+                            description=f"?ㅻ뒛? {member.mention}?섏쓽 ?앹씪?낅땲?? 異뺥븯?댁＜?몄슂!",
                             color=0xFF69B4,
                         )
                         msg = await channel.send(embed=embed, view=BirthdayView())
@@ -5186,8 +5302,8 @@ async def birthday_loop():
                     pass
 
             try:
-                if "🎂" in member.display_name:
-                    await member.edit(nick=member.display_name.replace(" 🎂", ""))
+                if "?럟" in member.display_name:
+                    await member.edit(nick=member.display_name.replace(" ?럟", ""))
             except Exception:
                 pass
 
@@ -5230,22 +5346,22 @@ async def all_in_game_loop():
             target_channel = guild.get_channel(result_channel_id) if result_channel_id else None
 
             result_text = (
-                f"{target_date} - 참가자 {len(rows)}명 / "
-                f"유효 참가자 {len(valid_members)}명 / "
-                f"당첨자 {winner.display_name} / "
-                f"총 상금 {format_money(total_amount)}"
+                f"{target_date} - 李멸???{len(rows)}紐?/ "
+                f"?좏슚 李멸???{len(valid_members)}紐?/ "
+                f"?뱀꺼??{winner.display_name} / "
+                f"珥??곴툑 {format_money(total_amount)}"
             )
             add_game_history(guild.id, ALL_IN_GAME_NAME, result_text)
 
             if target_channel is not None:
                 embed = discord.Embed(
-                    title="💥 몰빵게임 결과",
+                    title="?뮙 紐곕뭇寃뚯엫 寃곌낵",
                     description=(
-                        f"날짜: `{target_date}`\n"
-                        f"전체 참가자 수: `{len(rows)}명`\n"
-                        f"추첨 가능 인원: `{len(valid_members)}명`\n"
-                        f"총 상금: `{format_money(total_amount)}`\n\n"
-                        f"🏆 당첨자: {winner.mention}"
+                        f"?좎쭨: `{target_date}`\n"
+                        f"?꾩껜 李멸????? `{len(rows)}紐?\n"
+                        f"異붿꺼 媛???몄썝: `{len(valid_members)}紐?\n"
+                        f"珥??곴툑: `{format_money(total_amount)}`\n\n"
+                        f"?룇 ?뱀꺼?? {winner.mention}"
                     ),
                     color=0xF1C40F,
                 )
@@ -5278,7 +5394,7 @@ async def on_ready():
             bot.tree.clear_commands(guild=guild)
             await bot.tree.sync(guild=guild)
         except Exception as e:
-            print(f"길드 명령어 초기화 실패 ({guild.id}): {e}")
+            print(f"湲몃뱶 紐낅졊??珥덇린???ㅽ뙣 ({guild.id}): {e}")
 
     await bot.tree.sync()
 
@@ -5306,7 +5422,8 @@ async def on_ready():
         loan_due_check_loop.start()
 
 
-    print("멀티서버 대응 마리봇 실행 완료")
+    print("硫?곗꽌踰????留덈━遊??ㅽ뻾 ?꾨즺")
 
 
 bot.run(TOKEN)
+
