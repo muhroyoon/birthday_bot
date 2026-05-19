@@ -345,6 +345,27 @@ cursor.execute(
 
 cursor.execute(
     """
+    CREATE TABLE IF NOT EXISTS promissory_notes(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL,
+        lender_user_id TEXT NOT NULL,
+        borrower_user_id TEXT NOT NULL,
+        amount INTEGER NOT NULL,
+        principal_amount INTEGER NOT NULL DEFAULT 0,
+        interest_amount INTEGER NOT NULL DEFAULT 0,
+        due_text TEXT NOT NULL,
+        note TEXT,
+        channel_id TEXT,
+        message_id TEXT,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at TEXT NOT NULL,
+        resolved_at TEXT
+    )
+    """
+)
+
+cursor.execute(
+    """
     CREATE TABLE IF NOT EXISTS scrim_signups(
         message_id TEXT NOT NULL,
         user_id TEXT NOT NULL,
@@ -359,6 +380,14 @@ credit_profile_columns = [row[1] for row in cursor.fetchall()]
 if "blacklisted_at" not in credit_profile_columns:
     cursor.execute("ALTER TABLE credit_profiles ADD COLUMN blacklisted_at TEXT")
     conn.commit()
+
+cursor.execute("PRAGMA table_info(promissory_notes)")
+promissory_note_columns = [row[1] for row in cursor.fetchall()]
+
+if "principal_amount" not in promissory_note_columns:
+    cursor.execute("ALTER TABLE promissory_notes ADD COLUMN principal_amount INTEGER NOT NULL DEFAULT 0")
+if "interest_amount" not in promissory_note_columns:
+    cursor.execute("ALTER TABLE promissory_notes ADD COLUMN interest_amount INTEGER NOT NULL DEFAULT 0")
 
 conn.commit()
 
@@ -1103,7 +1132,7 @@ def claim_saving(saving_id: int):
 
 
 def calculate_labor_required_count(debt_amount: int) -> int:
-    return max(10, min(1000, debt_amount // 10_000))
+    return max(10, debt_amount // 10_000)
 
 
 def create_or_replace_labor_penalty(guild_id: int, user_id: int, debt_amount: int):
@@ -1203,6 +1232,158 @@ def delete_labor_penalty(guild_id: int, user_id: int):
         (str(guild_id), str(user_id)),
     )
     conn.commit()
+
+
+def create_promissory_note(
+    guild_id: int,
+    lender_user_id: int,
+    borrower_user_id: int,
+    principal_amount: int,
+    interest_amount: int,
+    due_text: str,
+    note: str,
+    channel_id: int,
+    message_id: int,
+):
+    created_at = dt_to_db(get_kst_now())
+    amount = principal_amount + interest_amount
+    cursor.execute(
+        """
+        INSERT INTO promissory_notes(
+            guild_id, lender_user_id, borrower_user_id, amount, principal_amount, interest_amount,
+            due_text, note, channel_id, message_id, status, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
+        """,
+        (
+            str(guild_id),
+            str(lender_user_id),
+            str(borrower_user_id),
+            amount,
+            principal_amount,
+            interest_amount,
+            due_text,
+            note,
+            str(channel_id),
+            str(message_id),
+            created_at,
+        ),
+    )
+    conn.commit()
+    return cursor.lastrowid
+
+
+def get_promissory_note(note_id: int):
+    cursor.execute(
+        """
+        SELECT
+            id, guild_id, lender_user_id, borrower_user_id, amount, principal_amount, interest_amount,
+            due_text, note, channel_id, message_id, status, created_at, resolved_at
+        FROM promissory_notes
+        WHERE id=?
+        """,
+        (note_id,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+
+    return {
+        "id": int(row[0]),
+        "guild_id": row[1],
+        "lender_user_id": int(row[2]),
+        "borrower_user_id": int(row[3]),
+        "amount": int(row[4]),
+        "principal_amount": int(row[5]),
+        "interest_amount": int(row[6]),
+        "due_text": row[7],
+        "note": row[8] or "",
+        "channel_id": int(row[9]) if row[9] else None,
+        "message_id": int(row[10]) if row[10] else None,
+        "status": row[11],
+        "created_at": row[12],
+        "resolved_at": row[13],
+    }
+
+
+def get_active_promissory_notes_for_user(guild_id: int, user_id: int):
+    cursor.execute(
+        """
+        SELECT
+            id, lender_user_id, borrower_user_id, amount, principal_amount, interest_amount, due_text, note, created_at
+        FROM promissory_notes
+        WHERE guild_id=? AND status='active' AND (lender_user_id=? OR borrower_user_id=?)
+        ORDER BY id DESC
+        """,
+        (str(guild_id), str(user_id), str(user_id)),
+    )
+    rows = cursor.fetchall()
+    notes = []
+    for row in rows:
+        notes.append(
+            {
+                "id": int(row[0]),
+                "lender_user_id": int(row[1]),
+                "borrower_user_id": int(row[2]),
+                "amount": int(row[3]),
+                "principal_amount": int(row[4]),
+                "interest_amount": int(row[5]),
+                "due_text": row[6],
+                "note": row[7] or "",
+                "created_at": row[8],
+            }
+        )
+    return notes
+
+
+def resolve_promissory_note(note_id: int):
+    cursor.execute(
+        """
+        UPDATE promissory_notes
+        SET status='resolved', resolved_at=?
+        WHERE id=? AND status='active'
+        """,
+        (dt_to_db(get_kst_now()), note_id),
+    )
+    conn.commit()
+    return cursor.rowcount > 0
+
+
+def build_promissory_note_embed(
+    lender: discord.Member | discord.User | None,
+    borrower: discord.Member | discord.User | None,
+    principal_amount: int,
+    interest_amount: int,
+    due_text: str,
+    note: str,
+    *,
+    title: str,
+    color: int,
+    status_text: str,
+    note_id: int | None = None,
+):
+    def mention_or_fallback(user_obj, fallback_text: str) -> str:
+        if user_obj is None:
+            return fallback_text
+        return user_obj.mention
+
+    embed = discord.Embed(title=title, color=color)
+    if note_id is not None:
+        embed.add_field(name="차용증 번호", value=f"`#{note_id}`", inline=False)
+    embed.add_field(name="채권자", value=mention_or_fallback(lender, "알 수 없는 유저"), inline=True)
+    embed.add_field(name="채무자", value=mention_or_fallback(borrower, "알 수 없는 유저"), inline=True)
+    embed.add_field(name="원금", value=f"`{format_money(principal_amount)}`", inline=True)
+    embed.add_field(name="이자", value=f"`{format_money(interest_amount)}`", inline=True)
+    embed.add_field(name="총 상환 금액", value=f"`{format_money(principal_amount + interest_amount)}`", inline=False)
+    embed.add_field(name="상환 약속일", value=due_text, inline=False)
+    embed.add_field(name="상태", value=status_text, inline=False)
+    embed.add_field(name="비고", value=note or "없음", inline=False)
+    embed.add_field(
+        name="안내",
+        value="실제 재화 이동은 자동 처리되지 않습니다. 필요하면 `/송금`을 별도로 사용해주세요.",
+        inline=False,
+    )
+    return embed
 
 
 async def ensure_not_blacklisted_for_gambling(interaction: discord.Interaction) -> bool:
@@ -2517,6 +2698,174 @@ class LaborWorkView(discord.ui.View):
                 item.disabled = True
         else:
             embed.add_field(name="결과", value="노동 1회를 완료했습니다.", inline=False)
+
+        await interaction.response.edit_message(embed=embed, view=self)
+
+
+class PromissoryNoteModal(discord.ui.Modal):
+    principal_amount = discord.ui.TextInput(
+        label="원금",
+        placeholder="예: 50000",
+        required=True,
+        max_length=20,
+    )
+    interest_amount = discord.ui.TextInput(
+        label="이자",
+        placeholder="예: 5000",
+        required=True,
+        max_length=20,
+    )
+    due_text = discord.ui.TextInput(
+        label="상환 약속일",
+        placeholder="예: 2026-05-31 또는 다음 주 금요일",
+        required=True,
+        max_length=100,
+    )
+    note = discord.ui.TextInput(
+        label="비고",
+        placeholder="추가로 남길 메모가 있으면 적어주세요.",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=1000,
+    )
+
+    def __init__(self, borrower: discord.Member):
+        super().__init__(title="차용증 작성")
+        self.borrower = borrower
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            principal_amount = int(str(self.principal_amount).strip().replace(",", ""))
+            interest_amount = int(str(self.interest_amount).strip().replace(",", ""))
+        except ValueError:
+            await interaction.response.send_message("원금과 이자는 숫자로 입력해주세요.", ephemeral=True)
+            return
+
+        if principal_amount <= 0:
+            await interaction.response.send_message("원금은 1원 이상이어야 합니다.", ephemeral=True)
+            return
+
+        if interest_amount < 0:
+            await interaction.response.send_message("이자는 0원 이상이어야 합니다.", ephemeral=True)
+            return
+
+        clean_due_text = str(self.due_text).strip()
+        clean_note = str(self.note).strip()
+
+        embed = build_promissory_note_embed(
+            interaction.user,
+            self.borrower,
+            principal_amount,
+            interest_amount,
+            clean_due_text,
+            clean_note,
+            title="🧾 차용증 요청",
+            color=0xF1C40F,
+            status_text="상대방 확인 대기 중",
+        )
+        embed.set_footer(text="채무자는 아래 버튼으로 수락 또는 거절을 선택할 수 있습니다.")
+
+        await interaction.response.send_message(
+            content=self.borrower.mention,
+            embed=embed,
+            view=PromissoryNoteRequestView(
+                interaction.guild.id,
+                interaction.user.id,
+                self.borrower.id,
+                principal_amount,
+                interest_amount,
+                clean_due_text,
+                clean_note,
+            ),
+        )
+
+
+class PromissoryNoteRequestView(discord.ui.View):
+    def __init__(
+        self,
+        guild_id: int,
+        lender_user_id: int,
+        borrower_user_id: int,
+        principal_amount: int,
+        interest_amount: int,
+        due_text: str,
+        note: str,
+    ):
+        super().__init__(timeout=86400)
+        self.guild_id = guild_id
+        self.lender_user_id = lender_user_id
+        self.borrower_user_id = borrower_user_id
+        self.principal_amount = principal_amount
+        self.interest_amount = interest_amount
+        self.due_text = due_text
+        self.note = note
+
+    async def _reject_if_not_borrower(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.borrower_user_id:
+            await interaction.response.send_message("이 버튼은 차용증을 받은 본인만 누를 수 있습니다.", ephemeral=True)
+            return True
+        return False
+
+    @discord.ui.button(label="수락", style=discord.ButtonStyle.success)
+    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if await self._reject_if_not_borrower(interaction):
+            return
+
+        lender = interaction.guild.get_member(self.lender_user_id) or interaction.client.get_user(self.lender_user_id)
+        borrower = interaction.guild.get_member(self.borrower_user_id) or interaction.client.get_user(self.borrower_user_id)
+        note_id = create_promissory_note(
+            self.guild_id,
+            self.lender_user_id,
+            self.borrower_user_id,
+            self.principal_amount,
+            self.interest_amount,
+            self.due_text,
+            self.note,
+            interaction.channel.id,
+            interaction.message.id,
+        )
+
+        embed = build_promissory_note_embed(
+            lender,
+            borrower,
+            self.principal_amount,
+            self.interest_amount,
+            self.due_text,
+            self.note,
+            title="🧾 차용증 등록 완료",
+            color=0x2ECC71,
+            status_text="수락됨",
+            note_id=note_id,
+        )
+        embed.set_footer(text="상환이 끝나면 /차용증삭제 로 정리할 수 있습니다.")
+
+        for item in self.children:
+            item.disabled = True
+
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="거절", style=discord.ButtonStyle.danger)
+    async def decline(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if await self._reject_if_not_borrower(interaction):
+            return
+
+        lender = interaction.guild.get_member(self.lender_user_id) or interaction.client.get_user(self.lender_user_id)
+        borrower = interaction.guild.get_member(self.borrower_user_id) or interaction.client.get_user(self.borrower_user_id)
+
+        embed = build_promissory_note_embed(
+            lender,
+            borrower,
+            self.principal_amount,
+            self.interest_amount,
+            self.due_text,
+            self.note,
+            title="❌ 차용증 요청 거절됨",
+            color=0xE74C3C,
+            status_text="거절됨",
+        )
+
+        for item in self.children:
+            item.disabled = True
 
         await interaction.response.edit_message(embed=embed, view=self)
 
@@ -3927,6 +4276,109 @@ async def labor_status(interaction: discord.Interaction, member: discord.Member 
     embed = build_labor_embed(target, penalty)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
+
+@bot.tree.command(name="차용증", description="개인 간 차용증 요청 창을 엽니다.")
+@app_commands.rename(member="상대")
+@app_commands.describe(member="차용증을 받을 상대")
+async def create_promissory_note_command(interaction: discord.Interaction, member: discord.Member):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    if member.bot:
+        await interaction.response.send_message("봇에게는 차용증을 보낼 수 없습니다.", ephemeral=True)
+        return
+
+    if member.id == interaction.user.id:
+        await interaction.response.send_message("본인에게 차용증을 보낼 수는 없습니다.", ephemeral=True)
+        return
+
+    await interaction.response.send_modal(PromissoryNoteModal(member))
+
+
+@bot.tree.command(name="차용증목록", description="현재 활성화된 차용증 목록을 확인합니다.")
+@app_commands.rename(member="인원")
+@app_commands.describe(member="확인할 인원, 비워두면 본인 기준")
+async def promissory_note_list(interaction: discord.Interaction, member: discord.Member | None = None):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    target = member or interaction.user
+    if target.id != interaction.user.id and not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("다른 사람의 차용증 목록은 관리자만 확인할 수 있습니다.", ephemeral=True)
+        return
+
+    notes = get_active_promissory_notes_for_user(interaction.guild.id, target.id)
+    if not notes:
+        await interaction.response.send_message("현재 활성화된 차용증이 없습니다.", ephemeral=True)
+        return
+
+    lines = []
+    for note_info in notes:
+        lender = interaction.guild.get_member(note_info["lender_user_id"])
+        borrower = interaction.guild.get_member(note_info["borrower_user_id"])
+        lender_name = lender.display_name if lender else f"알 수 없는 유저 ({note_info['lender_user_id']})"
+        borrower_name = borrower.display_name if borrower else f"알 수 없는 유저 ({note_info['borrower_user_id']})"
+        role_text = "채권자" if target.id == note_info["lender_user_id"] else "채무자"
+        lines.append(
+            f"`#{note_info['id']}` {role_text} | {lender_name} -> {borrower_name} | "
+            f"원금 {format_money(note_info['principal_amount'])} / 이자 {format_money(note_info['interest_amount'])} / "
+            f"총액 {format_money(note_info['amount'])} | 상환 약속일: {note_info['due_text']}"
+        )
+
+    embed = discord.Embed(
+        title=f"🗂 {target.display_name}님의 차용증 목록",
+        description="\n".join(lines[:20]),
+        color=0x3498DB,
+    )
+    embed.set_footer(text="상환이 완료되면 /차용증삭제 로 정리할 수 있습니다.")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="차용증삭제", description="상환이 끝난 차용증을 정리합니다.")
+@app_commands.rename(note_id="차용증번호")
+@app_commands.describe(note_id="삭제할 차용증 번호")
+async def delete_promissory_note_command(interaction: discord.Interaction, note_id: int):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    note_info = get_promissory_note(note_id)
+    if note_info is None or note_info["guild_id"] != str(interaction.guild.id):
+        await interaction.response.send_message("해당 차용증을 찾을 수 없습니다.", ephemeral=True)
+        return
+
+    if note_info["status"] != "active":
+        await interaction.response.send_message("이미 정리된 차용증입니다.", ephemeral=True)
+        return
+
+    is_party = interaction.user.id in {note_info["lender_user_id"], note_info["borrower_user_id"]}
+    is_admin = interaction.user.guild_permissions.administrator
+    if not is_party and not is_admin:
+        await interaction.response.send_message("당사자 또는 관리자만 차용증을 정리할 수 있습니다.", ephemeral=True)
+        return
+
+    resolve_promissory_note(note_id)
+
+    lender = interaction.guild.get_member(note_info["lender_user_id"]) or interaction.client.get_user(note_info["lender_user_id"])
+    borrower = interaction.guild.get_member(note_info["borrower_user_id"]) or interaction.client.get_user(note_info["borrower_user_id"])
+    embed = build_promissory_note_embed(
+        lender,
+        borrower,
+        note_info["principal_amount"],
+        note_info["interest_amount"],
+        note_info["due_text"],
+        note_info["note"],
+        title="✅ 차용증 정리 완료",
+        color=0x2ECC71,
+        status_text="상환 완료 처리됨",
+        note_id=note_info["id"],
+    )
+    embed.set_footer(text="DB에는 이력이 남고, 활성 목록에서는 제외됩니다.")
+    await interaction.response.send_message(embed=embed)
+
+
 @bot.tree.command(name="덕몽", description="덕몽의 진짜 오리를 찾아내는 게임입니다.")
 async def duckmong(interaction: discord.Interaction, amount: int):
     if not await ensure_not_blacklisted_for_gambling(interaction):
@@ -3984,7 +4436,8 @@ async def gambling_commands(interaction: discord.Interaction):
             "`/기초생활수급비` - 하루 1회 지원금 받기\n"
             "`/잔액` - 현재 잔액 확인\n"
             "`/랭킹` - 서버 재산 순위 확인\n"
-            "`/송금` - 다른 유저에게 돈 보내기"
+            "`/송금` - 다른 유저에게 돈 보내기\n"
+            "`/차용증` - 모달로 차용증 요청 보내기"
         ),
         inline=False,
     )
@@ -4006,7 +4459,9 @@ async def gambling_commands(interaction: discord.Interaction):
             "`/중도상환` - 현재 대출 전액 상환\n"
             "`/내신용` - 신용등급, 대출, 노동 현황 확인\n"
             "`/노동` - 신용불량자 노동 진행\n"
-            "`/노동현황` - 노동 진행 상황 확인"
+            "`/노동현황` - 노동 진행 상황 확인\n"
+            "`/차용증목록` - 현재 차용증 목록 확인\n"
+            "`/차용증삭제` - 상환 완료된 차용증 정리"
         ),
         inline=False,
     )
@@ -4122,7 +4577,8 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="🏦 적금 / 대출 / 신용",
         value=(
             "`/적금`, `/내적금`, `/적금수령`\n"
-            "`/일수`, `/중도상환`, `/내신용`, `/노동`, `/노동현황`"
+            "`/일수`, `/중도상환`, `/내신용`, `/노동`, `/노동현황`\n"
+            "`/차용증`, `/차용증목록`, `/차용증삭제`"
         ),
         inline=False,
     )
@@ -4155,7 +4611,8 @@ async def admin_commands_guide(interaction: discord.Interaction):
         value=(
             "`/적금 50000`  5만원 적금\n"
             "`/보급 10000`  1만원 보급 참여\n"
-            "`/내신용`  대출, 신용등급, 노동 현황 확인"
+            "`/내신용`  대출, 신용등급, 노동 현황 확인\n"
+            "`/차용증 @유저`  모달에서 원금, 이자, 상환일 입력"
         ),
         inline=False,
     )
