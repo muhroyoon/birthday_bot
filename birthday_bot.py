@@ -62,6 +62,31 @@ def dt_from_db(value: str) -> datetime:
     return datetime.fromisoformat(value)
 
 
+def parse_date_range(start_date: str | None, end_date: str | None, *, default_days: int = 30):
+    now = get_kst_now()
+    if not start_date and not end_date:
+        return now - timedelta(days=default_days), now
+
+    try:
+        if start_date:
+            start_dt = datetime.strptime(start_date.strip(), "%Y-%m-%d").replace(tzinfo=ZoneInfo("Asia/Seoul"))
+        else:
+            start_dt = now - timedelta(days=default_days)
+
+        if end_date:
+            end_dt = datetime.strptime(end_date.strip(), "%Y-%m-%d").replace(tzinfo=ZoneInfo("Asia/Seoul"))
+            end_dt = end_dt + timedelta(days=1) - timedelta(seconds=1)
+        else:
+            end_dt = now
+    except ValueError:
+        raise ValueError("날짜 형식은 YYYY-MM-DD 로 입력해주세요.")
+
+    if end_dt < start_dt:
+        raise ValueError("종료일은 시작일보다 빠를 수 없습니다.")
+
+    return start_dt, end_dt
+
+
 TOKEN = os.getenv("TOKEN")
 
 # ============================================================
@@ -1240,6 +1265,112 @@ def get_voice_channel_log_summary(guild_id: int, user_id: int, since: datetime):
         (str(guild_id), str(user_id), dt_to_db(since)),
     )
     return cursor.fetchall()
+
+
+def get_voice_channel_intervals(guild_id: int, user_id: int, since: datetime):
+    cursor.execute(
+        """
+        SELECT channel_id, started_at, ended_at
+        FROM voice_channel_logs
+        WHERE guild_id=? AND user_id=? AND ended_at>=?
+        ORDER BY started_at ASC
+        """,
+        (str(guild_id), str(user_id), dt_to_db(since)),
+    )
+    rows = cursor.fetchall()
+    intervals = []
+    for channel_id, started_at, ended_at in rows:
+        try:
+            start_dt = max(dt_from_db(started_at), since)
+            end_dt = dt_from_db(ended_at)
+        except Exception:
+            continue
+        if end_dt <= start_dt:
+            continue
+        intervals.append(
+            {
+                "channel_id": int(channel_id),
+                "start": start_dt,
+                "end": end_dt,
+                "active": False,
+            }
+        )
+
+    active_session = get_active_voice_session(guild_id, user_id)
+    if active_session is not None:
+        try:
+            start_dt = max(dt_from_db(active_session["started_at"]), since)
+        except Exception:
+            start_dt = since
+        end_dt = get_kst_now()
+        if end_dt > start_dt:
+            intervals.append(
+                {
+                    "channel_id": active_session["channel_id"],
+                    "start": start_dt,
+                    "end": end_dt,
+                    "active": True,
+                }
+            )
+
+    return intervals
+
+
+def get_voice_channel_intervals_between(guild_id: int, user_id: int, start_dt: datetime, end_dt: datetime):
+    intervals = []
+    for item in get_voice_channel_intervals(guild_id, user_id, start_dt):
+        clamped_start = max(item["start"], start_dt)
+        clamped_end = min(item["end"], end_dt)
+        if clamped_end <= clamped_start:
+            continue
+        intervals.append(
+            {
+                "channel_id": item["channel_id"],
+                "start": clamped_start,
+                "end": clamped_end,
+                "active": item.get("active", False),
+            }
+        )
+    return intervals
+
+
+def sum_voice_intervals_seconds(intervals: list[dict]) -> int:
+    return sum(max(0, int((item["end"] - item["start"]).total_seconds())) for item in intervals)
+
+
+def calculate_voice_overlap_seconds(intervals_a: list[dict], intervals_b: list[dict]):
+    overlap_by_channel: dict[int, int] = {}
+
+    grouped_a: dict[int, list[dict]] = {}
+    grouped_b: dict[int, list[dict]] = {}
+
+    for item in intervals_a:
+        grouped_a.setdefault(item["channel_id"], []).append(item)
+    for item in intervals_b:
+        grouped_b.setdefault(item["channel_id"], []).append(item)
+
+    for channel_id in set(grouped_a.keys()) & set(grouped_b.keys()):
+        a_list = sorted(grouped_a[channel_id], key=lambda item: item["start"])
+        b_list = sorted(grouped_b[channel_id], key=lambda item: item["start"])
+        i = 0
+        j = 0
+        overlap_seconds = 0
+
+        while i < len(a_list) and j < len(b_list):
+            start = max(a_list[i]["start"], b_list[j]["start"])
+            end = min(a_list[i]["end"], b_list[j]["end"])
+            if end > start:
+                overlap_seconds += int((end - start).total_seconds())
+
+            if a_list[i]["end"] <= b_list[j]["end"]:
+                i += 1
+            else:
+                j += 1
+
+        if overlap_seconds > 0:
+            overlap_by_channel[channel_id] = overlap_seconds
+
+    return overlap_by_channel
 
 
 def get_active_saving(guild_id: int, user_id: int):
@@ -4154,40 +4285,50 @@ async def team_mix_log(interaction: discord.Interaction, member: discord.Member)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="음성채널로그", description="특정 인원의 최근 30일 음성채널 체류 기록을 확인합니다.")
-@app_commands.rename(member="인원")
-@app_commands.describe(member="조회할 인원")
-async def voice_channel_log(interaction: discord.Interaction, member: discord.Member):
+@bot.tree.command(name="음성채널로그", description="특정 인원의 음성채널 체류 기록을 확인합니다.")
+@app_commands.rename(member="인원", start_date="시작일", end_date="종료일")
+@app_commands.describe(
+    member="조회할 인원",
+    start_date="예: 2026-05-01, 비워두면 최근 30일",
+    end_date="예: 2026-05-31, 비워두면 현재까지",
+)
+async def voice_channel_log(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    start_date: str | None = None,
+    end_date: str | None = None,
+):
     if interaction.guild is None:
         await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
         return
 
-    since = get_kst_now() - timedelta(days=30)
-    rows = get_voice_channel_log_summary(interaction.guild.id, member.id, since)
-    active_session = get_active_voice_session(interaction.guild.id, member.id)
+    try:
+        since, until = parse_date_range(start_date, end_date, default_days=30)
+    except ValueError as e:
+        await interaction.response.send_message(str(e), ephemeral=True)
+        return
 
+    intervals = get_voice_channel_intervals_between(interaction.guild.id, member.id, since, until)
     summary_map = {}
-    for channel_id, total_seconds, session_count, last_ended_at in rows:
-        summary_map[int(channel_id)] = {
-            "total_seconds": int(total_seconds),
-            "session_count": int(session_count),
-            "last_ended_at": last_ended_at,
-        }
-
-    if active_session is not None:
-        started_at = dt_from_db(active_session["started_at"])
-        extra_seconds = max(0, int((get_kst_now() - started_at).total_seconds()))
-        if extra_seconds > 0:
-            channel_entry = summary_map.setdefault(
-                active_session["channel_id"],
-                {"total_seconds": 0, "session_count": 0, "last_ended_at": None},
-            )
-            channel_entry["total_seconds"] += extra_seconds
-            channel_entry["session_count"] += 1
+    for item in intervals:
+        seconds = max(0, int((item["end"] - item["start"]).total_seconds()))
+        if seconds <= 0:
+            continue
+        channel_entry = summary_map.setdefault(
+            item["channel_id"],
+            {"total_seconds": 0, "session_count": 0, "last_ended_at": None},
+        )
+        channel_entry["total_seconds"] += seconds
+        channel_entry["session_count"] += 1
+        if item.get("active"):
             channel_entry["last_ended_at"] = "현재 접속 중"
+        else:
+            end_text = dt_to_db(item["end"])
+            if channel_entry["last_ended_at"] is None or end_text > str(channel_entry["last_ended_at"]):
+                channel_entry["last_ended_at"] = end_text
 
     if not summary_map:
-        await interaction.response.send_message("최근 30일 기준 음성채널 체류 기록이 없습니다.", ephemeral=True)
+        await interaction.response.send_message("해당 기간 기준 음성채널 체류 기록이 없습니다.", ephemeral=True)
         return
 
     sorted_rows = sorted(
@@ -4196,7 +4337,7 @@ async def voice_channel_log(interaction: discord.Interaction, member: discord.Me
     )
     total_seconds = sum(item["total_seconds"] for _, item in sorted_rows)
     if total_seconds <= 0:
-        await interaction.response.send_message("최근 30일 기준 집계 가능한 음성채널 기록이 없습니다.", ephemeral=True)
+        await interaction.response.send_message("해당 기간 기준 집계 가능한 음성채널 기록이 없습니다.", ephemeral=True)
         return
 
     lines = []
@@ -4224,9 +4365,91 @@ async def voice_channel_log(interaction: discord.Interaction, member: discord.Me
         description="\n\n".join(lines[:10]),
         color=0x3498DB,
     )
-    embed.add_field(name="집계 기준", value="최근 30일 / 관전자 시간 제외", inline=False)
+    embed.add_field(
+        name="집계 기준",
+        value=f"`{since.strftime('%Y-%m-%d')}` ~ `{until.strftime('%Y-%m-%d')}` / 관전자 시간 제외",
+        inline=False,
+    )
     embed.add_field(name="총 체류 시간", value=f"`{format_duration_korean(total_seconds)}`", inline=False)
-    embed.set_footer(text="최근 30일 동안 종료된 음성 세션 기준으로 집계합니다.")
+    embed.set_footer(text="지정한 기간 안의 음성 세션 기준으로 집계합니다.")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="끼리끼리조회", description="두 인원의 음성채널 체류 시간과 겹친 시간을 비교합니다.")
+@app_commands.rename(member1="인원1", member2="인원2", start_date="시작일", end_date="종료일")
+@app_commands.describe(
+    member1="첫 번째 인원",
+    member2="두 번째 인원",
+    start_date="예: 2026-05-01, 비워두면 최근 30일",
+    end_date="예: 2026-05-31, 비워두면 현재까지",
+)
+async def pair_voice_compare(
+    interaction: discord.Interaction,
+    member1: discord.Member,
+    member2: discord.Member,
+    start_date: str | None = None,
+    end_date: str | None = None,
+):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    if member1.id == member2.id:
+        await interaction.response.send_message("서로 다른 두 인원을 선택해주세요.", ephemeral=True)
+        return
+
+    try:
+        since, until = parse_date_range(start_date, end_date, default_days=30)
+    except ValueError as e:
+        await interaction.response.send_message(str(e), ephemeral=True)
+        return
+
+    intervals_1 = get_voice_channel_intervals_between(interaction.guild.id, member1.id, since, until)
+    intervals_2 = get_voice_channel_intervals_between(interaction.guild.id, member2.id, since, until)
+
+    total_1 = sum_voice_intervals_seconds(intervals_1)
+    total_2 = sum_voice_intervals_seconds(intervals_2)
+    overlap_by_channel = calculate_voice_overlap_seconds(intervals_1, intervals_2)
+    overlap_total = sum(overlap_by_channel.values())
+
+    if total_1 <= 0 and total_2 <= 0:
+        await interaction.response.send_message("해당 기간 기준 두 인원의 음성채널 기록이 없습니다.", ephemeral=True)
+        return
+
+    solo_1 = max(0, total_1 - overlap_total)
+    solo_2 = max(0, total_2 - overlap_total)
+
+    channel_lines = []
+    for channel_id, seconds in sorted(overlap_by_channel.items(), key=lambda item: (-item[1], item[0]))[:10]:
+        channel = interaction.guild.get_channel(channel_id)
+        channel_name = channel.mention if channel else f"알 수 없는 채널 ({channel_id})"
+        channel_lines.append(f"{channel_name}: `{format_duration_korean(seconds)}`")
+
+    embed = discord.Embed(
+        title=f"🎙 {member1.display_name} / {member2.display_name} 끼리끼리조회",
+        color=0x5865F2,
+    )
+    embed.add_field(
+        name="집계 기준",
+        value=f"`{since.strftime('%Y-%m-%d')}` ~ `{until.strftime('%Y-%m-%d')}` / 관전자 시간 제외",
+        inline=False,
+    )
+    embed.add_field(name=f"{member1.display_name} 총 체류", value=f"`{format_duration_korean(total_1)}`", inline=True)
+    embed.add_field(name=f"{member2.display_name} 총 체류", value=f"`{format_duration_korean(total_2)}`", inline=True)
+    embed.add_field(name="같은 채널 동시 체류", value=f"`{format_duration_korean(overlap_total)}`", inline=False)
+    embed.add_field(name=f"{member1.display_name} 단독 체류", value=f"`{format_duration_korean(solo_1)}`", inline=True)
+    embed.add_field(name=f"{member2.display_name} 단독 체류", value=f"`{format_duration_korean(solo_2)}`", inline=True)
+
+    if total_1 > 0:
+        embed.add_field(name=f"{member1.display_name} 기준 겹침 비율", value=f"`{(overlap_total / total_1) * 100:.1f}%`", inline=True)
+    if total_2 > 0:
+        embed.add_field(name=f"{member2.display_name} 기준 겹침 비율", value=f"`{(overlap_total / total_2) * 100:.1f}%`", inline=True)
+
+    embed.add_field(
+        name="같이 있었던 채널",
+        value="\n".join(channel_lines) if channel_lines else "같은 채널에 함께 있었던 기록이 없습니다.",
+        inline=False,
+    )
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
@@ -5189,7 +5412,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
     general_embed.add_field(
         name="👥 구인 / 팀 / 기타",
         value=(
-            "`/구인`, `/종겜구인`, `/팀`, `/팀섞기로그`, `/음성채널로그`, `/시간설정패널`\n"
+            "`/구인`, `/종겜구인`, `/팀`, `/팀섞기로그`, `/음성채널로그`, `/끼리끼리조회`, `/시간설정패널`\n"
             "`/등업패널`, `/규칙버튼`, `/닉네임패널생성`"
         ),
         inline=False,
