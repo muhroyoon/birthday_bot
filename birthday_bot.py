@@ -414,6 +414,32 @@ cursor.execute(
     """
 )
 
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS voice_channel_sessions(
+        guild_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        PRIMARY KEY (guild_id, user_id)
+    )
+    """
+)
+
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS voice_channel_logs(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        ended_at TEXT NOT NULL,
+        duration_seconds INTEGER NOT NULL
+    )
+    """
+)
+
 conn.commit()
 
 
@@ -644,6 +670,19 @@ def can_afford(user_id: int, amount: int) -> bool:
 
 def format_money(amount: int) -> str:
     return f"{amount:,}원"
+
+
+def format_duration_korean(total_seconds: int) -> str:
+    hours, remainder = divmod(max(0, total_seconds), 3600)
+    minutes, seconds = divmod(remainder, 60)
+    parts = []
+    if hours:
+        parts.append(f"{hours}시간")
+    if minutes:
+        parts.append(f"{minutes}분")
+    if seconds or not parts:
+        parts.append(f"{seconds}초")
+    return " ".join(parts)
 
 def get_spectator_prefixes(guild_id: int) -> list[str]:
     raw = get_guild_setting(guild_id, "spectator_prefixes")
@@ -1126,6 +1165,79 @@ def get_team_mix_logs(guild_id: int, user_id: int, limit: int = 20):
         LIMIT ?
         """,
         (str(guild_id), str(user_id), limit),
+    )
+    return cursor.fetchall()
+
+
+def start_voice_session(guild_id: int, user_id: int, channel_id: int):
+    cursor.execute(
+        """
+        INSERT OR REPLACE INTO voice_channel_sessions(guild_id, user_id, channel_id, started_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (str(guild_id), str(user_id), str(channel_id), dt_to_db(get_kst_now())),
+    )
+    conn.commit()
+
+
+def get_active_voice_session(guild_id: int, user_id: int):
+    cursor.execute(
+        """
+        SELECT channel_id, started_at
+        FROM voice_channel_sessions
+        WHERE guild_id=? AND user_id=?
+        """,
+        (str(guild_id), str(user_id)),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "channel_id": int(row[0]),
+        "started_at": row[1],
+    }
+
+
+def end_voice_session(guild_id: int, user_id: int):
+    session = get_active_voice_session(guild_id, user_id)
+    if session is None:
+        return
+
+    started_at = dt_from_db(session["started_at"])
+    ended_at = get_kst_now()
+    duration_seconds = max(0, int((ended_at - started_at).total_seconds()))
+
+    cursor.execute(
+        """
+        INSERT INTO voice_channel_logs(guild_id, user_id, channel_id, started_at, ended_at, duration_seconds)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            str(guild_id),
+            str(user_id),
+            str(session["channel_id"]),
+            dt_to_db(started_at),
+            dt_to_db(ended_at),
+            duration_seconds,
+        ),
+    )
+    cursor.execute(
+        "DELETE FROM voice_channel_sessions WHERE guild_id=? AND user_id=?",
+        (str(guild_id), str(user_id)),
+    )
+    conn.commit()
+
+
+def get_voice_channel_log_summary(guild_id: int, user_id: int, since: datetime):
+    cursor.execute(
+        """
+        SELECT channel_id, SUM(duration_seconds) AS total_seconds, COUNT(*) AS session_count, MAX(ended_at) AS last_ended_at
+        FROM voice_channel_logs
+        WHERE guild_id=? AND user_id=? AND ended_at>=?
+        GROUP BY channel_id
+        ORDER BY total_seconds DESC, channel_id ASC
+        """,
+        (str(guild_id), str(user_id), dt_to_db(since)),
     )
     return cursor.fetchall()
 
@@ -4042,6 +4154,82 @@ async def team_mix_log(interaction: discord.Interaction, member: discord.Member)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+@bot.tree.command(name="음성채널로그", description="특정 인원의 최근 30일 음성채널 체류 기록을 확인합니다.")
+@app_commands.rename(member="인원")
+@app_commands.describe(member="조회할 인원")
+async def voice_channel_log(interaction: discord.Interaction, member: discord.Member):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    since = get_kst_now() - timedelta(days=30)
+    rows = get_voice_channel_log_summary(interaction.guild.id, member.id, since)
+    active_session = get_active_voice_session(interaction.guild.id, member.id)
+
+    summary_map = {}
+    for channel_id, total_seconds, session_count, last_ended_at in rows:
+        summary_map[int(channel_id)] = {
+            "total_seconds": int(total_seconds),
+            "session_count": int(session_count),
+            "last_ended_at": last_ended_at,
+        }
+
+    if active_session is not None:
+        started_at = dt_from_db(active_session["started_at"])
+        extra_seconds = max(0, int((get_kst_now() - started_at).total_seconds()))
+        if extra_seconds > 0:
+            channel_entry = summary_map.setdefault(
+                active_session["channel_id"],
+                {"total_seconds": 0, "session_count": 0, "last_ended_at": None},
+            )
+            channel_entry["total_seconds"] += extra_seconds
+            channel_entry["session_count"] += 1
+            channel_entry["last_ended_at"] = "현재 접속 중"
+
+    if not summary_map:
+        await interaction.response.send_message("최근 30일 기준 음성채널 체류 기록이 없습니다.", ephemeral=True)
+        return
+
+    sorted_rows = sorted(
+        summary_map.items(),
+        key=lambda item: (-item[1]["total_seconds"], item[0]),
+    )
+    total_seconds = sum(item["total_seconds"] for _, item in sorted_rows)
+    if total_seconds <= 0:
+        await interaction.response.send_message("최근 30일 기준 집계 가능한 음성채널 기록이 없습니다.", ephemeral=True)
+        return
+
+    lines = []
+    for channel_id, item in sorted_rows[:10]:
+        percentage = (item["total_seconds"] / total_seconds) * 100
+        channel = interaction.guild.get_channel(int(channel_id))
+        channel_name = channel.mention if channel else f"알 수 없는 채널 ({channel_id})"
+        if item["last_ended_at"] == "현재 접속 중":
+            last_text = "현재 접속 중"
+        else:
+            try:
+                last_text = dt_from_db(item["last_ended_at"]).strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                last_text = item["last_ended_at"]
+        lines.append(
+            f"{channel_name}\n"
+            f"체류 시간: `{format_duration_korean(item['total_seconds'])}`\n"
+            f"전체 비중: `{percentage:.1f}%`\n"
+            f"입장 횟수: `{item['session_count']}회`\n"
+            f"마지막 기록: `{last_text}`"
+        )
+
+    embed = discord.Embed(
+        title=f"🎧 {member.display_name}님의 음성채널 로그",
+        description="\n\n".join(lines[:10]),
+        color=0x3498DB,
+    )
+    embed.add_field(name="집계 기준", value="최근 30일 / 관전자 시간 제외", inline=False)
+    embed.add_field(name="총 체류 시간", value=f"`{format_duration_korean(total_seconds)}`", inline=False)
+    embed.set_footer(text="최근 30일 동안 종료된 음성 세션 기준으로 집계합니다.")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 @bot.tree.command(name="팀섞기규칙설정", description="관전자 제외용 접두어를 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 @app_commands.rename(prefixes="접두어들")
@@ -5001,7 +5189,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
     general_embed.add_field(
         name="👥 구인 / 팀 / 기타",
         value=(
-            "`/구인`, `/종겜구인`, `/팀`, `/팀섞기로그`, `/시간설정패널`\n"
+            "`/구인`, `/종겜구인`, `/팀`, `/팀섞기로그`, `/음성채널로그`, `/시간설정패널`\n"
             "`/등업패널`, `/규칙버튼`, `/닉네임패널생성`"
         ),
         inline=False,
@@ -5120,6 +5308,8 @@ async def on_member_update(before: discord.Member, after: discord.Member):
     guild_id = after.guild.id
     before_role_ids = {role.id for role in before.roles}
     after_role_ids = {role.id for role in after.roles}
+    before_is_spectator = is_spectator_member(before, guild_id)
+    after_is_spectator = is_spectator_member(after, guild_id)
 
     new_member_role_id = get_guild_setting_role_id(guild_id, "new_member_role_id")
     if new_member_role_id is not None:
@@ -5156,6 +5346,13 @@ async def on_member_update(before: discord.Member, after: discord.Member):
                     rendered = rendered.replace("{role}", role.mention if role else "??븷")
                     await welcome_channel.send(rendered)
 
+    if after.voice and after.voice.channel is not None:
+        if not before_is_spectator and after_is_spectator:
+            end_voice_session(guild_id, after.id)
+        elif before_is_spectator and not after_is_spectator:
+            if get_active_voice_session(guild_id, after.id) is None:
+                start_voice_session(guild_id, after.id, after.voice.channel.id)
+
 
 @bot.event
 async def on_member_remove(member: discord.Member):
@@ -5176,6 +5373,18 @@ async def on_member_remove(member: discord.Member):
 
 @bot.event
 async def on_voice_state_update(member, before, after):
+    guild_id = member.guild.id
+    current_is_spectator = is_spectator_member(member, guild_id)
+    active_session = get_active_voice_session(guild_id, member.id)
+
+    if before.channel is not None and (after.channel is None or before.channel.id != after.channel.id):
+        if active_session is not None:
+            end_voice_session(guild_id, member.id)
+
+    if after.channel is not None and (before.channel is None or before.channel.id != after.channel.id):
+        if not current_is_spectator:
+            start_voice_session(guild_id, member.id, after.channel.id)
+
     channels = []
 
     if after.channel and (before.channel is None or before.channel.id != after.channel.id):
