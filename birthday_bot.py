@@ -399,6 +399,21 @@ if "principal_amount" not in promissory_note_columns:
 if "interest_amount" not in promissory_note_columns:
     cursor.execute("ALTER TABLE promissory_notes ADD COLUMN interest_amount INTEGER NOT NULL DEFAULT 0")
 
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS team_mix_logs(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        team_size INTEGER NOT NULL,
+        team_label TEXT NOT NULL,
+        members_text TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )
+    """
+)
+
 conn.commit()
 
 
@@ -1073,6 +1088,44 @@ def get_due_loans(now: datetime):
         ORDER BY id ASC
         """,
         (dt_to_db(now),),
+    )
+    return cursor.fetchall()
+
+
+def add_team_mix_logs(guild_id: int, channel_id: int, team_size: int, teams: list[list[discord.Member]]):
+    created_at = dt_to_db(get_kst_now())
+    for index, team_members in enumerate(teams, start=1):
+        team_label = f"팀 {index}"
+        members_text = ", ".join(member.display_name for member in team_members)
+        for member in team_members:
+            cursor.execute(
+                """
+                INSERT INTO team_mix_logs(guild_id, user_id, channel_id, team_size, team_label, members_text, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(guild_id),
+                    str(member.id),
+                    str(channel_id),
+                    team_size,
+                    team_label,
+                    members_text,
+                    created_at,
+                ),
+            )
+    conn.commit()
+
+
+def get_team_mix_logs(guild_id: int, user_id: int, limit: int = 20):
+    cursor.execute(
+        """
+        SELECT channel_id, team_size, team_label, members_text, created_at
+        FROM team_mix_logs
+        WHERE guild_id=? AND user_id=?
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (str(guild_id), str(user_id), limit),
     )
     return cursor.fetchall()
 
@@ -2294,7 +2347,7 @@ class TeamSelectView(discord.ui.View):
 
         channel = interaction.user.voice.channel
         players = [
-            member.display_name
+            member
             for member in channel.members
             if not member.bot and not is_spectator_member(member, interaction.guild.id)
         ]
@@ -2306,6 +2359,7 @@ class TeamSelectView(discord.ui.View):
 
         random.shuffle(players)
         teams = [players[i:i + team_size] for i in range(0, len(players), team_size)]
+        add_team_mix_logs(interaction.guild.id, channel.id, team_size, teams)
 
         embed = discord.Embed(
             title="🎲 랜덤 팀 결과",
@@ -2313,7 +2367,11 @@ class TeamSelectView(discord.ui.View):
             color=0x2ECC71,
         )
         for index, team in enumerate(teams, start=1):
-            embed.add_field(name=f"팀 {index}", value="\n".join(team), inline=False)
+            embed.add_field(
+                name=f"팀 {index}",
+                value="\n".join(member.display_name for member in team),
+                inline=False,
+            )
 
         await interaction.response.send_message(embed=embed)
 
@@ -3950,6 +4008,40 @@ async def team(interaction: discord.Interaction):
     embed = discord.Embed(title="👥 팀 생성", description="팀 인원을 선택해주세요.", color=0x3498DB)
     await interaction.response.send_message(embed=embed, view=TeamSelectView())
 
+
+@bot.tree.command(name="팀섞기로그", description="특정 인원의 팀섞기 참여 기록을 확인합니다.")
+@app_commands.rename(member="인원")
+@app_commands.describe(member="조회할 인원")
+async def team_mix_log(interaction: discord.Interaction, member: discord.Member):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    rows = get_team_mix_logs(interaction.guild.id, member.id, 20)
+    if not rows:
+        await interaction.response.send_message("해당 인원의 팀섞기 기록이 없습니다.", ephemeral=True)
+        return
+
+    lines = []
+    for channel_id, team_size, team_label, members_text, created_at in rows:
+        try:
+            created_text = dt_from_db(created_at).strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            created_text = created_at
+        lines.append(
+            f"[{created_text}] <#{channel_id}> / {team_size}인 팀 / {team_label}\n"
+            f"참여 멤버: {members_text}"
+        )
+
+    embed = discord.Embed(
+        title=f"📝 {member.display_name}님의 팀섞기 기록",
+        description="\n\n".join(lines),
+        color=0x5865F2,
+    )
+    embed.set_footer(text="최근 20개의 팀섞기 참여 기록을 표시합니다.")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 @bot.tree.command(name="팀섞기규칙설정", description="관전자 제외용 접두어를 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 @app_commands.rename(prefixes="접두어들")
@@ -4909,7 +5001,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
     general_embed.add_field(
         name="👥 구인 / 팀 / 기타",
         value=(
-            "`/구인`, `/종겜구인`, `/팀`, `/시간설정패널`\n"
+            "`/구인`, `/종겜구인`, `/팀`, `/팀섞기로그`, `/시간설정패널`\n"
             "`/등업패널`, `/규칙버튼`, `/닉네임패널생성`"
         ),
         inline=False,
