@@ -1902,12 +1902,8 @@ def build_seotda_progress_embed(
     opponent_action: str | None,
 ):
     def action_text(action: str | None) -> str:
-        if action == "bet":
-            return "배팅 완료"
-        if action == "allin":
-            return "올인 배팅"
-        if action == "die":
-            return "다이"
+        if action in {"bet", "allin", "die"}:
+            return "선택 완료"
         return "대기 중"
 
     challenger_name = challenger.display_name if hasattr(challenger, "display_name") else challenger.name
