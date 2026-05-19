@@ -1836,6 +1836,11 @@ def format_seotda_hand(cards: list[tuple[int, bool]]) -> str:
     return " / ".join(format_seotda_card(card) for card in cards)
 
 
+def draw_seotda_hands():
+    drawn_cards = random.sample(create_seotda_deck(), 4)
+    return drawn_cards[:2], drawn_cards[2:]
+
+
 def evaluate_seotda_hand(cards: list[tuple[int, bool]]):
     sorted_cards = sorted(cards, key=lambda card: (card[0], 0 if card[1] else 1))
     months = sorted(card[0] for card in sorted_cards)
@@ -1883,6 +1888,61 @@ def build_seotda_result_embed(
         inline=False,
     )
     embed.add_field(name="판돈", value=f"`{format_money(amount)}`", inline=False)
+    return embed
+
+
+def build_seotda_progress_embed(
+    challenger: discord.Member | discord.User,
+    opponent: discord.Member | discord.User,
+    challenger_cards: list[tuple[int, bool]],
+    opponent_cards: list[tuple[int, bool]],
+    base_amount: int,
+    pot_amount: int,
+    challenger_action: str | None,
+    opponent_action: str | None,
+):
+    def action_text(action: str | None) -> str:
+        if action == "bet":
+            return "배팅 완료"
+        if action == "allin":
+            return "올인 배팅"
+        if action == "die":
+            return "다이"
+        return "대기 중"
+
+    challenger_name = challenger.display_name if hasattr(challenger, "display_name") else challenger.name
+    opponent_name = opponent.display_name if hasattr(opponent, "display_name") else opponent.name
+
+    embed = discord.Embed(
+        title="🃏 섯다",
+        description=(
+            "첫 번째 패가 공개되었습니다.\n"
+            "아래 버튼에서 `배팅` 또는 `다이`를 선택해주세요.\n"
+            "두 사람 모두 `배팅`을 선택해야 다음 패가 공개됩니다."
+        ),
+        color=0xF1C40F,
+    )
+    embed.add_field(
+        name=f"{challenger_name} 패",
+        value=f"`{format_seotda_card(challenger_cards[0])}` / `??`\n상태: **{action_text(challenger_action)}**",
+        inline=False,
+    )
+    embed.add_field(
+        name=f"{opponent_name} 패",
+        value=f"`{format_seotda_card(opponent_cards[0])}` / `??`\n상태: **{action_text(opponent_action)}**",
+        inline=False,
+    )
+    embed.add_field(name="기본 배팅금", value=f"`{format_money(base_amount)}`", inline=True)
+    embed.add_field(name="현재 판돈", value=f"`{format_money(pot_amount)}`", inline=True)
+    embed.add_field(
+        name="진행 방식",
+        value=(
+            "`배팅`을 누르면 처음 건 금액만큼 추가로 겁니다.\n"
+            "잔액이 부족하면 가능한 금액만큼 자동 올인합니다.\n"
+            "`다이`를 누르면 그 판에서 패배합니다."
+        ),
+        inline=False,
+    )
     return embed
 
 
@@ -2505,6 +2565,282 @@ class SupplyDropView(discord.ui.View):
         await self.open_supply(interaction)
 
 
+class SeotdaResultView(discord.ui.View):
+    def __init__(self, guild_id: int, challenger_id: int, opponent_id: int | None, next_amount: int | None, winner_id: int | None):
+        super().__init__(timeout=SEOTDA_TIMEOUT)
+        self.guild_id = guild_id
+        self.challenger_id = challenger_id
+        self.opponent_id = opponent_id
+        self.next_amount = next_amount
+        self.winner_id = winner_id
+
+    @discord.ui.button(label="묻고 따블로?", style=discord.ButtonStyle.success)
+    async def double(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.winner_id is None or self.next_amount is None:
+            await interaction.response.send_message("이번 판은 묻고 따블로를 진행할 수 없습니다.", ephemeral=True)
+            return
+
+        if interaction.user.id != self.winner_id:
+            await interaction.response.send_message("이번 판의 승자만 묻고 따블로를 누를 수 있습니다.", ephemeral=True)
+            return
+
+        challenger = interaction.guild.get_member(self.challenger_id)
+        if challenger is None:
+            await interaction.response.send_message("도전자를 찾을 수 없습니다.", ephemeral=True)
+            return
+
+        if not can_afford(challenger.id, self.next_amount):
+            await interaction.response.send_message("도전자의 잔액이 부족해 묻고 따블로를 진행할 수 없습니다.", ephemeral=True)
+            return
+
+        opponent_is_bot = self.opponent_id is None
+        opponent = None if opponent_is_bot else interaction.guild.get_member(self.opponent_id)
+        if not opponent_is_bot and opponent is None:
+            await interaction.response.send_message("상대를 찾을 수 없습니다.", ephemeral=True)
+            return
+
+        if not opponent_is_bot and not can_afford(opponent.id, self.next_amount):
+            await interaction.response.send_message("상대의 잔액이 부족해 묻고 따블로를 진행할 수 없습니다.", ephemeral=True)
+            return
+
+        add_balance(challenger.id, -self.next_amount)
+        if not opponent_is_bot:
+            add_balance(opponent.id, -self.next_amount)
+
+        match_view = SeotdaMatchView(self.guild_id, self.challenger_id, self.opponent_id, self.next_amount)
+        embed = match_view.build_embed(interaction.guild, interaction.client.user)
+        await interaction.response.edit_message(embed=embed, view=match_view)
+
+    @discord.ui.button(label="다이", style=discord.ButtonStyle.danger)
+    async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id not in {self.challenger_id, self.opponent_id}:
+            await interaction.response.send_message("대결 당사자만 종료할 수 있습니다.", ephemeral=True)
+            return
+
+        for item in self.children:
+            item.disabled = True
+
+        embed = interaction.message.embeds[0]
+        embed.set_footer(text="섯다 게임이 종료되었습니다.")
+        await interaction.response.edit_message(embed=embed, view=self)
+
+
+class SeotdaMatchView(discord.ui.View):
+    def __init__(self, guild_id: int, challenger_id: int, opponent_id: int | None, amount: int):
+        super().__init__(timeout=SEOTDA_TIMEOUT)
+        self.guild_id = guild_id
+        self.challenger_id = challenger_id
+        self.opponent_id = opponent_id
+        self.amount = amount
+        self.pot_amount = amount * 2
+        self.challenger_cards, self.opponent_cards = draw_seotda_hands()
+        self.challenger_action: str | None = None
+        self.opponent_action: str | None = None
+        self.resolved = False
+
+    def _is_bot_match(self) -> bool:
+        return self.opponent_id is None
+
+    def _get_role_key(self, user_id: int) -> str | None:
+        if user_id == self.challenger_id:
+            return "challenger"
+        if user_id == self.opponent_id:
+            return "opponent"
+        return None
+
+    def _set_action(self, role_key: str, action: str):
+        if role_key == "challenger":
+            self.challenger_action = action
+        elif role_key == "opponent":
+            self.opponent_action = action
+
+    def _get_action(self, role_key: str) -> str | None:
+        return self.challenger_action if role_key == "challenger" else self.opponent_action
+
+    def _get_participants(self, guild: discord.Guild, bot_user: discord.ClientUser | None):
+        challenger = guild.get_member(self.challenger_id)
+        if self._is_bot_match():
+            opponent = bot_user
+        else:
+            opponent = guild.get_member(self.opponent_id)
+        return challenger, opponent
+
+    def build_embed(self, guild: discord.Guild, bot_user: discord.ClientUser | None):
+        challenger, opponent = self._get_participants(guild, bot_user)
+        return build_seotda_progress_embed(
+            challenger,
+            opponent,
+            self.challenger_cards,
+            self.opponent_cards,
+            self.amount,
+            self.pot_amount,
+            self.challenger_action,
+            self.opponent_action,
+        )
+
+    def _bot_should_bet(self) -> bool:
+        first_card_month = self.opponent_cards[0][0]
+        first_card_kwang = self.opponent_cards[0][1]
+        weights = 55
+        if first_card_kwang:
+            weights += 20
+        if first_card_month in {1, 3, 8, 9, 10}:
+            weights += 10
+        return random.randint(1, 100) <= min(weights, 90)
+
+    def _apply_additional_bet(self, user_id: int | None) -> str:
+        if user_id is None:
+            self.pot_amount += self.amount
+            return "bet"
+
+        current_balance = get_balance(user_id)
+        additional_amount = min(current_balance, self.amount)
+        if additional_amount > 0:
+            add_balance(user_id, -additional_amount)
+            self.pot_amount += additional_amount
+
+        return "bet" if additional_amount >= self.amount else "allin"
+
+    async def _resolve_round(self, interaction: discord.Interaction):
+        self.resolved = True
+        challenger, opponent = self._get_participants(interaction.guild, interaction.client.user)
+        result_view: SeotdaResultView
+
+        if self.challenger_action == "die" and self.opponent_action == "die":
+            add_balance(self.challenger_id, self.amount)
+            if not self._is_bot_match():
+                add_balance(self.opponent_id, self.amount)
+
+            embed = discord.Embed(
+                title="🃏 섯다 결과",
+                description="두 사람이 모두 다이를 선택해 무승부가 되었습니다.\n처음 건 금액은 각각 반환되었습니다.",
+                color=0x95A5A6,
+            )
+            embed.add_field(name="판돈", value=f"`{format_money(self.pot_amount)}`", inline=False)
+            add_game_history(interaction.guild.id, "섯다", f"{challenger.display_name} vs {opponent.display_name if opponent else '봇'} / 양쪽 다이 무승부")
+            result_view = SeotdaResultView(self.guild_id, self.challenger_id, self.opponent_id, None, None)
+            await interaction.response.edit_message(embed=embed, view=result_view)
+            return
+
+        if self.challenger_action == "die" and self.opponent_action == "bet":
+            if self._is_bot_match():
+                winner_id = None
+            else:
+                add_balance(self.opponent_id, self.pot_amount)
+                winner_id = self.opponent_id
+
+            embed = discord.Embed(
+                title="🃏 섯다 결과",
+                description=f"{challenger.mention}님이 다이를 선택했습니다.\n{opponent.mention if opponent else '봇'} 승리!",
+                color=0x3498DB,
+            )
+            embed.add_field(name="판돈", value=f"`{format_money(self.pot_amount)}`", inline=False)
+            add_game_history(interaction.guild.id, "섯다", f"{challenger.display_name} vs {opponent.display_name if opponent else '봇'} / 다이 패배")
+            next_amount = self.pot_amount if winner_id is not None else None
+            result_view = SeotdaResultView(self.guild_id, self.challenger_id, self.opponent_id, next_amount, winner_id)
+            await interaction.response.edit_message(embed=embed, view=result_view)
+            return
+
+        if self.challenger_action == "bet" and self.opponent_action == "die":
+            add_balance(self.challenger_id, self.pot_amount)
+            embed = discord.Embed(
+                title="🃏 섯다 결과",
+                description=f"{opponent.mention if opponent else '봇'}이 다이를 선택했습니다.\n{challenger.mention}님 승리!",
+                color=0x2ECC71,
+            )
+            embed.add_field(name="판돈", value=f"`{format_money(self.pot_amount)}`", inline=False)
+            add_game_history(interaction.guild.id, "섯다", f"{challenger.display_name} vs {opponent.display_name if opponent else '봇'} / 다이 승리")
+            result_view = SeotdaResultView(self.guild_id, self.challenger_id, self.opponent_id, self.pot_amount, self.challenger_id)
+            await interaction.response.edit_message(embed=embed, view=result_view)
+            return
+
+        challenger_result = evaluate_seotda_hand(self.challenger_cards)
+        opponent_result = evaluate_seotda_hand(self.opponent_cards)
+
+        if challenger_result["score"] > opponent_result["score"]:
+            add_balance(self.challenger_id, self.pot_amount)
+            result_text = f"{challenger.mention}님 승리!\n`{format_money(self.pot_amount)}`을 획득했습니다."
+            color = 0x2ECC71
+            history_text = f"{challenger.display_name} vs {opponent.display_name if opponent else '봇'} / {challenger_result['name']} 승리"
+            winner_id = self.challenger_id
+        elif challenger_result["score"] < opponent_result["score"]:
+            if self._is_bot_match():
+                winner_id = None
+            else:
+                add_balance(self.opponent_id, self.pot_amount)
+                winner_id = self.opponent_id
+            result_text = f"{opponent.mention if opponent else '봇'} 승리!\n`{format_money(self.pot_amount)}`을 획득했습니다."
+            color = 0x3498DB
+            history_text = f"{challenger.display_name} vs {opponent.display_name if opponent else '봇'} / {opponent_result['name']} 승리"
+        else:
+            add_balance(self.challenger_id, self.pot_amount // 2)
+            if not self._is_bot_match():
+                add_balance(self.opponent_id, self.pot_amount // 2)
+            result_text = "같은 족보가 나와 무승부입니다. 판돈은 반씩 반환되었습니다."
+            color = 0x95A5A6
+            history_text = f"{challenger.display_name} vs {opponent.display_name if opponent else '봇'} / 무승부 ({challenger_result['name']})"
+            winner_id = None
+
+        embed = build_seotda_result_embed(
+            challenger,
+            opponent,
+            self.challenger_cards,
+            self.opponent_cards,
+            challenger_result,
+            opponent_result,
+            self.pot_amount,
+            result_text,
+            color,
+        )
+        add_game_history(interaction.guild.id, "섯다", history_text)
+        next_amount = self.pot_amount if winner_id is not None else None
+        result_view = SeotdaResultView(self.guild_id, self.challenger_id, self.opponent_id, next_amount, winner_id)
+        await interaction.response.edit_message(embed=embed, view=result_view)
+
+    async def _handle_choice(self, interaction: discord.Interaction, action: str):
+        if self.resolved:
+            await interaction.response.send_message("이미 결과가 확정된 판입니다.", ephemeral=True)
+            return
+
+        role_key = self._get_role_key(interaction.user.id)
+        if role_key is None:
+            await interaction.response.send_message("대결 당사자만 버튼을 누를 수 있습니다.", ephemeral=True)
+            return
+
+        if self._get_action(role_key) is not None:
+            await interaction.response.send_message("이미 선택을 완료했습니다.", ephemeral=True)
+            return
+
+        if action == "bet":
+            action = self._apply_additional_bet(interaction.user.id)
+
+        self._set_action(role_key, action)
+
+        if self._is_bot_match() and role_key == "challenger":
+            if action == "die":
+                self._set_action("opponent", "bet")
+            else:
+                bot_action = "bet" if self._bot_should_bet() else "die"
+                if bot_action == "bet":
+                    bot_action = self._apply_additional_bet(None)
+                self._set_action("opponent", bot_action)
+
+        if self.challenger_action is not None and self.opponent_action is not None:
+            await self._resolve_round(interaction)
+            return
+
+        embed = self.build_embed(interaction.guild, interaction.client.user)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="배팅", style=discord.ButtonStyle.success)
+    async def bet(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle_choice(interaction, "bet")
+
+    @discord.ui.button(label="다이", style=discord.ButtonStyle.danger)
+    async def die(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle_choice(interaction, "die")
+
+
 class SeotdaChallengeView(discord.ui.View):
     def __init__(self, challenger_id: int, opponent_id: int, amount: int):
         super().__init__(timeout=SEOTDA_TIMEOUT)
@@ -2542,60 +2878,9 @@ class SeotdaChallengeView(discord.ui.View):
         add_balance(challenger.id, -self.amount)
         add_balance(opponent.id, -self.amount)
 
-        drawn_cards = random.sample(create_seotda_deck(), 4)
-        challenger_cards = drawn_cards[:2]
-        opponent_cards = drawn_cards[2:]
-        challenger_result = evaluate_seotda_hand(challenger_cards)
-        opponent_result = evaluate_seotda_hand(opponent_cards)
-
-        if challenger_result["score"] > opponent_result["score"]:
-            add_balance(challenger.id, self.amount * 2)
-            result_text = (
-                f"{challenger.mention}님 승리!\n"
-                f"`{format_money(self.amount * 2)}`을 획득했습니다."
-            )
-            color = 0x2ECC71
-            history_text = (
-                f"{challenger.display_name} vs {opponent.display_name} / "
-                f"{challenger_result['name']} 승리"
-            )
-        elif challenger_result["score"] < opponent_result["score"]:
-            add_balance(opponent.id, self.amount * 2)
-            result_text = (
-                f"{opponent.mention}님 승리!\n"
-                f"`{format_money(self.amount * 2)}`을 획득했습니다."
-            )
-            color = 0x3498DB
-            history_text = (
-                f"{challenger.display_name} vs {opponent.display_name} / "
-                f"{opponent_result['name']} 승리"
-            )
-        else:
-            add_balance(challenger.id, self.amount)
-            add_balance(opponent.id, self.amount)
-            result_text = "무승부입니다. 두 사람 모두 배팅 금액을 반환받았습니다."
-            color = 0x95A5A6
-            history_text = (
-                f"{challenger.display_name} vs {opponent.display_name} / "
-                f"무승부 ({challenger_result['name']})"
-            )
-
-        for item in self.children:
-            item.disabled = True
-
-        embed = build_seotda_result_embed(
-            challenger,
-            opponent,
-            challenger_cards,
-            opponent_cards,
-            challenger_result,
-            opponent_result,
-            self.amount,
-            result_text,
-            color,
-        )
-        add_game_history(interaction.guild.id, "섯다", history_text)
-        await interaction.response.edit_message(embed=embed, view=self)
+        match_view = SeotdaMatchView(interaction.guild.id, self.challenger_id, self.opponent_id, self.amount)
+        embed = match_view.build_embed(interaction.guild, interaction.client.user)
+        await interaction.response.edit_message(embed=embed, view=match_view)
 
     @discord.ui.button(label="거절", style=discord.ButtonStyle.danger)
     async def decline(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -2614,7 +2899,7 @@ class SeotdaChallengeView(discord.ui.View):
         if challenger is not None and opponent is not None:
             embed.add_field(name="도전자", value=challenger.mention, inline=True)
             embed.add_field(name="상대", value=opponent.mention, inline=True)
-        embed.add_field(name="배팅 금액", value=f"`{format_money(self.amount)}`", inline=False)
+        embed.add_field(name="기본 배팅금", value=f"`{format_money(self.amount)}`", inline=False)
 
         for item in self.children:
             item.disabled = True
@@ -4725,7 +5010,8 @@ async def probability_table(interaction: discord.Interaction):
     embed.add_field(
         name="섯다",
         value=(
-            "일반 족보 기준 대결형 게임\n"
+            "첫 패 공개 후 배팅/다이 진행\n"
+            "두 사람 모두 배팅해야 두 번째 패 공개\n"
             "광땡 > 땡 > 알리 > 독사 > 구삥 > 장삥 > 장사 > 세륙 > 갑오 > 끗 > 망통"
         ),
         inline=False,
@@ -5200,46 +5486,10 @@ async def seotda(interaction: discord.Interaction, amount: int, member: discord.
             return
 
         add_balance(interaction.user.id, -amount)
-        drawn_cards = random.sample(create_seotda_deck(), 4)
-        user_cards = drawn_cards[:2]
-        bot_cards = drawn_cards[2:]
-        user_result = evaluate_seotda_hand(user_cards)
-        bot_result = evaluate_seotda_hand(bot_cards)
-
-        if user_result["score"] > bot_result["score"]:
-            payout = amount * 2
-            add_balance(interaction.user.id, payout)
-            result_text = (
-                f"{interaction.user.mention}님 승리!\n"
-                f"`{format_money(payout)}`을 획득했습니다."
-            )
-            color = 0x2ECC71
-            history_text = f"{interaction.user.display_name} vs 봇 / {user_result['name']} 승리"
-        elif user_result["score"] < bot_result["score"]:
-            result_text = "봇 승리! 배팅 금액을 잃었습니다."
-            color = 0xE74C3C
-            history_text = f"{interaction.user.display_name} vs 봇 / 봇 {bot_result['name']} 승리"
-        else:
-            add_balance(interaction.user.id, amount)
-            result_text = "무승부입니다. 배팅 금액을 반환받았습니다."
-            color = 0x95A5A6
-            history_text = f"{interaction.user.display_name} vs 봇 / 무승부 ({user_result['name']})"
-
-        bot_user = interaction.client.user
-        embed = build_seotda_result_embed(
-            interaction.user,
-            bot_user,
-            user_cards,
-            bot_cards,
-            user_result,
-            bot_result,
-            amount,
-            result_text,
-            color,
-        )
-        embed.add_field(name="현재 잔액", value=f"`{format_money(get_balance(interaction.user.id))}`", inline=False)
-        add_game_history(interaction.guild.id, "섯다", history_text)
-        await interaction.response.send_message(embed=embed)
+        match_view = SeotdaMatchView(interaction.guild.id, interaction.user.id, None, amount)
+        embed = match_view.build_embed(interaction.guild, interaction.client.user)
+        embed.add_field(name="상대", value="봇", inline=False)
+        await interaction.response.send_message(embed=embed, view=match_view)
         return
 
     if member.bot:
@@ -5257,10 +5507,14 @@ async def seotda(interaction: discord.Interaction, amount: int, member: discord.
     )
     embed.add_field(name="도전자", value=interaction.user.mention, inline=True)
     embed.add_field(name="상대", value=member.mention, inline=True)
-    embed.add_field(name="배팅 금액", value=f"`{format_money(amount)}`", inline=False)
+    embed.add_field(name="기본 배팅금", value=f"`{format_money(amount)}`", inline=False)
     embed.add_field(
         name="룰",
-        value="수락 시 두 사람 모두 같은 금액을 걸고, 일반 섯다 족보로 즉시 승부합니다.",
+        value=(
+            "수락 시 두 사람 모두 같은 금액을 먼저 겁니다.\n"
+            "첫 패 공개 후 `배팅` 또는 `다이`를 선택합니다.\n"
+            "둘 다 배팅해야 다음 패를 공개하고 승부합니다."
+        ),
         inline=False,
     )
     embed.set_footer(text="상대방만 수락 또는 거절할 수 있습니다.")
