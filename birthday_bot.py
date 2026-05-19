@@ -17,18 +17,16 @@ from discord.ext import commands, tasks
 # 5. 재화 / 지급 헬퍼
 # 6. 대기방 / 닉네임 패널 헬퍼
 # 7. 신용 / 대출 / 적금 / 노동 헬퍼
-# 8. 무기 강화 헬퍼
-# 9. UI 뷰 / 모달
-# 10. 슬래시 명령어
+# 8. UI 뷰 / 모달
+# 9. 슬래시 명령어
 #    - 관리자 설정 명령어
 #    - 재화 / 적금 명령어
 #    - 게임 명령어
 #    - 신용 / 대출 명령어
-#    - 무기 강화 명령어
 #    - 관리자 신용 관리 명령어
-# 11. 디스코드 이벤트
-# 12. 백그라운드 작업
-# 13. 봇 시작 설정
+# 10. 디스코드 이벤트
+# 11. 백그라운드 작업
+# 12. 봇 시작 설정
 # ============================================================
 
 
@@ -110,112 +108,6 @@ DUCKMONG_FAKE_NAMES = [
     "연예인",
     "한탕주의자",
 ]
-
-WEAPON_LEVEL_NAMES = {
-    1: "프라이팬",
-    2: "곡괭이",
-    3: "소드오프",
-    4: "S686",
-    5: "S12K",
-    6: "UZI",
-    7: "Vector",
-    8: "MP5K",
-    9: "K2",
-    10: "SCAR-L",
-    11: "SLR",
-    12: "ACE32",
-    13: "MK12",
-    14: "Beryl M762",
-    15: "M416",
-    16: "AUG",
-    17: "M24",
-    18: "MK14",
-    19: "P90",
-    20: "AWM",
-    21: "링스",
-}
-
-WEAPON_UPGRADE_COSTS = {
-    1: 10000,
-    2: 18000,
-    3: 28000,
-    4: 40000,
-    5: 55000,
-    6: 75000,
-    7: 100000,
-    8: 130000,
-    9: 170000,
-    10: 220000,
-    11: 290000,
-    12: 380000,
-    13: 500000,
-    14: 650000,
-    15: 850000,
-    16: 1100000,
-    17: 1420000,
-    18: 1820000,
-    19: 2320000,
-    20: 2950000,
-}
-
-WEAPON_SELL_PRICES = {
-    1: 0,
-    2: 7000,
-    3: 16000,
-    4: 28000,
-    5: 42000,
-    6: 60000,
-    7: 85000,
-    8: 125000,
-    9: 180000,
-    10: 255000,
-    11: 360000,
-    12: 1500000,
-    13: 2200000,
-    14: 3100000,
-    15: 4300000,
-    16: 5800000,
-    17: 7700000,
-    18: 10200000,
-    19: 13400000,
-    20: 17500000,
-    21: 22800000,
-}
-
-WEAPON_UPGRADE_RATES = {
-    1: {"success": 100, "down": 0, "destroy": 0, "keep": 0},
-    2: {"success": 95, "down": 0, "destroy": 0, "keep": 5},
-    3: {"success": 90, "down": 0, "destroy": 0, "keep": 10},
-    4: {"success": 85, "down": 5, "destroy": 0, "keep": 10},
-    5: {"success": 80, "down": 8, "destroy": 0, "keep": 12},
-    6: {"success": 75, "down": 10, "destroy": 3, "keep": 12},
-    7: {"success": 70, "down": 13, "destroy": 5, "keep": 12},
-    8: {"success": 65, "down": 15, "destroy": 8, "keep": 12},
-    9: {"success": 60, "down": 18, "destroy": 10, "keep": 12},
-    10: {"success": 55, "down": 20, "destroy": 13, "keep": 12},
-    11: {"success": 50, "down": 23, "destroy": 15, "keep": 12},
-    12: {"success": 45, "down": 25, "destroy": 18, "keep": 12},
-    13: {"success": 40, "down": 28, "destroy": 20, "keep": 12},
-    14: {"success": 35, "down": 30, "destroy": 23, "keep": 12},
-    15: {"success": 30, "down": 33, "destroy": 25, "keep": 12},
-    16: {"success": 26, "down": 35, "destroy": 27, "keep": 12},
-    17: {"success": 22, "down": 38, "destroy": 28, "keep": 12},
-    18: {"success": 18, "down": 40, "destroy": 30, "keep": 12},
-    19: {"success": 14, "down": 42, "destroy": 32, "keep": 12},
-    20: {"success": 10, "down": 45, "destroy": 33, "keep": 12},
-}
-
-PROTECTION_TIER_PRICES = {
-    "low": 100000,    # 1강~7강
-    "mid": 400000,    # 8강~14강
-    "high": 1200000,  # 15강~21강
-}
-
-PROTECTION_TIER_LABELS = {
-    "low": "저강 보호권",
-    "mid": "중강 보호권",
-    "high": "고강 보호권",
-}
 
 TIME_SLOT_CHOICES = ["morning", "afternoon", "evening", "night", "dawn"]
 TIME_SLOT_LABELS = {
@@ -467,36 +359,6 @@ credit_profile_columns = [row[1] for row in cursor.fetchall()]
 if "blacklisted_at" not in credit_profile_columns:
     cursor.execute("ALTER TABLE credit_profiles ADD COLUMN blacklisted_at TEXT")
     conn.commit()
-
-cursor.execute(
-    """
-    CREATE TABLE IF NOT EXISTS weapon_inventory(
-        guild_id TEXT NOT NULL,
-        user_id TEXT NOT NULL,
-        weapon_level INTEGER NOT NULL DEFAULT 0,
-        low_protection_count INTEGER NOT NULL DEFAULT 0,
-        mid_protection_count INTEGER NOT NULL DEFAULT 0,
-        high_protection_count INTEGER NOT NULL DEFAULT 0,
-        total_upgrade_spent INTEGER NOT NULL DEFAULT 0,
-        total_protection_spent INTEGER NOT NULL DEFAULT 0,
-        PRIMARY KEY (guild_id, user_id)
-    )
-    """
-)
-
-cursor.execute("PRAGMA table_info(weapon_inventory)")
-weapon_columns = [row[1] for row in cursor.fetchall()]
-
-if "low_protection_count" not in weapon_columns:
-    cursor.execute("ALTER TABLE weapon_inventory ADD COLUMN low_protection_count INTEGER NOT NULL DEFAULT 0")
-if "mid_protection_count" not in weapon_columns:
-    cursor.execute("ALTER TABLE weapon_inventory ADD COLUMN mid_protection_count INTEGER NOT NULL DEFAULT 0")
-if "high_protection_count" not in weapon_columns:
-    cursor.execute("ALTER TABLE weapon_inventory ADD COLUMN high_protection_count INTEGER NOT NULL DEFAULT 0")
-if "total_upgrade_spent" not in weapon_columns:
-    cursor.execute("ALTER TABLE weapon_inventory ADD COLUMN total_upgrade_spent INTEGER NOT NULL DEFAULT 0")
-if "total_protection_spent" not in weapon_columns:
-    cursor.execute("ALTER TABLE weapon_inventory ADD COLUMN total_protection_spent INTEGER NOT NULL DEFAULT 0")
 
 conn.commit()
 
@@ -1369,324 +1231,6 @@ def build_labor_embed(member: discord.Member, penalty: dict) -> discord.Embed:
         inline=False,
     )
     return embed
-
-# ============================================================
-# 무기 강화 헬퍼
-# ============================================================
-
-def ensure_weapon_inventory(guild_id: int, user_id: int):
-    cursor.execute(
-        """
-        INSERT OR IGNORE INTO weapon_inventory(
-            guild_id, user_id, weapon_level,
-            low_protection_count, mid_protection_count, high_protection_count,
-            total_upgrade_spent, total_protection_spent
-        )
-        VALUES (?, ?, 0, 0, 0, 0, 0, 0)
-        """,
-        (str(guild_id), str(user_id)),
-    )
-    conn.commit()
-
-
-
-def get_weapon_inventory(guild_id: int, user_id: int):
-    ensure_weapon_inventory(guild_id, user_id)
-    cursor.execute(
-        """
-        SELECT
-            weapon_level,
-            low_protection_count,
-            mid_protection_count,
-            high_protection_count,
-            total_upgrade_spent,
-            total_protection_spent
-        FROM weapon_inventory
-        WHERE guild_id=? AND user_id=?
-        """,
-        (str(guild_id), str(user_id)),
-    )
-    row = cursor.fetchone()
-    if not row:
-        return {
-            "weapon_level": 0,
-            "low_protection_count": 0,
-            "mid_protection_count": 0,
-            "high_protection_count": 0,
-            "total_upgrade_spent": 0,
-            "total_protection_spent": 0,
-        }
-
-    return {
-        "weapon_level": int(row[0]),
-        "low_protection_count": int(row[1]),
-        "mid_protection_count": int(row[2]),
-        "high_protection_count": int(row[3]),
-        "total_upgrade_spent": int(row[4]),
-        "total_protection_spent": int(row[5]),
-    }
-
-
-def add_upgrade_spent(guild_id: int, user_id: int, amount: int):
-    ensure_weapon_inventory(guild_id, user_id)
-    cursor.execute(
-        """
-        UPDATE weapon_inventory
-        SET total_upgrade_spent=total_upgrade_spent+?
-        WHERE guild_id=? AND user_id=?
-        """,
-        (amount, str(guild_id), str(user_id)),
-    )
-    conn.commit()
-
-
-def add_protection_spent(guild_id: int, user_id: int, amount: int):
-    ensure_weapon_inventory(guild_id, user_id)
-    cursor.execute(
-        """
-        UPDATE weapon_inventory
-        SET total_protection_spent=total_protection_spent+?
-        WHERE guild_id=? AND user_id=?
-        """,
-        (amount, str(guild_id), str(user_id)),
-    )
-    conn.commit()
-
-
-def set_weapon_level(guild_id: int, user_id: int, level: int):
-    ensure_weapon_inventory(guild_id, user_id)
-    cursor.execute(
-        """
-        UPDATE weapon_inventory
-        SET weapon_level=?
-        WHERE guild_id=? AND user_id=?
-        """,
-        (level, str(guild_id), str(user_id)),
-    )
-    conn.commit()
-
-def reset_weapon_progress(guild_id: int, user_id: int):
-    ensure_weapon_inventory(guild_id, user_id)
-    cursor.execute(
-        """
-        UPDATE weapon_inventory
-        SET weapon_level=0,
-            total_upgrade_spent=0,
-            total_protection_spent=0
-        WHERE guild_id=? AND user_id=?
-        """,
-        (str(guild_id), str(user_id)),
-    )
-    conn.commit()
-
-
-def get_protection_tier(level: int) -> str:
-    if 1 <= level <= 7:
-        return "low"
-    if 8 <= level <= 14:
-        return "mid"
-    return "high"
-
-
-def get_protection_purchase_level(tier: str) -> int:
-    if tier == "low":
-        return 1
-    if tier == "mid":
-        return 8
-    return 15
-
-
-def get_protection_cost_by_tier(tier: str) -> int:
-    return PROTECTION_TIER_PRICES[tier]
-
-def add_protection_count(guild_id: int, user_id: int, tier: str, amount: int):
-    ensure_weapon_inventory(guild_id, user_id)
-    column = {
-        "low": "low_protection_count",
-        "mid": "mid_protection_count",
-        "high": "high_protection_count",
-    }[tier]
-    cursor.execute(
-        f"""
-        UPDATE weapon_inventory
-        SET {column}={column}+?
-        WHERE guild_id=? AND user_id=?
-        """,
-        (amount, str(guild_id), str(user_id)),
-    )
-    conn.commit()
-
-
-def consume_protection_count(guild_id: int, user_id: int, tier: str, amount: int = 1):
-    ensure_weapon_inventory(guild_id, user_id)
-    column = {
-        "low": "low_protection_count",
-        "mid": "mid_protection_count",
-        "high": "high_protection_count",
-    }[tier]
-    cursor.execute(
-        f"""
-        UPDATE weapon_inventory
-        SET {column}=MAX({column}-?, 0)
-        WHERE guild_id=? AND user_id=?
-        """,
-        (amount, str(guild_id), str(user_id)),
-    )
-    conn.commit()
-
-
-def get_protection_count_for_level(inventory: dict, level: int) -> int:
-    tier = get_protection_tier(level)
-    if tier == "low":
-        return inventory["low_protection_count"]
-    if tier == "mid":
-        return inventory["mid_protection_count"]
-    return inventory["high_protection_count"]
-
-
-
-def ensure_base_weapon(guild_id: int, user_id: int):
-    inventory = get_weapon_inventory(guild_id, user_id)
-    if inventory["weapon_level"] <= 0:
-        set_weapon_level(guild_id, user_id, 1)
-
-
-def get_weapon_name(level: int) -> str:
-    return WEAPON_LEVEL_NAMES.get(level, "알 수 없는 무기")
-
-
-def get_upgrade_cost(level: int) -> int | None:
-    return WEAPON_UPGRADE_COSTS.get(level)
-
-
-def get_weapon_sell_price(level: int) -> int:
-    return WEAPON_SELL_PRICES.get(level, 0)
-
-
-def roll_upgrade_result(level: int) -> str:
-    rates = WEAPON_UPGRADE_RATES[level]
-    return random.choices(
-        ["success", "down", "destroy", "keep"],
-        weights=[rates["success"], rates["down"], rates["destroy"], rates["keep"]],
-        k=1,
-    )[0]
-
-def build_upgrade_embed(guild_id: int, user_id: int) -> discord.Embed:
-    ensure_base_weapon(guild_id, user_id)
-    inventory = get_weapon_inventory(guild_id, user_id)
-
-    current_level = inventory["weapon_level"]
-    current_name = get_weapon_name(current_level)
-    current_sell_price = get_weapon_sell_price(current_level)
-    balance = get_balance(user_id)
-
-    low_count = inventory["low_protection_count"]
-    mid_count = inventory["mid_protection_count"]
-    high_count = inventory["high_protection_count"]
-
-    total_upgrade_spent = inventory["total_upgrade_spent"]
-    total_protection_spent = inventory["total_protection_spent"]
-    total_invested = total_upgrade_spent + total_protection_spent
-
-    embed = discord.Embed(
-        title="🔧 무기 강화",
-        description="강화할 무기 정보를 확인하고 아래 버튼으로 진행해주세요.",
-        color=0x5865F2,
-    )
-
-    embed.add_field(
-        name="현재 무기",
-        value=(
-            f"`{current_level}강 {current_name}`\n"
-            f"판매 가격 `{format_money(current_sell_price)}`"
-        ),
-        inline=False,
-    )
-
-    embed.add_field(
-        name="누적 투자",
-        value=(
-            f"강화 투자: `{format_money(total_upgrade_spent)}`\n"
-            f"보호권 투자: `{format_money(total_protection_spent)}`\n"
-            f"총 투자: `{format_money(total_invested)}`"
-        ),
-        inline=False,
-    )
-
-    embed.add_field(
-        name="보유 보호권",
-        value=(
-            f"저강: `{low_count}개`\n"
-            f"중강: `{mid_count}개`\n"
-            f"고강: `{high_count}개`"
-        ),
-        inline=True,
-    )
-
-    embed.add_field(
-        name="현재 잔액",
-        value=f"`{format_money(balance)}`",
-        inline=True,
-    )
-
-    if current_level >= 21:
-        embed.add_field(
-            name="강화 상태",
-            value="최대 강화 단계입니다.",
-            inline=False,
-        )
-        return embed
-
-    next_level = current_level + 1
-    next_name = get_weapon_name(next_level)
-    upgrade_cost = get_upgrade_cost(current_level)
-    rates = WEAPON_UPGRADE_RATES[current_level]
-
-    tier = get_protection_tier(current_level)
-    protection_label = PROTECTION_TIER_LABELS[tier]
-    protection_cost = get_protection_cost_by_tier(tier)
-    purchase_level = get_protection_purchase_level(tier)
-
-    embed.add_field(
-        name="다음 무기",
-        value=f"`{next_level}강 {next_name}`",
-        inline=False,
-    )
-
-    embed.add_field(
-        name="비용 정보",
-        value=(
-            f"강화 비용: `{format_money(upgrade_cost)}`\n"
-            f"{protection_label}: `{format_money(protection_cost)}`"
-        ),
-        inline=True,
-    )
-
-    embed.add_field(
-        name="강화 확률",
-        value=(
-            f"성공: `{rates['success']}%`\n"
-            f"하락: `{rates['down']}%`\n"
-            f"파괴: `{rates['destroy']}%`\n"
-            f"유지: `{rates['keep']}%`"
-        ),
-        inline=True,
-    )
-
-    embed.add_field(
-        name="보호권 안내",
-        value=(
-            f"현재 구간: `{protection_label}`\n"
-            f"구매 가능 시작 단계: `{purchase_level}강`\n"
-            "보호권은 강화 성공을 보장하지 않으며\n"
-            "실패 시 하락 또는 파괴만 자동 방지합니다."
-        ),
-        inline=False,
-    )
-
-    return embed
-
-
 
 def add_scrim_signup(message_id: int, user_id: int):
     cursor.execute(
@@ -2860,175 +2404,6 @@ class WelcomeDmModal(discord.ui.Modal, title="환영 DM 설정"):
         set_template(interaction.guild.id, "welcome_dm", str(self.content).strip())
         await interaction.response.send_message("환영 DM 문구를 저장했습니다.", ephemeral=True)
 
-class ProtectionPurchaseModal(discord.ui.Modal, title="강화보호권 구매"):
-    quantity = discord.ui.TextInput(
-        label="구매 수량",
-        placeholder="예: 1",
-        required=True,
-        max_length=5,
-    )
-
-    def __init__(self, guild_id: int, user_id: int):
-        super().__init__()
-        self.guild_id = guild_id
-        self.user_id = user_id
-
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            quantity = int(str(self.quantity).strip())
-        except ValueError:
-            await interaction.response.send_message("구매 수량은 숫자로 입력해주세요.", ephemeral=True)
-            return
-
-        if quantity <= 0:
-            await interaction.response.send_message("구매 수량은 1 이상이어야 합니다.", ephemeral=True)
-            return
-
-        inventory = get_weapon_inventory(self.guild_id, self.user_id)
-        current_level = inventory["weapon_level"]
-
-        if current_level <= 0:
-            await interaction.response.send_message("보유 중인 무기가 없습니다.", ephemeral=True)
-            return
-
-        tier = get_protection_tier(current_level)
-        purchase_level = get_protection_purchase_level(tier)
-
-        if current_level != purchase_level:
-            await interaction.response.send_message(
-                f"보호권은 `{purchase_level}강`일 때만 구매할 수 있습니다.",
-                ephemeral=True,
-            )
-            return
-
-        protection_cost = get_protection_cost_by_tier(tier)
-        total_cost = protection_cost * quantity
-
-        if not can_afford(self.user_id, total_cost):
-            await interaction.response.send_message(
-                f"보호권 구매 비용 `{format_money(total_cost)}`이 부족합니다.",
-                ephemeral=True,
-            )
-            return
-
-        add_balance(self.user_id, -total_cost)
-        add_protection_spent(self.guild_id, self.user_id, total_cost)
-        add_protection_count(self.guild_id, self.user_id, tier, quantity)
-
-
-        embed = build_upgrade_embed(self.guild_id, self.user_id)
-        view = WeaponUpgradeView(self.guild_id, self.user_id)
-
-        await interaction.response.edit_message(embed=embed, view=view)
-
-
-class WeaponUpgradeButton(discord.ui.Button):
-    def __init__(self):
-        super().__init__(label="강화", style=discord.ButtonStyle.success)
-
-    async def callback(self, interaction: discord.Interaction):
-        view = self.view
-        if interaction.user.id != view.user_id:
-            await interaction.response.send_message("이 버튼은 명령어를 사용한 본인만 누를 수 있습니다.", ephemeral=True)
-            return
-
-        inventory = get_weapon_inventory(view.guild_id, view.user_id)
-        current_level = inventory["weapon_level"]
-
-        if current_level <= 0:
-            ensure_base_weapon(view.guild_id, view.user_id)
-            inventory = get_weapon_inventory(view.guild_id, view.user_id)
-            current_level = inventory["weapon_level"]
-
-        current_tier = get_protection_tier(current_level)
-        protection_count = get_protection_count_for_level(inventory, current_level)
-
-
-        if current_level >= 21:
-            await interaction.response.send_message("이미 최대 강화 단계입니다.", ephemeral=True)
-            return
-
-        upgrade_cost = get_upgrade_cost(current_level)
-        if upgrade_cost is None:
-            await interaction.response.send_message("강화 비용 정보를 찾을 수 없습니다.", ephemeral=True)
-            return
-
-        if not can_afford(view.user_id, upgrade_cost):
-            await interaction.response.send_message(
-                f"강화 비용 `{format_money(upgrade_cost)}`이 부족합니다.",
-                ephemeral=True,
-            )
-            return
-
-        add_balance(view.user_id, -upgrade_cost)
-        add_upgrade_spent(view.guild_id, view.user_id, upgrade_cost)
-
-
-        before_name = get_weapon_name(current_level)
-        target_level = current_level + 1
-        target_name = get_weapon_name(target_level)
-
-        result = roll_upgrade_result(current_level)
-        used_protection = False
-        message_text = ""
-        color = 0x5865F2
-
-        if result == "success":
-            set_weapon_level(view.guild_id, view.user_id, target_level)
-            message_text = f"강화 성공! `{current_level}강 {before_name}` -> `{target_level}강 {target_name}`"
-            color = 0x2ECC71
-        elif result == "down":
-            if protection_count > 0:
-                consume_protection_count(view.guild_id, view.user_id, current_tier, 1)
-                used_protection = True
-                message_text = f"강화 실패! 보호권이 자동 사용되어 하락을 방지했습니다. 현재 무기: `{current_level}강 {before_name}`"
-                color = 0x3498DB
-            else:
-                new_level = max(1, current_level - 1)
-                set_weapon_level(view.guild_id, view.user_id, new_level)
-                message_text = f"강화 실패! 단계가 하락했습니다. `{current_level}강 {before_name}` -> `{new_level}강 {get_weapon_name(new_level)}`"
-                color = 0xE67E22
-        elif result == "destroy":
-            if protection_count > 0:
-                consume_protection_count(view.guild_id, view.user_id, current_tier, 1)
-                used_protection = True
-                message_text = f"강화 실패! 보호권이 자동 사용되어 파괴를 방지했습니다. 현재 무기: `{current_level}강 {before_name}`"
-                color = 0x3498DB
-            else:
-                reset_weapon_progress(view.guild_id, view.user_id)
-                message_text = f"강화 실패! `{current_level}강 {before_name}` 무기가 파괴되었습니다."
-                color = 0xE74C3C
-        else:
-            message_text = f"강화 실패! 단계가 유지되었습니다. 현재 무기: `{current_level}강 {before_name}`"
-            color = 0x95A5A6
-
-        add_game_history(
-            interaction.guild.id,
-            "강화",
-            f"{interaction.user.display_name} - {current_level}강 {before_name} / 결과:{result}{' / 보호권 사용' if used_protection else ''}"
-        )
-
-        embed = build_upgrade_embed(view.guild_id, view.user_id)
-        embed.title = "🔧 무기 강화 결과"
-        embed.color = color
-        embed.description = message_text
-
-        await interaction.response.edit_message(embed=embed, view=WeaponUpgradeView(view.guild_id, view.user_id))
-
-
-class ProtectionPurchaseButton(discord.ui.Button):
-    def __init__(self):
-        super().__init__(label="보호권 구매", style=discord.ButtonStyle.primary)
-
-    async def callback(self, interaction: discord.Interaction):
-        view = self.view
-        if interaction.user.id != view.user_id:
-            await interaction.response.send_message("이 버튼은 명령어를 사용한 본인만 누를 수 있습니다.", ephemeral=True)
-            return
-
-        await interaction.response.send_modal(ProtectionPurchaseModal(view.guild_id, view.user_id))
-
-
 class ScrimSignupView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -3109,16 +2484,6 @@ class ScrimNoticeModal(discord.ui.Modal, title="내전 공지 작성"):
         await interaction.channel.send(embed=embed, view=ScrimSignupView())
         await interaction.response.send_message("내전 공지를 등록했습니다.", ephemeral=True)
 
-
-
-class WeaponUpgradeView(discord.ui.View):
-    def __init__(self, guild_id: int, user_id: int):
-        super().__init__(timeout=180)
-        self.guild_id = guild_id
-        self.user_id = user_id
-
-        self.add_item(WeaponUpgradeButton())
-        self.add_item(ProtectionPurchaseButton())
 
 
 class LaborWorkView(discord.ui.View):
@@ -3509,7 +2874,7 @@ async def sticky_message(interaction: discord.Interaction):
     await interaction.response.send_modal(StickyMessageModal())
 
 
-@bot.tree.command(name="고정해제", description="현재 채널의 고정 메시지를 해제합니다.")
+@bot.tree.command(name="고정메시지해제", description="현재 채널의 고정 메시지를 해제합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def sticky_clear(interaction: discord.Interaction):
     existing = get_sticky_message(interaction.guild.id, interaction.channel.id)
@@ -3528,7 +2893,7 @@ async def sticky_clear(interaction: discord.Interaction):
     await interaction.response.send_message("현재 채널의 고정메시지를 해제했습니다.", ephemeral=True)
 
 
-@bot.tree.command(name="고정확인", description="현재 채널의 고정 메시지 내용을 확인합니다.")
+@bot.tree.command(name="고정메시지확인", description="현재 채널의 고정 메시지 내용을 확인합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def sticky_check(interaction: discord.Interaction):
     existing = get_sticky_message(interaction.guild.id, interaction.channel.id)
@@ -3617,7 +2982,7 @@ async def time_panel(interaction: discord.Interaction):
 # 재화 / 적금 명령어
 # ----------------------------
 
-@bot.tree.command(name="생활지원금", description="하루에 한 번 생활지원금 10,000원을 받습니다.")
+@bot.tree.command(name="기초생활수급비", description="하루에 한 번 기초생활수급비 10,000원을 받습니다.")
 async def daily_money(interaction: discord.Interaction):
     today = get_kst_now().strftime("%Y-%m-%d")
     cursor.execute("SELECT last_claim_date FROM daily_claims WHERE user_id=?", (str(interaction.user.id),))
@@ -3635,7 +3000,7 @@ async def daily_money(interaction: discord.Interaction):
     conn.commit()
 
     await interaction.response.send_message(
-        f"오늘의 생활지원금 `{format_money(DAILY_REWARD)}`을 받았습니다.\n현재 잔액: `{format_money(get_balance(interaction.user.id))}`"
+        f"오늘의 기초생활수급비 `{format_money(DAILY_REWARD)}`을 받았습니다.\n현재 잔액: `{format_money(get_balance(interaction.user.id))}`"
     )
 
 
@@ -3726,7 +3091,7 @@ async def savings_claim(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="재산", description="서버 재산 상위 10명을 확인합니다.")
+@bot.tree.command(name="랭킹", description="서버 재산 상위 10명을 확인합니다.")
 async def ranking(interaction: discord.Interaction):
     cursor.execute("SELECT user_id, balance FROM balances ORDER BY balance DESC, user_id ASC LIMIT 10")
     rows = cursor.fetchall()
@@ -4187,7 +3552,7 @@ async def create_nickname_panel(
         prefix_list,
     )
 
-@bot.tree.command(name="배당표", description="현재 게임들의 확률과 배당을 확인합니다.")
+@bot.tree.command(name="확률표", description="현재 게임들의 확률과 배당을 확인합니다.")
 async def probability_table(interaction: discord.Interaction):
     embed = discord.Embed(title="🎰 게임 배당표", color=0x3498DB)
 
@@ -4253,7 +3618,7 @@ async def probability_table(interaction: discord.Interaction):
         name="덕몽",
         value=(
             "오리 33.33% / 2배 회수\n"
-            "너리콘 33.33% / 원금 반환\n"
+            "팰리컨 33.33% / 원금 반환\n"
             "거위 33.33% / 전부 잃음"
         ),
         inline=False,
@@ -4263,10 +3628,10 @@ async def probability_table(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="전적", description="최근 게임 결과를 확인합니다.")
+@bot.tree.command(name="족보", description="최근 게임 결과를 확인합니다.")
 async def game_history_command(interaction: discord.Interaction):
     embed = discord.Embed(
-        title="📜 전적",
+        title="📜 족보",
         description="확인할 게임을 선택해주세요.",
         color=0x5865F2,
     )
@@ -4343,7 +3708,7 @@ async def money_grant_history(interaction: discord.Interaction, member: discord.
 # 신용 / 대출 명령어
 # ----------------------------
 
-@bot.tree.command(name="대출", description="현재 신용등급 기준으로 대출을 받습니다.")
+@bot.tree.command(name="일수", description="현재 신용등급 기준으로 대출을 받습니다.")
 @app_commands.rename(amount="금액")
 async def loan_money(interaction: discord.Interaction, amount: int):
     if interaction.guild is None:
@@ -4602,156 +3967,12 @@ async def duckmong(interaction: discord.Interaction, amount: int):
         view=DuckmongView(interaction.user.id, amount, fake_names, hidden_results),
     )
 
-# ----------------------------
-# 무기 강화 명령어
-# ----------------------------
-
-@bot.tree.command(name="강화", description="현재 무기와 강화 정보를 확인하고 강화 버튼을 사용할 수 있습니다.")
-async def upgrade_weapon(interaction: discord.Interaction):
-    if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
-        return
-
-    ensure_base_weapon(interaction.guild.id, interaction.user.id)
-
-    embed = build_upgrade_embed(interaction.guild.id, interaction.user.id)
-    view = WeaponUpgradeView(interaction.guild.id, interaction.user.id)
-
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-
-
-@bot.tree.command(name="무기판매", description="현재 보유 중인 무기를 판매합니다.")
-async def sell_weapon(interaction: discord.Interaction):
-    if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
-        return
-
-    inventory = get_weapon_inventory(interaction.guild.id, interaction.user.id)
-    current_level = inventory["weapon_level"]
-
-    if current_level <= 0:
-        await interaction.response.send_message("판매할 무기가 없습니다.", ephemeral=True)
-        return
-
-    weapon_name = get_weapon_name(current_level)
-    sell_price = get_weapon_sell_price(current_level)
-
-    add_balance(interaction.user.id, sell_price)
-    reset_weapon_progress(interaction.guild.id, interaction.user.id)
-
-    embed = discord.Embed(title="🛒 무기 판매 완료", color=0x2ECC71)
-    embed.add_field(name="판매 무기", value=f"{current_level}강 {weapon_name}", inline=False)
-    embed.add_field(name="판매 금액", value=format_money(sell_price), inline=False)
-    embed.add_field(name="현재 잔액", value=format_money(get_balance(interaction.user.id)), inline=False)
-
-    await interaction.response.send_message(embed=embed)
-
-@bot.tree.command(name="강화현황", description="현재 보유 중인 무기와 보호권 현황을 확인합니다.")
-async def weapon_status(interaction: discord.Interaction):
-    if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
-        return
-
-    inventory = get_weapon_inventory(interaction.guild.id, interaction.user.id)
-    current_level = inventory["weapon_level"]
-
-    total_upgrade_spent = inventory["total_upgrade_spent"]
-    total_protection_spent = inventory["total_protection_spent"]
-    total_invested = total_upgrade_spent + total_protection_spent
-
-    embed = discord.Embed(title="🔧 강화 현황", color=0x5865F2)
-
-    if current_level <= 0:
-        embed.add_field(name="현재 무기", value="없음", inline=False)
-        embed.add_field(name="안내", value="`/강화`를 사용하면 1강 프라이팬부터 자동 지급됩니다.", inline=False)
-    else:
-        embed.add_field(name="현재 무기", value=f"{current_level}강 {get_weapon_name(current_level)}", inline=False)
-        embed.add_field(name="판매 가격", value=format_money(get_weapon_sell_price(current_level)), inline=False)
-
-        if current_level < 21:
-            embed.add_field(name="다음 강화 비용", value=format_money(get_upgrade_cost(current_level)), inline=False)
-        else:
-            embed.add_field(name="강화 상태", value="최대 강화 단계", inline=False)
-
-    embed.add_field(
-        name="보유 보호권",
-        value=(
-            f"저강 보호권 `{inventory['low_protection_count']}개`\n"
-            f"중강 보호권 `{inventory['mid_protection_count']}개`\n"
-            f"고강 보호권 `{inventory['high_protection_count']}개`"
-        ),
-        inline=False,
-    )
-
-    embed.add_field(
-        name="누적 투자",
-        value=(
-            f"강화 투자: `{format_money(total_upgrade_spent)}`\n"
-            f"보호권 투자: `{format_money(total_protection_spent)}`\n"
-            f"총 투자: `{format_money(total_invested)}`"
-        ),
-        inline=False,
-    )
-
-    embed.add_field(name="현재 잔액", value=format_money(get_balance(interaction.user.id)), inline=False)
-
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-
-@bot.tree.command(name="강화정보", description="1강부터 21강까지 강화 비용, 확률, 보호권 가격, 판매 가격을 확인합니다.")
-async def weapon_info_table(interaction: discord.Interaction):
-    ranges = [
-        (1, 7, "🔹 강화 정보표 (1강~7강)", 0x3498DB),
-        (8, 14, "🔹 강화 정보표 (8강~14강)", 0x5865F2),
-        (15, 21, "🔹 강화 정보표 (15강~21강)", 0x9B59B6),
-    ]
-
-    embeds = []
-
-    for start, end, title, color in ranges:
-        embed = discord.Embed(title=title, color=color)
-        lines = []
-
-        for level in range(start, end + 1):
-            weapon_name = get_weapon_name(level)
-            tier = get_protection_tier(level)
-            protection_cost = get_protection_cost_by_tier(tier)
-            sell_price = WEAPON_SELL_PRICES.get(level, 0)
-
-            if level <= 20:
-                cost = WEAPON_UPGRADE_COSTS.get(level)
-                rates = WEAPON_UPGRADE_RATES.get(level)
-
-                if cost is None or rates is None:
-                    continue
-
-                lines.append(
-                    f"**{level}강 {weapon_name}**\n"
-                    f"강화비용: `{format_money(cost)}`\n"
-                    f"성공 {rates['success']}% / 하락 {rates['down']}% / 파괴 {rates['destroy']}% / 유지 {rates['keep']}%\n"
-                    f"보호권 `{format_money(protection_cost)}`\n"
-                    f"판매가격 `{format_money(sell_price)}`"
-                )
-            else:
-                lines.append(
-                    f"**{level}강 {weapon_name}**\n"
-                    f"최대 강화 단계\n"
-                    f"보호권 `{format_money(protection_cost)}`\n"
-                    f"판매가격 `{format_money(sell_price)}`"
-                )
-
-        embed.description = "\n\n".join(lines)
-        embeds.append(embed)
-
-    await interaction.response.send_message(embeds=embeds, ephemeral=True)
-
-
 @bot.tree.command(name="도박명령어", description="도박 및 재화 시스템 관련 명령어를 확인합니다.")
 async def gambling_commands(interaction: discord.Interaction):
     embed = discord.Embed(
         title="🎲 도박 / 재화 시스템 명령어",
         description=(
-            "재화, 대출, 적금, 강화, 도박 명령어를 한 번에 확인할 수 있습니다.\n"
+            "재화, 대출, 적금, 도박 명령어를 한 번에 확인할 수 있습니다.\n"
             "신용불량자 상태에서는 일부 도박 명령어 사용이 제한됩니다."
         ),
         color=0xF1C40F,
@@ -4760,9 +3981,9 @@ async def gambling_commands(interaction: discord.Interaction):
     embed.add_field(
         name="재화 관리",
         value=(
-            "`/생활지원금` - 하루 1회 지원금 받기\n"
+            "`/기초생활수급비` - 하루 1회 지원금 받기\n"
             "`/잔액` - 현재 잔액 확인\n"
-            "`/재산` - 서버 재산 순위 확인\n"
+            "`/랭킹` - 서버 재산 순위 확인\n"
             "`/송금` - 다른 유저에게 돈 보내기"
         ),
         inline=False,
@@ -4781,7 +4002,7 @@ async def gambling_commands(interaction: discord.Interaction):
     embed.add_field(
         name="대출 / 신용",
         value=(
-            "`/대출 [금액]` - 현재 신용등급 기준 대출\n"
+            "`/일수 [금액]` - 현재 신용등급 기준 대출\n"
             "`/중도상환` - 현재 대출 전액 상환\n"
             "`/내신용` - 신용등급, 대출, 노동 현황 확인\n"
             "`/노동` - 신용불량자 노동 진행\n"
@@ -4804,21 +4025,10 @@ async def gambling_commands(interaction: discord.Interaction):
     )
 
     embed.add_field(
-        name="강화 시스템",
-        value=(
-            "`/강화` - 무기 강화 창 열기\n"
-            "`/강화현황` - 현재 무기, 보호권, 투자 확인\n"
-            "`/강화정보` - 단계별 비용과 확률 확인\n"
-            "`/무기판매` - 현재 무기 판매"
-        ),
-        inline=False,
-    )
-
-    embed.add_field(
         name="참고 정보",
         value=(
-            "`/배당표` - 게임 확률과 배당 확인\n"
-            "`/전적` - 최근 게임 결과 확인\n"
+            "`/확률표` - 게임 확률과 배당 확인\n"
+            "`/족보` - 최근 게임 결과 확인\n"
             "`/관리자명령어` - 관리자/일반 명령어 전체 목록"
         ),
         inline=False,
@@ -4860,7 +4070,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="🎛 메시지 / 패널 생성",
         value=(
             "`/규칙버튼`, `/등업패널`, `/시간설정패널`, `/문의패널`\n"
-            "`/고정메시지`, `/고정해제`, `/고정확인`, `/내전공지`"
+            "`/고정메시지`, `/고정메시지해제`, `/고정메시지확인`, `/내전공지`"
         ),
         inline=False,
     )
@@ -4903,8 +4113,8 @@ async def admin_commands_guide(interaction: discord.Interaction):
     general_embed.add_field(
         name="🏠 기본 / 정보",
         value=(
-            "`/생활지원금`, `/잔액`, `/재산`, `/송금`\n"
-            "`/도박명령어`, `/배당표`, `/전적`, `/관리자명령어`"
+            "`/기초생활수급비`, `/잔액`, `/랭킹`, `/송금`\n"
+            "`/도박명령어`, `/확률표`, `/족보`, `/관리자명령어`"
         ),
         inline=False,
     )
@@ -4912,7 +4122,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="🏦 적금 / 대출 / 신용",
         value=(
             "`/적금`, `/내적금`, `/적금수령`\n"
-            "`/대출`, `/중도상환`, `/내신용`, `/노동`, `/노동현황`"
+            "`/일수`, `/중도상환`, `/내신용`, `/노동`, `/노동현황`"
         ),
         inline=False,
     )
@@ -4920,7 +4130,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="🎮 도박 / 게임",
         value=(
             "`/슬롯`, `/동전`, `/룰렛`, `/보급`, `/덕몽`\n"
-            "`/몰빵참여`, `/강화`, `/무기판매`, `/강화현황`, `/강화정보`"
+            "`/몰빵참여`"
         ),
         inline=False,
     )
