@@ -2636,6 +2636,8 @@ class SeotdaMatchView(discord.ui.View):
         self.challenger_cards, self.opponent_cards = draw_seotda_hands()
         self.challenger_action: str | None = None
         self.opponent_action: str | None = None
+        self.challenger_bet_amount = 0
+        self.opponent_bet_amount = 0
         self.resolved = False
 
     def _is_bot_match(self) -> bool:
@@ -2681,25 +2683,52 @@ class SeotdaMatchView(discord.ui.View):
     def _bot_should_bet(self) -> bool:
         first_card_month = self.opponent_cards[0][0]
         first_card_kwang = self.opponent_cards[0][1]
-        weights = 55
         if first_card_kwang:
-            weights += 20
+            return True
         if first_card_month in {1, 3, 8, 9, 10}:
-            weights += 10
-        return random.randint(1, 100) <= min(weights, 90)
+            return random.randint(1, 100) <= 90
+        if first_card_month in {2, 4, 6, 7}:
+            return random.randint(1, 100) <= 75
+        return random.randint(1, 100) <= 65
 
-    def _apply_additional_bet(self, user_id: int | None) -> str:
+    def _apply_additional_bet(self, role_key: str, user_id: int | None) -> str:
         if user_id is None:
-            self.pot_amount += self.amount
-            return "bet"
+            additional_amount = self.amount
+        else:
+            current_balance = get_balance(user_id)
+            additional_amount = min(current_balance, self.amount)
+            if additional_amount > 0:
+                add_balance(user_id, -additional_amount)
 
-        current_balance = get_balance(user_id)
-        additional_amount = min(current_balance, self.amount)
-        if additional_amount > 0:
-            add_balance(user_id, -additional_amount)
-            self.pot_amount += additional_amount
+        if role_key == "challenger":
+            self.challenger_bet_amount = additional_amount
+        else:
+            self.opponent_bet_amount = additional_amount
 
+        self.pot_amount += additional_amount
         return "bet" if additional_amount >= self.amount else "allin"
+
+    def _settle_all_in_difference(self):
+        matched_amount = min(self.challenger_bet_amount, self.opponent_bet_amount)
+
+        if self.challenger_bet_amount > matched_amount:
+            refund = self.challenger_bet_amount - matched_amount
+            add_balance(self.challenger_id, refund)
+            self.pot_amount -= refund
+            self.challenger_bet_amount = matched_amount
+
+        if self.opponent_id is not None and self.opponent_bet_amount > matched_amount:
+            refund = self.opponent_bet_amount - matched_amount
+            add_balance(self.opponent_id, refund)
+            self.pot_amount -= refund
+            self.opponent_bet_amount = matched_amount
+
+        if self.opponent_id is None and self.opponent_bet_amount > matched_amount:
+            refund = self.opponent_bet_amount - matched_amount
+            self.pot_amount -= refund
+            self.opponent_bet_amount = matched_amount
+
+        return matched_amount
 
     async def _resolve_round(self, interaction: discord.Interaction):
         self.resolved = True
@@ -2754,6 +2783,7 @@ class SeotdaMatchView(discord.ui.View):
             await interaction.response.edit_message(embed=embed, view=result_view)
             return
 
+        self._settle_all_in_difference()
         challenger_result = evaluate_seotda_hand(self.challenger_cards)
         opponent_result = evaluate_seotda_hand(self.opponent_cards)
 
@@ -2812,7 +2842,7 @@ class SeotdaMatchView(discord.ui.View):
             return
 
         if action == "bet":
-            action = self._apply_additional_bet(interaction.user.id)
+            action = self._apply_additional_bet(role_key, interaction.user.id)
 
         self._set_action(role_key, action)
 
@@ -2822,7 +2852,7 @@ class SeotdaMatchView(discord.ui.View):
             else:
                 bot_action = "bet" if self._bot_should_bet() else "die"
                 if bot_action == "bet":
-                    bot_action = self._apply_additional_bet(None)
+                    bot_action = self._apply_additional_bet("opponent", None)
                 self._set_action("opponent", bot_action)
 
         if self.challenger_action is not None and self.opponent_action is not None:
