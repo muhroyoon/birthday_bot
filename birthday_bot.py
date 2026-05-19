@@ -2599,17 +2599,45 @@ class SeotdaResultView(discord.ui.View):
             await interaction.response.send_message("상대를 찾을 수 없습니다.", ephemeral=True)
             return
 
-        if not opponent_is_bot and not can_afford(opponent.id, self.next_amount):
-            await interaction.response.send_message("상대의 잔액이 부족해 묻고 따블로를 진행할 수 없습니다.", ephemeral=True)
+        if opponent_is_bot:
+            add_balance(challenger.id, -self.next_amount)
+            match_view = SeotdaMatchView(self.guild_id, self.winner_id, None, self.next_amount)
+            embed = match_view.build_embed(interaction.guild, interaction.client.user)
+            embed.add_field(name="상대", value="봇", inline=False)
+            await interaction.response.edit_message(embed=embed, view=match_view)
             return
 
-        add_balance(challenger.id, -self.next_amount)
-        if not opponent_is_bot:
-            add_balance(opponent.id, -self.next_amount)
+        requester_id = self.winner_id
+        target_id = self.opponent_id if self.winner_id == self.challenger_id else self.challenger_id
+        requester = interaction.guild.get_member(requester_id)
+        target = interaction.guild.get_member(target_id)
 
-        match_view = SeotdaMatchView(self.guild_id, self.challenger_id, self.opponent_id, self.next_amount)
-        embed = match_view.build_embed(interaction.guild, interaction.client.user)
-        await interaction.response.edit_message(embed=embed, view=match_view)
+        if requester is None or target is None:
+            await interaction.response.send_message("재대결 대상을 찾을 수 없습니다.", ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title="🃏 섯다 재대결 요청",
+            description=f"{target.mention}님, {requester.mention}님이 묻고 따블로를 신청했습니다.",
+            color=0xF1C40F,
+        )
+        embed.add_field(name="도전자", value=requester.mention, inline=True)
+        embed.add_field(name="상대", value=target.mention, inline=True)
+        embed.add_field(name="기본 배팅금", value=f"`{format_money(self.next_amount)}`", inline=False)
+        embed.add_field(
+            name="룰",
+            value=(
+                "수락 시 두 사람 모두 같은 금액을 먼저 겁니다.\n"
+                "첫 패 공개 후 `배팅` 또는 `다이`를 선택합니다.\n"
+                "둘 다 배팅해야 다음 패를 공개하고 승부합니다."
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="상대방만 수락 또는 거절할 수 있습니다.")
+        await interaction.response.edit_message(
+            embed=embed,
+            view=SeotdaChallengeView(requester_id, target_id, self.next_amount),
+        )
 
     @discord.ui.button(label="다이", style=discord.ButtonStyle.danger)
     async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
