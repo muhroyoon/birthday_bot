@@ -1697,8 +1697,6 @@ def create_saving(
         ),
     )
     conn.commit()
-    update_last_loan_used_at(user_id, borrowed_at)
-    add_loan_progress_amount(user_id, principal)
 
 
 def claim_saving(saving_id: int):
@@ -2443,6 +2441,8 @@ class UpgradeTicketView(discord.ui.View):
             await interaction.response.send_message("관리자만 사용할 수 있습니다.", ephemeral=True)
             return
 
+        await interaction.response.defer(ephemeral=True)
+
         role_id = get_guild_setting_role_id(interaction.guild.id, "upgrade_clan_role_id")
         role = interaction.guild.get_role(role_id) if role_id else None
         if role:
@@ -2452,13 +2452,15 @@ class UpgradeTicketView(discord.ui.View):
         await self.send_log(interaction, "클랜원 등업")
         await self.disable_buttons_except_delete(interaction.message)
         await interaction.channel.set_permissions(interaction.guild.default_role, send_messages=False)
-        await interaction.response.send_message(f"{self.user.mention}님의 클랜원 등업이 완료되었습니다.")
+        await interaction.followup.send(f"{self.user.mention}님의 클랜원 등업이 완료되었습니다.", ephemeral=True)
 
     @discord.ui.button(label="게스트 등업", style=discord.ButtonStyle.secondary, custom_id="upgrade_guest")
     async def guest(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.is_admin(interaction):
             await interaction.response.send_message("관리자만 사용할 수 있습니다.", ephemeral=True)
             return
+
+        await interaction.response.defer(ephemeral=True)
 
         role_id = get_guild_setting_role_id(interaction.guild.id, "upgrade_guest_role_id")
         role = interaction.guild.get_role(role_id) if role_id else None
@@ -2469,7 +2471,7 @@ class UpgradeTicketView(discord.ui.View):
         await self.send_log(interaction, "게스트 등업")
         await self.disable_buttons_except_delete(interaction.message)
         await interaction.channel.set_permissions(interaction.guild.default_role, send_messages=False)
-        await interaction.response.send_message(f"{self.user.mention}님의 게스트 등업이 완료되었습니다.")
+        await interaction.followup.send(f"{self.user.mention}님의 게스트 등업이 완료되었습니다.", ephemeral=True)
 
     @discord.ui.button(label="티켓 삭제", style=discord.ButtonStyle.danger, custom_id="ticket_delete")
     async def delete(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -6180,6 +6182,18 @@ async def reset_credit(interaction: discord.Interaction, member: discord.Member,
 # ============================================================
 # 디스코드 이벤트
 # ============================================================
+
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.MissingPermissions):
+        if interaction.response.is_done():
+            await interaction.followup.send("이 명령어는 관리자만 사용할 수 있습니다.", ephemeral=True)
+        else:
+            await interaction.response.send_message("이 명령어는 관리자만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    raise error
+
 
 @bot.event
 async def on_member_update(before: discord.Member, after: discord.Member):
