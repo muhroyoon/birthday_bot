@@ -5594,6 +5594,38 @@ async def credit_lookup(interaction: discord.Interaction, member: discord.Member
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+@bot.tree.command(name="신용등급표", description="등급별 대출 한도와 이자율을 확인합니다.")
+async def credit_grade_table(interaction: discord.Interaction):
+    lines = []
+    for grade in range(MAX_CREDIT_GRADE, MIN_CREDIT_GRADE - 1, -1):
+        limit_text = format_money(get_loan_limit_by_grade(grade))
+        interest_text = f"{get_loan_interest_by_grade(grade)}%"
+        lines.append(f"`{grade}등급`  대출 한도 {limit_text} / 이자율 {interest_text}")
+
+    embed = discord.Embed(
+        title="📊 신용등급표",
+        description="\n".join(lines),
+        color=0x3498DB,
+    )
+    embed.add_field(
+        name="대출 조건",
+        value=(
+            "대출은 현재 신용등급의 남은 한도 내에서만 가능합니다.\n"
+            "또한 현재 잔액이 대출 금액의 절반 이상이어야 합니다."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="등급 변동 기준",
+        value=(
+            "현재 등급 최대 한도 이상 대출 실적을 쌓고 정상 상환하면 1단계 상승합니다.\n"
+            f"마지막 대출 사용 후 {LOAN_GRADE_DECAY_DAYS}일 동안 새 대출이 없으면 1단계 하락합니다."
+        ),
+        inline=False,
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 @bot.tree.command(name="노동", description="신용불량자 상태일 때 노동을 진행합니다.")
 async def labor(interaction: discord.Interaction):
     if interaction.guild is None:
@@ -5881,6 +5913,7 @@ async def gambling_commands(interaction: discord.Interaction):
             "`/중도상환` - 현재 진행 중인 대출 전체 상환\n"
             "`/내신용` - 내 신용등급, 대출, 노동 현황 확인\n"
             "`/신용조회 [인원]` - 특정 인원의 신용 정보 조회\n"
+            "`/신용등급표` - 등급별 대출 한도와 이자율 확인\n"
             "`/노동` - 신용불량자 노동 진행\n"
             "`/노동현황` - 노동 진행 상황 확인\n"
             "`/차용증목록` - 현재 차용증 목록 확인\n"
@@ -5967,7 +6000,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         value=(
             "`/돈주기`, `/돈주기내역`, `/돈삭제`\n"
             "`/신용불량자등록`, `/신용불량자목록`, `/신용불량자삭제`, `/신용초기화`\n"
-            "`/신용조회`, `/일수`, `/중도상환`"
+            "`/신용조회`, `/신용등급표`, `/일수`, `/중도상환`"
         ),
         inline=False,
     )
@@ -6002,7 +6035,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="🏦 적금 / 대출 / 신용",
         value=(
             "`/적금`, `/내적금`, `/적금수령`\n"
-            "`/일수`, `/중도상환`, `/내신용`, `/신용조회`, `/노동`, `/노동현황`\n"
+            "`/일수`, `/중도상환`, `/내신용`, `/신용조회`, `/신용등급표`, `/노동`, `/노동현황`\n"
             "`/차용증`, `/차용증목록`, `/차용증삭제`"
         ),
         inline=False,
