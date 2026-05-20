@@ -109,6 +109,7 @@ LOAN_REPAYMENT_DAYS = 2
 DEFAULT_SAVINGS_DAYS = "3"
 DEFAULT_SAVINGS_INTEREST_RATE = "10"
 DEFAULT_LABOR_DEBT_AMOUNT = 100_000
+LOAN_GRADE_DECAY_DAYS = 2
 
 LOAN_GRADE_LIMITS = {
     1: 20_000_000,
@@ -427,6 +428,13 @@ credit_profile_columns = [row[1] for row in cursor.fetchall()]
 
 if "blacklisted_at" not in credit_profile_columns:
     cursor.execute("ALTER TABLE credit_profiles ADD COLUMN blacklisted_at TEXT")
+    conn.commit()
+if "last_loan_used_at" not in credit_profile_columns:
+    cursor.execute("ALTER TABLE credit_profiles ADD COLUMN last_loan_used_at TEXT")
+    cursor.execute(
+        "UPDATE credit_profiles SET last_loan_used_at=? WHERE last_loan_used_at IS NULL",
+        (dt_to_db(get_kst_now()),),
+    )
     conn.commit()
 
 cursor.execute("PRAGMA table_info(promissory_notes)")
@@ -977,10 +985,18 @@ def clear_all_in_entries(entry_date: str, guild_id: int):
 def ensure_credit_profile(user_id: int):
     cursor.execute(
         """
-        INSERT OR IGNORE INTO credit_profiles(user_id, grade, is_blacklisted)
-        VALUES (?, ?, 0)
+        INSERT OR IGNORE INTO credit_profiles(user_id, grade, is_blacklisted, last_loan_used_at)
+        VALUES (?, ?, 0, ?)
         """,
-        (str(user_id), INITIAL_CREDIT_GRADE),
+        (str(user_id), INITIAL_CREDIT_GRADE, dt_to_db(get_kst_now())),
+    )
+    cursor.execute(
+        """
+        UPDATE credit_profiles
+        SET last_loan_used_at=COALESCE(last_loan_used_at, ?)
+        WHERE user_id=?
+        """,
+        (dt_to_db(get_kst_now()), str(user_id)),
     )
     conn.commit()
 
@@ -988,7 +1004,7 @@ def ensure_credit_profile(user_id: int):
 def get_credit_profile(user_id: int):
     ensure_credit_profile(user_id)
     cursor.execute(
-        "SELECT grade, is_blacklisted, blacklisted_at FROM credit_profiles WHERE user_id=?",
+        "SELECT grade, is_blacklisted, blacklisted_at, last_loan_used_at FROM credit_profiles WHERE user_id=?",
         (str(user_id),),
     )
     row = cursor.fetchone()
@@ -997,12 +1013,14 @@ def get_credit_profile(user_id: int):
             "grade": INITIAL_CREDIT_GRADE,
             "is_blacklisted": False,
             "blacklisted_at": None,
+            "last_loan_used_at": None,
         }
 
     return {
         "grade": int(row[0]),
         "is_blacklisted": bool(row[1]),
         "blacklisted_at": row[2],
+        "last_loan_used_at": row[3],
     }
 
 def get_blacklisted_profiles():
@@ -1041,6 +1059,16 @@ def set_credit_blacklisted(user_id: int, is_blacklisted: bool):
     conn.commit()
 
 
+def update_last_loan_used_at(user_id: int, used_at: datetime | None = None):
+    ensure_credit_profile(user_id)
+    target_time = used_at or get_kst_now()
+    cursor.execute(
+        "UPDATE credit_profiles SET last_loan_used_at=? WHERE user_id=?",
+        (dt_to_db(target_time), str(user_id)),
+    )
+    conn.commit()
+
+
 def upgrade_credit_grade(user_id: int):
     profile = get_credit_profile(user_id)
 
@@ -1061,6 +1089,18 @@ def downgrade_credit_grade(user_id: int):
         return
 
     set_credit_grade(user_id, profile["grade"] + 1)
+
+
+def downgrade_credit_grade_for_inactivity(user_id: int) -> bool:
+    profile = get_credit_profile(user_id)
+    if profile["is_blacklisted"]:
+        return False
+
+    if profile["grade"] >= MAX_CREDIT_GRADE:
+        return False
+
+    set_credit_grade(user_id, profile["grade"] + 1)
+    return True
 
 
 def get_credit_grade_text(user_id: int) -> str:
@@ -1200,6 +1240,18 @@ def get_due_loans(now: datetime):
     return cursor.fetchall()
 
 
+def get_credit_profiles_due_for_decay(now: datetime):
+    cursor.execute(
+        """
+        SELECT user_id, grade, last_loan_used_at
+        FROM credit_profiles
+        WHERE is_blacklisted=0 AND last_loan_used_at IS NOT NULL
+        ORDER BY user_id ASC
+        """
+    )
+    return cursor.fetchall()
+
+
 def build_credit_embed(member: discord.abc.User, guild_id: int | None = None) -> discord.Embed:
     profile = get_credit_profile(member.id)
     active_loans = get_active_loans(member.id)
@@ -1222,6 +1274,12 @@ def build_credit_embed(member: discord.abc.User, guild_id: int | None = None) ->
     embed.add_field(name="현재 대출 이자율", value=interest_text, inline=True)
     embed.add_field(name="남은 대출 한도", value=remaining_limit_text, inline=True)
     embed.add_field(name="현재 잔액", value=format_money(get_balance(member.id)), inline=False)
+    if profile["last_loan_used_at"]:
+        try:
+            last_loan_used_text = dt_from_db(profile["last_loan_used_at"]).strftime("%Y-%m-%d %H:%M:%S KST")
+        except Exception:
+            last_loan_used_text = profile["last_loan_used_at"]
+        embed.add_field(name="마지막 대출 사용 시각", value=last_loan_used_text, inline=False)
 
     if not active_loans:
         embed.add_field(name="현재 대출 상태", value="진행 중인 대출 없음", inline=False)
@@ -1593,6 +1651,7 @@ def create_saving(
         ),
     )
     conn.commit()
+    update_last_loan_used_at(user_id, borrowed_at)
 
 
 def claim_saving(saving_id: int):
@@ -6386,6 +6445,32 @@ async def loan_due_check_loop():
                 member = guild.get_member(int(user_id))
                 if member is not None:
                     await sync_blacklist_role(member, True)
+
+    decay_interval = timedelta(days=LOAN_GRADE_DECAY_DAYS)
+    for user_id, grade, last_loan_used_at in get_credit_profiles_due_for_decay(now):
+        if not last_loan_used_at:
+            continue
+
+        try:
+            last_used_dt = dt_from_db(last_loan_used_at)
+        except Exception:
+            continue
+
+        if now - last_used_dt < decay_interval:
+            continue
+
+        elapsed_intervals = int((now - last_used_dt).total_seconds() // decay_interval.total_seconds())
+        if elapsed_intervals <= 0:
+            continue
+
+        applied_intervals = 0
+        for _ in range(elapsed_intervals):
+            if not downgrade_credit_grade_for_inactivity(int(user_id)):
+                break
+            applied_intervals += 1
+
+        if applied_intervals > 0:
+            update_last_loan_used_at(int(user_id), last_used_dt + (decay_interval * applied_intervals))
 
 
 
