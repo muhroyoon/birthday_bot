@@ -335,8 +335,11 @@ cursor.execute(
     """
     CREATE TABLE IF NOT EXISTS credit_profiles(
         user_id TEXT PRIMARY KEY,
-        grade INTEGER NOT NULL DEFAULT 5,
-        is_blacklisted INTEGER NOT NULL DEFAULT 0
+        grade INTEGER NOT NULL DEFAULT 10,
+        is_blacklisted INTEGER NOT NULL DEFAULT 0,
+        blacklisted_at TEXT,
+        last_loan_used_at TEXT,
+        loan_progress_amount INTEGER NOT NULL DEFAULT 0
     )
     """
 )
@@ -435,6 +438,9 @@ if "last_loan_used_at" not in credit_profile_columns:
         "UPDATE credit_profiles SET last_loan_used_at=? WHERE last_loan_used_at IS NULL",
         (dt_to_db(get_kst_now()),),
     )
+    conn.commit()
+if "loan_progress_amount" not in credit_profile_columns:
+    cursor.execute("ALTER TABLE credit_profiles ADD COLUMN loan_progress_amount INTEGER NOT NULL DEFAULT 0")
     conn.commit()
 
 cursor.execute("PRAGMA table_info(promissory_notes)")
@@ -985,8 +991,8 @@ def clear_all_in_entries(entry_date: str, guild_id: int):
 def ensure_credit_profile(user_id: int):
     cursor.execute(
         """
-        INSERT OR IGNORE INTO credit_profiles(user_id, grade, is_blacklisted, last_loan_used_at)
-        VALUES (?, ?, 0, ?)
+        INSERT OR IGNORE INTO credit_profiles(user_id, grade, is_blacklisted, last_loan_used_at, loan_progress_amount)
+        VALUES (?, ?, 0, ?, 0)
         """,
         (str(user_id), INITIAL_CREDIT_GRADE, dt_to_db(get_kst_now())),
     )
@@ -1004,7 +1010,7 @@ def ensure_credit_profile(user_id: int):
 def get_credit_profile(user_id: int):
     ensure_credit_profile(user_id)
     cursor.execute(
-        "SELECT grade, is_blacklisted, blacklisted_at, last_loan_used_at FROM credit_profiles WHERE user_id=?",
+        "SELECT grade, is_blacklisted, blacklisted_at, last_loan_used_at, loan_progress_amount FROM credit_profiles WHERE user_id=?",
         (str(user_id),),
     )
     row = cursor.fetchone()
@@ -1014,6 +1020,7 @@ def get_credit_profile(user_id: int):
             "is_blacklisted": False,
             "blacklisted_at": None,
             "last_loan_used_at": None,
+            "loan_progress_amount": 0,
         }
 
     return {
@@ -1021,6 +1028,7 @@ def get_credit_profile(user_id: int):
         "is_blacklisted": bool(row[1]),
         "blacklisted_at": row[2],
         "last_loan_used_at": row[3],
+        "loan_progress_amount": int(row[4] or 0),
     }
 
 def get_blacklisted_profiles():
@@ -1069,15 +1077,35 @@ def update_last_loan_used_at(user_id: int, used_at: datetime | None = None):
     conn.commit()
 
 
+def add_loan_progress_amount(user_id: int, amount: int):
+    ensure_credit_profile(user_id)
+    cursor.execute(
+        "UPDATE credit_profiles SET loan_progress_amount=MAX(0, loan_progress_amount + ?) WHERE user_id=?",
+        (amount, str(user_id)),
+    )
+    conn.commit()
+
+
+def reset_loan_progress_amount(user_id: int):
+    ensure_credit_profile(user_id)
+    cursor.execute(
+        "UPDATE credit_profiles SET loan_progress_amount=0 WHERE user_id=?",
+        (str(user_id),),
+    )
+    conn.commit()
+
+
 def upgrade_credit_grade(user_id: int):
     profile = get_credit_profile(user_id)
 
     if profile["is_blacklisted"]:
         set_credit_blacklisted(user_id, False)
         set_credit_grade(user_id, INITIAL_CREDIT_GRADE)
+        reset_loan_progress_amount(user_id)
         return
 
     set_credit_grade(user_id, profile["grade"] - 1)
+    reset_loan_progress_amount(user_id)
 
 
 def downgrade_credit_grade(user_id: int):
@@ -1086,9 +1114,11 @@ def downgrade_credit_grade(user_id: int):
     if profile["grade"] >= MAX_CREDIT_GRADE:
         set_credit_grade(user_id, MAX_CREDIT_GRADE)
         set_credit_blacklisted(user_id, True)
+        reset_loan_progress_amount(user_id)
         return
 
     set_credit_grade(user_id, profile["grade"] + 1)
+    reset_loan_progress_amount(user_id)
 
 
 def downgrade_credit_grade_for_inactivity(user_id: int) -> bool:
@@ -1100,6 +1130,7 @@ def downgrade_credit_grade_for_inactivity(user_id: int) -> bool:
         return False
 
     set_credit_grade(user_id, profile["grade"] + 1)
+    reset_loan_progress_amount(user_id)
     return True
 
 
@@ -1267,6 +1298,7 @@ def build_credit_embed(member: discord.abc.User, guild_id: int | None = None) ->
         max_amount_text = format_money(get_loan_limit_by_grade(profile["grade"]))
         interest_text = f"{get_loan_interest_by_grade(profile['grade'])}%"
         remaining_limit_text = format_money(get_remaining_loan_limit(member.id))
+        progress_target_text = format_money(get_loan_limit_by_grade(profile["grade"]))
 
     embed = discord.Embed(title=f"📋 {member.display_name}님의 신용 정보", color=0x5865F2)
     embed.add_field(name="현재 신용등급", value=grade_text, inline=False)
@@ -1274,6 +1306,14 @@ def build_credit_embed(member: discord.abc.User, guild_id: int | None = None) ->
     embed.add_field(name="현재 대출 이자율", value=interest_text, inline=True)
     embed.add_field(name="남은 대출 한도", value=remaining_limit_text, inline=True)
     embed.add_field(name="현재 잔액", value=format_money(get_balance(member.id)), inline=False)
+    if profile["is_blacklisted"]:
+        embed.add_field(name="등급 상승 누적 실적", value="신용불량자 상태에서는 집계되지 않습니다.", inline=False)
+    else:
+        embed.add_field(
+            name="등급 상승 누적 실적",
+            value=f"{format_money(profile['loan_progress_amount'])} / {progress_target_text}",
+            inline=False,
+        )
     if profile["last_loan_used_at"]:
         try:
             last_loan_used_text = dt_from_db(profile["last_loan_used_at"]).strftime("%Y-%m-%d %H:%M:%S KST")
@@ -1307,6 +1347,12 @@ def build_credit_embed(member: discord.abc.User, guild_id: int | None = None) ->
             value=f"{latest_loan['status']} / {latest_due_text}",
             inline=False,
         )
+        loan_lines = []
+        for idx, loan in enumerate(active_loans[:10], start=1):
+            loan_lines.append(
+                f"{idx}. 원금 `{format_money(loan['principal'])}` / 상환 `{format_money(loan['total_repayment'])}` / {loan['status']}"
+            )
+        embed.add_field(name="진행 중인 대출 내역", value="\n".join(loan_lines), inline=False)
 
     if labor_penalty is not None:
         remaining = max(0, labor_penalty["required_count"] - labor_penalty["completed_count"])
@@ -1652,6 +1698,7 @@ def create_saving(
     )
     conn.commit()
     update_last_loan_used_at(user_id, borrowed_at)
+    add_loan_progress_amount(user_id, principal)
 
 
 def claim_saving(saving_id: int):
@@ -1755,6 +1802,7 @@ def increment_labor_count(guild_id: int, user_id: int):
 
         set_credit_blacklisted(user_id, False)
         set_credit_grade(user_id, INITIAL_CREDIT_GRADE)
+        reset_loan_progress_amount(user_id)
         return updated, True
 
     return updated, False
@@ -5444,7 +5492,17 @@ async def loan_money(interaction: discord.Interaction, amount: int):
     embed.add_field(name="이자율", value=f"{interest_rate}%", inline=False)
     embed.add_field(name="총 상환 금액", value=format_money(total_repayment), inline=False)
     embed.add_field(name="상환 기한", value=due_at.strftime("%Y-%m-%d %H:%M:%S KST"), inline=False)
+    embed.add_field(name="현재 진행 중인 대출 수", value=f"{len(get_active_loans(interaction.user.id))}건", inline=False)
     embed.add_field(name="남은 대출 한도", value=format_money(get_remaining_loan_limit(interaction.user.id)), inline=False)
+    current_profile = get_credit_profile(interaction.user.id)
+    embed.add_field(
+        name="등급 상승 누적 실적",
+        value=(
+            f"{format_money(current_profile['loan_progress_amount'])} / "
+            f"{format_money(get_loan_limit_by_grade(current_profile['grade']))}"
+        ),
+        inline=False,
+    )
     embed.add_field(name="현재 잔액", value=format_money(get_balance(interaction.user.id)), inline=False)
 
     await interaction.response.send_message(embed=embed)
@@ -5467,7 +5525,7 @@ async def repay_loan_command(interaction: discord.Interaction):
 
     profile = get_credit_profile(interaction.user.id)
     previous_grade_text = get_credit_grade_text(interaction.user.id)
-    repaid_principal = sum(loan["principal"] for loan in active_loans)
+    loan_progress_amount = profile["loan_progress_amount"]
 
     add_balance(interaction.user.id, -repayment_amount)
     repay_loans([loan["id"] for loan in active_loans])
@@ -5483,7 +5541,7 @@ async def repay_loan_command(interaction: discord.Interaction):
         grade_up = True
     else:
         required_amount = get_loan_limit_by_grade(profile["grade"])
-        if repaid_principal >= required_amount:
+        if loan_progress_amount >= required_amount:
             upgrade_credit_grade(interaction.user.id)
             grade_up = True
 
@@ -5514,7 +5572,8 @@ async def repay_loan_command(interaction: discord.Interaction):
             name="등급 변화",
             value=(
                 "대출은 정상 상환했지만 신용등급은 유지되었습니다.\n"
-                f"등급 상승을 위해서는 현재 등급 기준 최대 한도인 `{format_money(required_amount)}` 이상 대출을 상환해야 합니다."
+                f"등급 상승을 위해서는 현재 등급 기준 최대 한도인 `{format_money(required_amount)}` 이상 대출 실적을 쌓아야 합니다.\n"
+                f"현재 누적 실적: `{format_money(loan_progress_amount)}`"
             ),
             inline=False,
         )
@@ -6002,6 +6061,7 @@ async def scrim_notice(interaction: discord.Interaction):
 async def blacklist_user(interaction: discord.Interaction, member: discord.Member):
     set_credit_grade(member.id, MAX_CREDIT_GRADE)
     set_credit_blacklisted(member.id, True)
+    reset_loan_progress_amount(member.id)
     debt_amount = get_total_active_loan_repayment(member.id) or DEFAULT_LABOR_DEBT_AMOUNT
     create_or_replace_labor_penalty(interaction.guild.id, member.id, debt_amount)
     await sync_blacklist_role(member, True)
@@ -6051,6 +6111,7 @@ async def blacklist_list(interaction: discord.Interaction):
 @app_commands.checks.has_permissions(administrator=True)
 async def remove_blacklist(interaction: discord.Interaction, member: discord.Member):
     set_credit_blacklisted(member.id, False)
+    reset_loan_progress_amount(member.id)
     delete_labor_penalty(interaction.guild.id, member.id)
     await sync_blacklist_role(member, False)
 
@@ -6072,6 +6133,7 @@ async def reset_credit(interaction: discord.Interaction, member: discord.Member,
 
     set_credit_blacklisted(member.id, False)
     set_credit_grade(member.id, grade)
+    reset_loan_progress_amount(member.id)
     delete_labor_penalty(interaction.guild.id, member.id)
     await sync_blacklist_role(member, False)
 
