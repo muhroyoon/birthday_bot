@@ -1224,6 +1224,8 @@ def create_loan(guild_id: int, user_id: int, principal: int, interest_rate: int,
         ),
     )
     conn.commit()
+    update_last_loan_used_at(user_id, borrowed_at)
+    add_loan_progress_amount(user_id, principal)
 
 
 def repay_loans(loan_ids: list[int]):
@@ -1696,8 +1698,6 @@ def create_saving(
         ),
     )
     conn.commit()
-    update_last_loan_used_at(user_id, borrowed_at)
-    add_loan_progress_amount(user_id, principal)
 
 
 def claim_saving(saving_id: int):
