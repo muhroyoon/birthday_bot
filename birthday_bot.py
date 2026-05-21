@@ -1160,7 +1160,6 @@ def get_active_loans(user_id: int):
         FROM loans
         WHERE user_id=? AND status IN ('active', 'overdue')
         ORDER BY id DESC
-        LIMIT 1
         """,
         (str(user_id),),
     )
@@ -1697,6 +1696,8 @@ def create_saving(
         ),
     )
     conn.commit()
+    update_last_loan_used_at(user_id, borrowed_at)
+    add_loan_progress_amount(user_id, principal)
 
 
 def claim_saving(saving_id: int):
