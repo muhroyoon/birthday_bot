@@ -152,7 +152,6 @@ LOAN_GRADE_INTEREST = {
     10: 20,
 }
 
-active_labor_sessions: dict[tuple[int, int], str] = {}
 labor_click_locks: set[tuple[int, int]] = set()
 
 DUCKMONG_FAKE_NAMES = [
@@ -417,6 +416,21 @@ cursor.execute(
         user_id TEXT NOT NULL,
         ticket_count INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (guild_id, user_id)
+    )
+    """
+)
+
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS manual_credit_debts(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        amount INTEGER NOT NULL,
+        reason TEXT,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at TEXT NOT NULL,
+        resolved_at TEXT
     )
     """
 )
@@ -1220,6 +1234,72 @@ def get_total_active_loan_repayment(user_id: int) -> int:
     return sum(loan["total_repayment"] for loan in get_active_loans(user_id))
 
 
+def create_manual_credit_debt(guild_id: int, user_id: int, amount: int, reason: str):
+    cursor.execute(
+        """
+        INSERT INTO manual_credit_debts(guild_id, user_id, amount, reason, status, created_at)
+        VALUES (?, ?, ?, ?, 'active', ?)
+        """,
+        (str(guild_id), str(user_id), amount, reason, dt_to_db(get_kst_now())),
+    )
+    conn.commit()
+    return cursor.lastrowid
+
+
+def get_active_manual_credit_debts(guild_id: int, user_id: int):
+    cursor.execute(
+        """
+        SELECT id, amount, reason, created_at
+        FROM manual_credit_debts
+        WHERE guild_id=? AND user_id=? AND status='active'
+        ORDER BY id DESC
+        """,
+        (str(guild_id), str(user_id)),
+    )
+    rows = cursor.fetchall()
+    return [
+        {
+            "id": int(row[0]),
+            "amount": int(row[1]),
+            "reason": row[2] or "",
+            "created_at": row[3],
+        }
+        for row in rows
+    ]
+
+
+def get_total_active_manual_credit_debt(guild_id: int, user_id: int) -> int:
+    cursor.execute(
+        """
+        SELECT COALESCE(SUM(amount), 0)
+        FROM manual_credit_debts
+        WHERE guild_id=? AND user_id=? AND status='active'
+        """,
+        (str(guild_id), str(user_id)),
+    )
+    row = cursor.fetchone()
+    return int(row[0] or 0)
+
+
+def resolve_manual_credit_debts(guild_id: int, user_id: int):
+    cursor.execute(
+        """
+        UPDATE manual_credit_debts
+        SET status='resolved', resolved_at=?
+        WHERE guild_id=? AND user_id=? AND status='active'
+        """,
+        (dt_to_db(get_kst_now()), str(guild_id), str(user_id)),
+    )
+    conn.commit()
+
+
+def get_total_credit_obligation(guild_id: int | None, user_id: int) -> int:
+    total = get_total_active_loan_repayment(user_id)
+    if guild_id is not None:
+        total += get_total_active_manual_credit_debt(guild_id, user_id)
+    return total
+
+
 def get_remaining_loan_limit(user_id: int) -> int:
     profile = get_credit_profile(user_id)
     if profile["is_blacklisted"]:
@@ -1298,6 +1378,36 @@ def get_due_loans(now: datetime):
     return cursor.fetchall()
 
 
+def refresh_active_labor_penalty_debt(guild_id: int, user_id: int):
+    penalty = get_active_labor_penalty(guild_id, user_id)
+    total_debt_amount = get_total_credit_obligation(guild_id, user_id) or DEFAULT_LABOR_DEBT_AMOUNT
+
+    if penalty is None:
+        profile = get_credit_profile(user_id)
+        if profile["is_blacklisted"]:
+            create_or_replace_labor_penalty(guild_id, user_id, total_debt_amount)
+            return get_active_labor_penalty(guild_id, user_id)
+        return None
+
+    new_required_count = calculate_labor_required_count(total_debt_amount)
+    cursor.execute(
+        """
+        UPDATE labor_penalties
+        SET debt_amount=?, required_count=?
+        WHERE guild_id=? AND user_id=? AND status='active'
+        """,
+        (total_debt_amount, new_required_count, str(guild_id), str(user_id)),
+    )
+    conn.commit()
+
+    updated = get_active_labor_penalty(guild_id, user_id)
+    if updated is None:
+        return None
+
+    updated, _resolved = resolve_labor_penalty_if_complete(guild_id, user_id, updated)
+    return updated
+
+
 def get_credit_profiles_due_for_decay(now: datetime):
     cursor.execute(
         """
@@ -1313,6 +1423,8 @@ def get_credit_profiles_due_for_decay(now: datetime):
 def build_credit_embed(member: discord.abc.User, guild_id: int | None = None) -> discord.Embed:
     profile = get_credit_profile(member.id)
     active_loans = get_active_loans(member.id)
+    manual_debts = get_active_manual_credit_debts(guild_id, member.id) if guild_id is not None else []
+    manual_debt_total = get_total_active_manual_credit_debt(guild_id, member.id) if guild_id is not None else 0
     labor_penalty = ensure_active_labor_penalty(guild_id, member.id) if guild_id is not None else None
 
     if profile["is_blacklisted"]:
@@ -1348,15 +1460,17 @@ def build_credit_embed(member: discord.abc.User, guild_id: int | None = None) ->
             last_loan_used_text = profile["last_loan_used_at"]
         embed.add_field(name="마지막 대출 사용 시각", value=last_loan_used_text, inline=False)
 
-    if not active_loans:
-        embed.add_field(name="현재 대출 상태", value="진행 중인 대출 없음", inline=False)
+    if not active_loans and manual_debt_total <= 0:
+        embed.add_field(name="현재 대출 상태", value="진행 중인 대출/벌금 없음", inline=False)
     else:
-        latest_loan = active_loans[0]
-        latest_due_text = latest_loan["due_at"]
-        try:
-            latest_due_text = dt_from_db(latest_loan["due_at"]).strftime("%Y-%m-%d %H:%M:%S KST")
-        except Exception:
-            pass
+        latest_loan = active_loans[0] if active_loans else None
+        latest_due_text = ""
+        if latest_loan is not None:
+            latest_due_text = latest_loan["due_at"]
+            try:
+                latest_due_text = dt_from_db(latest_loan["due_at"]).strftime("%Y-%m-%d %H:%M:%S KST")
+            except Exception:
+                pass
 
         embed.add_field(name="진행 중인 대출 수", value=f"{len(active_loans)}건", inline=True)
         embed.add_field(
@@ -1369,17 +1483,29 @@ def build_credit_embed(member: discord.abc.User, guild_id: int | None = None) ->
             value=format_money(sum(loan["total_repayment"] for loan in active_loans)),
             inline=True,
         )
-        embed.add_field(
-            name="가장 최근 대출 상태",
-            value=f"{latest_loan['status']} / {latest_due_text}",
-            inline=False,
-        )
-        loan_lines = []
-        for idx, loan in enumerate(active_loans[:10], start=1):
-            loan_lines.append(
-                f"{idx}. 원금 `{format_money(loan['principal'])}` / 상환 `{format_money(loan['total_repayment'])}` / {loan['status']}"
+        embed.add_field(name="관리자 부채 합계", value=format_money(manual_debt_total), inline=False)
+
+        if latest_loan is not None:
+            embed.add_field(
+                name="가장 최근 대출 상태",
+                value=f"{latest_loan['status']} / {latest_due_text}",
+                inline=False,
             )
-        embed.add_field(name="진행 중인 대출 내역", value="\n".join(loan_lines), inline=False)
+            loan_lines = []
+            for idx, loan in enumerate(active_loans[:10], start=1):
+                loan_lines.append(
+                    f"{idx}. 원금 `{format_money(loan['principal'])}` / 상환 `{format_money(loan['total_repayment'])}` / {loan['status']}"
+                )
+            embed.add_field(name="진행 중인 대출 내역", value="\n".join(loan_lines), inline=False)
+
+        if manual_debts:
+            debt_lines = []
+            for debt in manual_debts[:10]:
+                reason_text = debt["reason"] if debt["reason"] else "사유 없음"
+                debt_lines.append(
+                    f"{debt['id']}. `{format_money(debt['amount'])}` / 사유: {reason_text}"
+                )
+            embed.add_field(name="관리자 부채 내역", value="\n".join(debt_lines), inline=False)
 
     if labor_penalty is not None:
         remaining = max(0, labor_penalty["required_count"] - labor_penalty["completed_count"])
@@ -1788,7 +1914,7 @@ def ensure_active_labor_penalty(guild_id: int, user_id: int):
     if not profile["is_blacklisted"]:
         return None
 
-    debt_amount = get_total_active_loan_repayment(user_id) or DEFAULT_LABOR_DEBT_AMOUNT
+    debt_amount = get_total_credit_obligation(guild_id, user_id) or DEFAULT_LABOR_DEBT_AMOUNT
     create_or_replace_labor_penalty(guild_id, user_id, debt_amount)
     return get_active_labor_penalty(guild_id, user_id)
 
@@ -1818,6 +1944,7 @@ def resolve_labor_penalty_if_complete(guild_id: int, user_id: int, penalty: dict
     active_loans = get_active_loans(user_id)
     if active_loans:
         repay_loans([loan["id"] for loan in active_loans])
+    resolve_manual_credit_debts(guild_id, user_id)
 
     set_credit_blacklisted(user_id, False)
     set_credit_grade(user_id, INITIAL_CREDIT_GRADE)
@@ -3034,13 +3161,49 @@ class SeotdaMatchView(discord.ui.View):
     def _bot_should_bet(self) -> bool:
         first_card_month = self.opponent_cards[0][0]
         first_card_kwang = self.opponent_cards[0][1]
+        hand_result = evaluate_seotda_hand(self.opponent_cards)
+        hand_score = hand_result["score"]
+
         if first_card_kwang:
-            return True
-        if first_card_month in {1, 3, 8, 9, 10}:
-            return random.randint(1, 100) <= 90
-        if first_card_month in {2, 4, 6, 7}:
-            return random.randint(1, 100) <= 75
-        return random.randint(1, 100) <= 65
+            first_card_bonus = 8
+        elif first_card_month in {1, 3, 8, 9, 10}:
+            first_card_bonus = 5
+        elif first_card_month in {2, 4, 6, 7}:
+            first_card_bonus = 1
+        else:
+            first_card_bonus = -6
+
+        if hand_score >= 10000:  # 38광땡
+            bet_chance = 100
+        elif hand_score >= 9900:  # 13/18 광땡
+            bet_chance = 99
+        elif hand_score >= 9000:  # 땡
+            bet_chance = 97
+        elif hand_score >= 7980:  # 알리, 독사, 구삥
+            bet_chance = 94
+        elif hand_score >= 7950:  # 장삥, 장사, 세륙
+            bet_chance = 90
+        elif hand_score >= 7009:  # 갑오
+            bet_chance = 84
+        elif hand_score == 7008:  # 8끗
+            bet_chance = 82
+        elif hand_score == 7007:  # 7끗
+            bet_chance = 78
+        elif hand_score == 7006:  # 6끗
+            bet_chance = 72
+        elif hand_score == 7005:  # 5끗
+            bet_chance = 66
+        elif hand_score == 7004:  # 4끗
+            bet_chance = 58
+        elif hand_score in {7003, 7002}:  # 3끗, 2끗
+            bet_chance = 50
+        elif hand_score == 7001:  # 1끗
+            bet_chance = 42
+        else:  # 망통
+            bet_chance = 28
+
+        bet_chance = max(5, min(100, bet_chance + first_card_bonus))
+        return random.randint(1, 100) <= bet_chance
 
     def _apply_additional_bet(self, role_key: str, user_id: int | None) -> str:
         if user_id is None:
@@ -3881,11 +4044,10 @@ class ScrimNoticeModal(discord.ui.Modal, title="내전 공지 작성"):
 
 
 class LaborWorkView(discord.ui.View):
-    def __init__(self, guild_id: int, user_id: int, session_token: str):
+    def __init__(self, guild_id: int, user_id: int):
         super().__init__(timeout=300)
         self.guild_id = guild_id
         self.user_id = user_id
-        self.session_token = session_token
 
     @discord.ui.button(label="노동하기", style=discord.ButtonStyle.primary)
     async def work(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -3894,13 +4056,6 @@ class LaborWorkView(discord.ui.View):
             return
 
         session_key = (self.guild_id, self.user_id)
-
-        if active_labor_sessions.get(session_key) != self.session_token:
-            await interaction.response.send_message(
-                "이미 더 최신 노동 창이 열려 있습니다. 최신 창만 사용할 수 있습니다.",
-                ephemeral=True,
-            )
-            return
 
         if session_key in labor_click_locks:
             await interaction.response.send_message("이미 다른 노동 클릭을 처리 중입니다. 잠시 후 다시 눌러주세요.", ephemeral=True)
@@ -4812,6 +4967,47 @@ async def remove_money(interaction: discord.Interaction, member: discord.Member,
     )
 
 
+@bot.tree.command(name="벌금부여", description="신용등급에는 영향 없이 노동/신용 화면에 반영되는 관리자 부채를 부여합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+@app_commands.rename(member="인원", amount="금액", reason="사유")
+async def assign_manual_credit_debt(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    amount: int,
+    reason: str | None = None,
+):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    if member.bot:
+        await interaction.response.send_message("봇에게는 벌금을 부여할 수 없습니다.", ephemeral=True)
+        return
+
+    if amount <= 0:
+        await interaction.response.send_message("벌금 금액은 1원 이상이어야 합니다.", ephemeral=True)
+        return
+
+    note = (reason or "").strip()
+    debt_id = create_manual_credit_debt(interaction.guild.id, member.id, amount, note)
+    total_manual_debt = get_total_active_manual_credit_debt(interaction.guild.id, member.id)
+
+    profile = get_credit_profile(member.id)
+    if profile["is_blacklisted"]:
+        refresh_active_labor_penalty_debt(interaction.guild.id, member.id)
+
+    lines = [
+        f"{member.mention}님에게 관리자 부채 `{format_money(amount)}`을 부여했습니다.",
+        f"부채 번호: `#{debt_id}`",
+        f"현재 관리자 부채 합계: `{format_money(total_manual_debt)}`",
+        "이 금액은 대출 한도와 신용등급에는 영향을 주지 않지만, /내신용, /신용조회, 노동 횟수에는 반영됩니다.",
+    ]
+    if note:
+        lines.append(f"사유: {note}")
+
+    await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+
 # ----------------------------
 # 게임 명령어
 # ----------------------------
@@ -5627,12 +5823,16 @@ async def repay_loan_command(interaction: discord.Interaction):
     grade_up = False
 
     if profile["is_blacklisted"]:
-        set_credit_blacklisted(interaction.user.id, False)
-        set_credit_grade(interaction.user.id, INITIAL_CREDIT_GRADE)
-        if interaction.guild is not None:
-            delete_labor_penalty(interaction.guild.id, interaction.user.id)
-            await sync_blacklist_role(interaction.user, False)
-        grade_up = True
+        manual_debt_total = get_total_active_manual_credit_debt(interaction.guild.id, interaction.user.id) if interaction.guild else 0
+        if manual_debt_total <= 0:
+            set_credit_blacklisted(interaction.user.id, False)
+            set_credit_grade(interaction.user.id, INITIAL_CREDIT_GRADE)
+            if interaction.guild is not None:
+                delete_labor_penalty(interaction.guild.id, interaction.user.id)
+                await sync_blacklist_role(interaction.user, False)
+            grade_up = True
+        elif interaction.guild is not None:
+            refresh_active_labor_penalty_debt(interaction.guild.id, interaction.user.id)
     else:
         required_amount = get_loan_limit_by_grade(profile["grade"])
         if loan_progress_amount >= required_amount:
@@ -5649,11 +5849,22 @@ async def repay_loan_command(interaction: discord.Interaction):
     embed.add_field(name="현재 잔액", value=format_money(get_balance(interaction.user.id)), inline=False)
 
     if profile["is_blacklisted"]:
-        embed.add_field(
-            name="등급 변화",
-            value=f"기존 대출을 모두 상환하여 신용불량자 상태가 해제되고 {INITIAL_CREDIT_GRADE}등급으로 복귀했습니다.",
-            inline=False,
-        )
+        manual_debt_total = get_total_active_manual_credit_debt(interaction.guild.id, interaction.user.id) if interaction.guild else 0
+        if manual_debt_total <= 0:
+            embed.add_field(
+                name="등급 변화",
+                value=f"기존 대출을 모두 상환하여 신용불량자 상태가 해제되고 {INITIAL_CREDIT_GRADE}등급으로 복귀했습니다.",
+                inline=False,
+            )
+        else:
+            embed.add_field(
+                name="등급 변화",
+                value=(
+                    "일반 대출은 모두 상환했지만 관리자 부채가 남아 있어 신용불량자 상태는 유지됩니다.\n"
+                    f"남은 관리자 부채: `{format_money(manual_debt_total)}`"
+                ),
+                inline=False,
+            )
     elif grade_up:
         embed.add_field(
             name="등급 변화",
@@ -5736,13 +5947,10 @@ async def labor(interaction: discord.Interaction):
         await interaction.response.send_message("진행 중인 노동 패널티 정보가 없습니다. 관리자에게 문의해주세요.", ephemeral=True)
         return
 
-    session_key = (interaction.guild.id, interaction.user.id)
-    session_token = str(get_kst_now().timestamp())
-    active_labor_sessions[session_key] = session_token
     embed = build_labor_embed(interaction.user, penalty)
     await interaction.response.send_message(
         embed=embed,
-        view=LaborWorkView(interaction.guild.id, interaction.user.id, session_token),
+        view=LaborWorkView(interaction.guild.id, interaction.user.id),
     )
 
 
@@ -6079,6 +6287,7 @@ async def gambling_commands(interaction: discord.Interaction):
             "`/노동` - 신용불량자 노동 진행\n"
             "`/노동가챠` - 노동가챠권으로 남은 노동 횟수 감소 시도\n"
             "`/노동현황` - 노동 진행 상황 확인\n"
+            "`/벌금부여`로 등록된 관리자 부채는 노동 횟수에 반영됩니다.\n"
             "`/차용증목록` - 현재 차용증 목록 확인\n"
             "`/차용증삭제` - 상환 완료된 차용증 정리"
         ),
@@ -6161,7 +6370,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
     admin_embed.add_field(
         name="💰 경제 / 신용 관리",
         value=(
-            "`/돈주기`, `/돈주기내역`, `/돈삭제`\n"
+            "`/돈주기`, `/돈주기내역`, `/돈삭제`, `/벌금부여`\n"
             "`/신용불량자등록`, `/신용불량자목록`, `/신용불량자삭제`, `/신용초기화`\n"
             "`/노동가챠권지급`\n"
             "`/신용조회`, `/신용등급표`, `/일수`, `/중도상환`"
@@ -6259,7 +6468,7 @@ async def blacklist_user(interaction: discord.Interaction, member: discord.Membe
     set_credit_grade(member.id, MAX_CREDIT_GRADE)
     set_credit_blacklisted(member.id, True)
     reset_loan_progress_amount(member.id)
-    debt_amount = get_total_active_loan_repayment(member.id) or DEFAULT_LABOR_DEBT_AMOUNT
+    debt_amount = get_total_credit_obligation(interaction.guild.id, member.id) or DEFAULT_LABOR_DEBT_AMOUNT
     create_or_replace_labor_penalty(interaction.guild.id, member.id, debt_amount)
     await sync_blacklist_role(member, True)
 
@@ -6725,7 +6934,7 @@ async def loan_due_check_loop():
         downgrade_credit_grade(int(user_id))
         profile = get_credit_profile(int(user_id))
         if profile["is_blacklisted"]:
-            total_debt_amount = get_total_active_loan_repayment(int(user_id)) or int(total_repayment)
+            total_debt_amount = get_total_credit_obligation(int(guild_id), int(user_id)) or int(total_repayment)
             create_or_replace_labor_penalty(int(guild_id), int(user_id), total_debt_amount)
             guild = bot.get_guild(int(guild_id))
             if guild is not None:
