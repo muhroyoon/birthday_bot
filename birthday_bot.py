@@ -1,4 +1,5 @@
 import os
+import math
 import random
 import sqlite3
 from datetime import datetime, timedelta
@@ -110,6 +111,20 @@ DEFAULT_SAVINGS_DAYS = "3"
 DEFAULT_SAVINGS_INTEREST_RATE = "10"
 DEFAULT_LABOR_DEBT_AMOUNT = 100_000
 LOAN_GRADE_DECAY_DAYS = 2
+
+LABOR_GACHA_RESULTS = [
+    ("꽝", 0, 30),
+    ("-10%", 10, 22),
+    ("-20%", 20, 15),
+    ("-30%", 30, 10),
+    ("-40%", 40, 7),
+    ("-50%", 50, 5),
+    ("-60%", 60, 4),
+    ("-70%", 70, 3),
+    ("-80%", 80, 2),
+    ("-90%", 90, 1),
+    ("-100%", 100, 1),
+]
 
 LOAN_GRADE_LIMITS = {
     1: 20_000_000,
@@ -390,6 +405,17 @@ cursor.execute(
         status TEXT NOT NULL DEFAULT 'active',
         created_at TEXT NOT NULL,
         resolved_at TEXT,
+        PRIMARY KEY (guild_id, user_id)
+    )
+    """
+)
+
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS labor_gacha_tickets(
+        guild_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        ticket_count INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (guild_id, user_id)
     )
     """
@@ -1357,12 +1383,14 @@ def build_credit_embed(member: discord.abc.User, guild_id: int | None = None) ->
 
     if labor_penalty is not None:
         remaining = max(0, labor_penalty["required_count"] - labor_penalty["completed_count"])
+        ticket_count = get_labor_gacha_ticket_count(guild_id, member.id) if guild_id is not None else 0
         embed.add_field(
             name="노동 진행 현황",
             value=(
                 f"완료: `{labor_penalty['completed_count']}회`\n"
                 f"필요: `{labor_penalty['required_count']}회`\n"
-                f"남은 횟수: `{remaining}회`"
+                f"남은 횟수: `{remaining}회`\n"
+                f"노동가챠권: `{ticket_count}장`"
             ),
             inline=False,
         )
@@ -1770,13 +1798,45 @@ def increment_labor_count(guild_id: int, user_id: int):
     if penalty is None:
         return None, False
 
+    return apply_labor_progress(guild_id, user_id, 1)
+
+
+def resolve_labor_penalty_if_complete(guild_id: int, user_id: int, penalty: dict):
+    if penalty["completed_count"] < penalty["required_count"]:
+        return penalty, False
+
     cursor.execute(
         """
         UPDATE labor_penalties
-        SET completed_count=completed_count+1
+        SET status='resolved', resolved_at=?
+        WHERE guild_id=? AND user_id=?
+        """,
+        (dt_to_db(get_kst_now()), str(guild_id), str(user_id)),
+    )
+    conn.commit()
+
+    active_loans = get_active_loans(user_id)
+    if active_loans:
+        repay_loans([loan["id"] for loan in active_loans])
+
+    set_credit_blacklisted(user_id, False)
+    set_credit_grade(user_id, INITIAL_CREDIT_GRADE)
+    reset_loan_progress_amount(user_id)
+    return penalty, True
+
+
+def apply_labor_progress(guild_id: int, user_id: int, progress_count: int):
+    penalty = ensure_active_labor_penalty(guild_id, user_id)
+    if penalty is None:
+        return None, False
+
+    cursor.execute(
+        """
+        UPDATE labor_penalties
+        SET completed_count=MIN(required_count, completed_count + ?)
         WHERE guild_id=? AND user_id=? AND status='active'
         """,
-        (str(guild_id), str(user_id)),
+        (progress_count, str(guild_id), str(user_id)),
     )
     conn.commit()
 
@@ -1784,27 +1844,58 @@ def increment_labor_count(guild_id: int, user_id: int):
     if updated is None:
         return None, False
 
-    if updated["completed_count"] >= updated["required_count"]:
-        cursor.execute(
-            """
-            UPDATE labor_penalties
-            SET status='resolved', resolved_at=?
-            WHERE guild_id=? AND user_id=?
-            """,
-            (dt_to_db(get_kst_now()), str(guild_id), str(user_id)),
-        )
-        conn.commit()
+    return resolve_labor_penalty_if_complete(guild_id, user_id, updated)
 
-        active_loans = get_active_loans(user_id)
-        if active_loans:
-            repay_loans([loan["id"] for loan in active_loans])
 
-        set_credit_blacklisted(user_id, False)
-        set_credit_grade(user_id, INITIAL_CREDIT_GRADE)
-        reset_loan_progress_amount(user_id)
-        return updated, True
+def get_labor_gacha_ticket_count(guild_id: int, user_id: int) -> int:
+    cursor.execute(
+        "SELECT ticket_count FROM labor_gacha_tickets WHERE guild_id=? AND user_id=?",
+        (str(guild_id), str(user_id)),
+    )
+    row = cursor.fetchone()
+    return int(row[0]) if row else 0
 
-    return updated, False
+
+def add_labor_gacha_tickets(guild_id: int, user_id: int, amount: int):
+    cursor.execute(
+        """
+        INSERT INTO labor_gacha_tickets(guild_id, user_id, ticket_count)
+        VALUES (?, ?, ?)
+        ON CONFLICT(guild_id, user_id)
+        DO UPDATE SET ticket_count=ticket_count + excluded.ticket_count
+        """,
+        (str(guild_id), str(user_id), amount),
+    )
+    conn.commit()
+
+
+def consume_labor_gacha_ticket(guild_id: int, user_id: int) -> bool:
+    current_count = get_labor_gacha_ticket_count(guild_id, user_id)
+    if current_count <= 0:
+        return False
+
+    cursor.execute(
+        """
+        UPDATE labor_gacha_tickets
+        SET ticket_count=ticket_count-1
+        WHERE guild_id=? AND user_id=? AND ticket_count>0
+        """,
+        (str(guild_id), str(user_id)),
+    )
+    conn.commit()
+    return cursor.rowcount > 0
+
+
+def roll_labor_gacha():
+    labels = [item[0] for item in LABOR_GACHA_RESULTS]
+    weights = [item[2] for item in LABOR_GACHA_RESULTS]
+    label = random.choices(labels, weights=weights, k=1)[0]
+
+    for result_label, percent, _weight in LABOR_GACHA_RESULTS:
+        if result_label == label:
+            return result_label, percent
+
+    return "꽝", 0
 
 
 def delete_labor_penalty(guild_id: int, user_id: int):
@@ -5671,6 +5762,74 @@ async def labor_status(interaction: discord.Interaction, member: discord.Member 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+@bot.tree.command(name="노동가챠", description="가챠권을 사용해 남은 노동 횟수를 줄여봅니다.")
+async def labor_gacha(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    profile = get_credit_profile(interaction.user.id)
+    if not profile["is_blacklisted"]:
+        await interaction.response.send_message("현재 신용불량자 상태가 아니라 노동가챠를 사용할 수 없습니다.", ephemeral=True)
+        return
+
+    penalty = ensure_active_labor_penalty(interaction.guild.id, interaction.user.id)
+    if penalty is None:
+        await interaction.response.send_message("진행 중인 노동 패널티가 없습니다.", ephemeral=True)
+        return
+
+    ticket_count = get_labor_gacha_ticket_count(interaction.guild.id, interaction.user.id)
+    if ticket_count <= 0:
+        await interaction.response.send_message("보유한 노동가챠권이 없습니다. 관리자에게 지급을 요청해주세요.", ephemeral=True)
+        return
+
+    if not consume_labor_gacha_ticket(interaction.guild.id, interaction.user.id):
+        await interaction.response.send_message("노동가챠권 사용에 실패했습니다. 다시 시도해주세요.", ephemeral=True)
+        return
+
+    result_label, percent = roll_labor_gacha()
+    remaining_before = max(0, penalty["required_count"] - penalty["completed_count"])
+    reduction_count = 0
+    resolved = False
+    updated_penalty = penalty
+
+    if percent > 0 and remaining_before > 0:
+        reduction_count = min(remaining_before, max(1, math.ceil(remaining_before * percent / 100)))
+        updated_penalty, resolved = apply_labor_progress(interaction.guild.id, interaction.user.id, reduction_count)
+        if updated_penalty is None:
+            await interaction.response.send_message("노동가챠 처리 중 오류가 발생했습니다.", ephemeral=True)
+            return
+    else:
+        updated_penalty = get_active_labor_penalty(interaction.guild.id, interaction.user.id) or penalty
+
+    remaining_after = max(0, updated_penalty["required_count"] - updated_penalty["completed_count"])
+    embed = discord.Embed(title="🎟 노동가챠 결과", color=0xF1C40F)
+    embed.add_field(name="결과", value=result_label, inline=False)
+    embed.add_field(name="가챠 적용 전 남은 노동", value=f"`{remaining_before}회`", inline=True)
+    embed.add_field(name="감소한 노동 횟수", value=f"`{reduction_count}회`", inline=True)
+    embed.add_field(name="가챠 적용 후 남은 노동", value=f"`{remaining_after}회`", inline=True)
+    embed.add_field(
+        name="남은 가챠권",
+        value=f"`{get_labor_gacha_ticket_count(interaction.guild.id, interaction.user.id)}장`",
+        inline=False,
+    )
+
+    if resolved:
+        embed.color = 0x2ECC71
+        embed.add_field(
+            name="결과 안내",
+            value=f"노동이 모두 해제되어 신용불량자 상태가 종료되고 `{INITIAL_CREDIT_GRADE}등급`으로 복귀했습니다.",
+            inline=False,
+        )
+        await sync_blacklist_role(interaction.user, False)
+    elif percent == 0:
+        embed.add_field(name="결과 안내", value="이번에는 꽝입니다. 다음 가챠권을 노려보세요.", inline=False)
+    else:
+        embed.add_field(name="결과 안내", value=f"남은 노동 횟수의 {percent}%가 감소했습니다.", inline=False)
+
+    await interaction.response.send_message(embed=embed)
+
+
 @bot.tree.command(name="차용증", description="개인 간 차용증 요청 창을 엽니다.")
 @app_commands.rename(member="상대")
 @app_commands.describe(member="차용증을 받을 상대")
@@ -5918,6 +6077,7 @@ async def gambling_commands(interaction: discord.Interaction):
             "`/신용조회 [인원]` - 특정 인원의 신용 정보 조회\n"
             "`/신용등급표` - 등급별 대출 한도와 이자율 확인\n"
             "`/노동` - 신용불량자 노동 진행\n"
+            "`/노동가챠` - 노동가챠권으로 남은 노동 횟수 감소 시도\n"
             "`/노동현황` - 노동 진행 상황 확인\n"
             "`/차용증목록` - 현재 차용증 목록 확인\n"
             "`/차용증삭제` - 상환 완료된 차용증 정리"
@@ -6003,6 +6163,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         value=(
             "`/돈주기`, `/돈주기내역`, `/돈삭제`\n"
             "`/신용불량자등록`, `/신용불량자목록`, `/신용불량자삭제`, `/신용초기화`\n"
+            "`/노동가챠권지급`\n"
             "`/신용조회`, `/신용등급표`, `/일수`, `/중도상환`"
         ),
         inline=False,
@@ -6038,7 +6199,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="🏦 적금 / 대출 / 신용",
         value=(
             "`/적금`, `/내적금`, `/적금수령`\n"
-            "`/일수`, `/중도상환`, `/내신용`, `/신용조회`, `/신용등급표`, `/노동`, `/노동현황`\n"
+            "`/일수`, `/중도상환`, `/내신용`, `/신용조회`, `/신용등급표`, `/노동`, `/노동가챠`, `/노동현황`\n"
             "`/차용증`, `/차용증목록`, `/차용증삭제`"
         ),
         inline=False,
@@ -6104,6 +6265,22 @@ async def blacklist_user(interaction: discord.Interaction, member: discord.Membe
 
     await interaction.response.send_message(
         f"{member.mention}님을 신용불량자로 등록했습니다.\n필요 노동 횟수: `{calculate_labor_required_count(debt_amount)}회`",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="노동가챠권지급", description="특정 인원에게 노동가챠권을 지급합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+@app_commands.rename(member="인원", amount="개수")
+async def grant_labor_gacha_ticket(interaction: discord.Interaction, member: discord.Member, amount: int):
+    if amount <= 0:
+        await interaction.response.send_message("지급 개수는 1개 이상이어야 합니다.", ephemeral=True)
+        return
+
+    add_labor_gacha_tickets(interaction.guild.id, member.id, amount)
+    current_count = get_labor_gacha_ticket_count(interaction.guild.id, member.id)
+    await interaction.response.send_message(
+        f"{member.mention}님에게 노동가챠권 `{amount}장`을 지급했습니다.\n현재 보유 수량: `{current_count}장`",
         ephemeral=True,
     )
 
