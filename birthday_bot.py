@@ -154,6 +154,15 @@ LOAN_GRADE_INTEREST = {
 
 labor_click_locks: set[tuple[int, int]] = set()
 
+SLOT_SYMBOL_EMOJIS = {
+    "체리": "🍒",
+    "레몬": "🍋",
+    "포도": "🍇",
+    "사과": "🍎",
+    "클로버": "🍀",
+    "7": "7️⃣",
+}
+
 DUCKMONG_FAKE_NAMES = [
     "보안관",
     "자경단",
@@ -1268,6 +1277,31 @@ def get_active_manual_credit_debts(guild_id: int, user_id: int):
     ]
 
 
+def get_manual_credit_debt(debt_id: int):
+    cursor.execute(
+        """
+        SELECT id, guild_id, user_id, amount, reason, status, created_at, resolved_at
+        FROM manual_credit_debts
+        WHERE id=?
+        """,
+        (debt_id,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+
+    return {
+        "id": int(row[0]),
+        "guild_id": row[1],
+        "user_id": int(row[2]),
+        "amount": int(row[3]),
+        "reason": row[4] or "",
+        "status": row[5],
+        "created_at": row[6],
+        "resolved_at": row[7],
+    }
+
+
 def get_total_active_manual_credit_debt(guild_id: int, user_id: int) -> int:
     cursor.execute(
         """
@@ -1289,6 +1323,18 @@ def resolve_manual_credit_debts(guild_id: int, user_id: int):
         WHERE guild_id=? AND user_id=? AND status='active'
         """,
         (dt_to_db(get_kst_now()), str(guild_id), str(user_id)),
+    )
+    conn.commit()
+
+
+def resolve_manual_credit_debt(debt_id: int):
+    cursor.execute(
+        """
+        UPDATE manual_credit_debts
+        SET status='resolved', resolved_at=?
+        WHERE id=? AND status='active'
+        """,
+        (dt_to_db(get_kst_now()), debt_id),
     )
     conn.commit()
 
@@ -5008,6 +5054,51 @@ async def assign_manual_credit_debt(
     await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
 
+@bot.tree.command(name="벌금삭제", description="상환이 끝난 관리자 부채를 정리합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+@app_commands.rename(debt_id="부채번호")
+async def resolve_manual_credit_debt_command(interaction: discord.Interaction, debt_id: int):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    debt = get_manual_credit_debt(debt_id)
+    if debt is None or debt["guild_id"] != str(interaction.guild.id):
+        await interaction.response.send_message("해당 관리자 부채를 찾을 수 없습니다.", ephemeral=True)
+        return
+
+    if debt["status"] != "active":
+        await interaction.response.send_message("이미 정리된 관리자 부채입니다.", ephemeral=True)
+        return
+
+    resolve_manual_credit_debt(debt_id)
+
+    profile = get_credit_profile(debt["user_id"])
+    member = interaction.guild.get_member(debt["user_id"])
+    remaining_manual_debt = get_total_active_manual_credit_debt(interaction.guild.id, debt["user_id"])
+
+    if profile["is_blacklisted"]:
+        if get_total_credit_obligation(interaction.guild.id, debt["user_id"]) <= 0:
+            set_credit_blacklisted(debt["user_id"], False)
+            set_credit_grade(debt["user_id"], INITIAL_CREDIT_GRADE)
+            delete_labor_penalty(interaction.guild.id, debt["user_id"])
+            if member is not None:
+                await sync_blacklist_role(member, False)
+        else:
+            refresh_active_labor_penalty_debt(interaction.guild.id, debt["user_id"])
+
+    member_text = member.mention if member is not None else f"`{debt['user_id']}`"
+    lines = [
+        f"{member_text}님의 관리자 부채 `#{debt_id}`를 정리했습니다.",
+        f"정리된 금액: `{format_money(debt['amount'])}`",
+        f"남은 관리자 부채 합계: `{format_money(remaining_manual_debt)}`",
+    ]
+    if debt["reason"]:
+        lines.append(f"사유: {debt['reason']}")
+
+    await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+
 # ----------------------------
 # 게임 명령어
 # ----------------------------
@@ -5030,6 +5121,7 @@ async def slot(interaction: discord.Interaction, amount: int):
     second = first if random.random() < 0.05 else random.choice(symbols)
     third = first if random.random() < 0.05 else random.choice(symbols)
     result = [first, second, third]
+    result_display = " | ".join(SLOT_SYMBOL_EMOJIS.get(symbol, symbol) for symbol in result)
 
     multiplier = 0
 
@@ -5062,13 +5154,13 @@ async def slot(interaction: discord.Interaction, amount: int):
     balance_now = get_balance(interaction.user.id)
 
     if multiplier == 0:
-        desc = f"`{' | '.join(result)}`\n\n아쉽네요... `{format_money(amount)}`을 잃었습니다.\n현재 잔액: `{format_money(balance_now)}`"
+        desc = f"{result_display}\n\n아쉽네요... `{format_money(amount)}`을 잃었습니다.\n현재 잔액: `{format_money(balance_now)}`"
         color = 0xE74C3C
     elif len(set(result)) == 1:
-        desc = f"`{' | '.join(result)}`\n\n대박! `{multiplier}배` 당첨으로 `{format_money(winnings)}`을 획득했습니다.\n현재 잔액: `{format_money(balance_now)}`"
+        desc = f"{result_display}\n\n대박! `{multiplier}배` 당첨으로 `{format_money(winnings)}`을 획득했습니다.\n현재 잔액: `{format_money(balance_now)}`"
         color = 0x2ECC71
     else:
-        desc = f"`{' | '.join(result)}`\n\n2개 일치! `{multiplier}배` 보상으로 `{format_money(winnings)}`을 획득했습니다.\n현재 잔액: `{format_money(balance_now)}`"
+        desc = f"{result_display}\n\n2개 일치! `{multiplier}배` 보상으로 `{format_money(winnings)}`을 획득했습니다.\n현재 잔액: `{format_money(balance_now)}`"
         color = 0x3498DB
 
     add_game_history(
@@ -6288,6 +6380,7 @@ async def gambling_commands(interaction: discord.Interaction):
             "`/노동가챠` - 노동가챠권으로 남은 노동 횟수 감소 시도\n"
             "`/노동현황` - 노동 진행 상황 확인\n"
             "`/벌금부여`로 등록된 관리자 부채는 노동 횟수에 반영됩니다.\n"
+            "`/벌금삭제 [부채번호]` - 상환 완료된 관리자 부채 정리\n"
             "`/차용증목록` - 현재 차용증 목록 확인\n"
             "`/차용증삭제` - 상환 완료된 차용증 정리"
         ),
@@ -6370,7 +6463,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
     admin_embed.add_field(
         name="💰 경제 / 신용 관리",
         value=(
-            "`/돈주기`, `/돈주기내역`, `/돈삭제`, `/벌금부여`\n"
+            "`/돈주기`, `/돈주기내역`, `/돈삭제`, `/벌금부여`, `/벌금삭제`\n"
             "`/신용불량자등록`, `/신용불량자목록`, `/신용불량자삭제`, `/신용초기화`\n"
             "`/노동가챠권지급`\n"
             "`/신용조회`, `/신용등급표`, `/일수`, `/중도상환`"
