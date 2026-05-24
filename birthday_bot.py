@@ -2783,7 +2783,7 @@ class CoinFlipView(discord.ui.View):
         win = choice == result
 
         if win:
-            payout = int(self.bet_amount * 1.8)
+            payout = int(self.bet_amount * 1.9)
             add_balance(self.user_id, payout)
             description = f"선택: **{choice}**\n결과: **{result}**\n축하합니다! `{format_money(payout)}`을 획득했습니다."
             color = 0x2ECC71
@@ -2840,21 +2840,21 @@ class RouletteView(discord.ui.View):
     def spin_result(self) -> str:
         return random.choices(
             ["빨강", "노랑", "파랑", "검정", "초록"],
-            weights=[35, 25, 19, 12, 9],
+            weights=[33, 25, 20, 13, 9],
             k=1,
         )[0]
 
     def get_payout(self, choice: str) -> int:
         if choice == "빨강":
-            return int(self.bet_amount * 2.5)
+            return int(self.bet_amount * 2.9)
         if choice == "노랑":
-            return int(self.bet_amount * 3.4)
+            return int(self.bet_amount * 3.8)
         if choice == "파랑":
-            return int(self.bet_amount * 4.4)
+            return int(self.bet_amount * 4.8)
         if choice == "검정":
-            return int(self.bet_amount * 6.5)
+            return int(self.bet_amount * 7.3)
         if choice == "초록":
-            return int(self.bet_amount * 9.5)
+            return int(self.bet_amount * 10.5)
         return 0
 
     async def finish(self, interaction: discord.Interaction, choice: str):
@@ -2940,13 +2940,13 @@ class SupplyDropView(discord.ui.View):
         result = random.choices(
             [
                 ("빈 상자", 0.0, "보급 상자를 열었지만 아쉽게도 아무것도 나오지 않았습니다."),
-                ("1뚝", 0.9, "낡은 1뚝을 챙겼습니다. 큰 수확은 아니지만 빈손은 아닙니다."),
+                ("1뚝", 1.0, "낡은 1뚝을 챙겼습니다. 큰 수확은 아니지만 빈손은 아닙니다."),
                 ("2뚝", 1.0, "2뚝을 획득했습니다. 본전은 지켰습니다."),
-                ("3뚝", 1.6, "3뚝을 획득했습니다! 이번 교전은 조금 더 든든합니다."),
-                ("보급 총기 획득", 2.8, "보급 총기를 획득했습니다! 분위기가 달아오르기 시작합니다."),
-                ("풀세트 보급 대박", 4.5, "3뚝과 보급 총기까지 모두 챙겼습니다! 말 그대로 풀세트 보급 대박입니다!"),
+                ("3뚝", 1.5, "3뚝을 획득했습니다! 이번 교전은 조금 더 든든합니다."),
+                ("보급 총기 획득", 2.5, "보급 총기를 획득했습니다! 분위기가 달아오르기 시작합니다."),
+                ("풀세트 보급 대박", 4.2, "3뚝과 보급 총기까지 모두 챙겼습니다! 말 그대로 풀세트 보급 대박입니다!"),
             ],
-            weights=[38, 24, 17, 10, 8, 3],
+            weights=[34, 24, 19, 11, 9, 3],
             k=1,
         )[0]
         return result
@@ -5099,7 +5099,7 @@ async def coin(interaction: discord.Interaction, amount: int):
         description=(
             f"베팅 금액: `{format_money(amount)}`\n"
             "아래 버튼에서 `앞` 또는 `뒤`를 선택해주세요.\n"
-            "승리 시 1.8배를 지급합니다.\n"
+            "승리 시 1.9배를 지급합니다.\n"
             f"{COIN_FLIP_TIMEOUT}초 안에 선택하지 않으면 자동 취소되고 돈이 반환됩니다."
         ),
         color=0xF1C40F,
@@ -5129,11 +5129,11 @@ async def roulette(interaction: discord.Interaction, amount: int):
         description=(
             f"베팅 금액: `{format_money(amount)}`\n\n"
             "색상을 선택해주세요.\n\n"
-            "🟥 빨강: 승리 시 2.5배\n"
-            "🟨 노랑: 승리 시 3.4배\n"
-            "🟦 파랑: 승리 시 4.4배\n"
-            "⬛ 검정: 승리 시 6.5배\n"
-            "🟩 초록: 승리 시 9.5배\n\n"
+            "🟥 빨강: 승리 시 2.9배\n"
+            "🟨 노랑: 승리 시 3.8배\n"
+            "🟦 파랑: 승리 시 4.8배\n"
+            "⬛ 검정: 승리 시 7.3배\n"
+            "🟩 초록: 승리 시 10.5배\n\n"
             "빨강은 가장 안전하고,\n"
             "뒤로 갈수록 확률은 낮아지지만 배당은 높아집니다.\n"
         ),
@@ -5563,18 +5563,18 @@ async def probability_table(interaction: discord.Interaction):
 
     embed.add_field(
         name="동전",
-        value="앞/뒤 50% 확률\n승리 시 1.8배",
+        value="앞/뒤 50% 확률\n승리 시 1.9배",
         inline=False,
     )
 
     embed.add_field(
         name="룰렛",
         value=(
-            "빨강 35% / 2.5배\n"
-            "노랑 25% / 3.4배\n"
-            "파랑 19% / 4.4배\n"
-            "검정 12% / 6.5배\n"
-            "초록 9% / 9.5배"
+            "빨강 33% / 2.9배\n"
+            "노랑 25% / 3.8배\n"
+            "파랑 20% / 4.8배\n"
+            "검정 13% / 7.3배\n"
+            "초록 9% / 10.5배"
         ),
         inline=False,
     )
@@ -5582,12 +5582,12 @@ async def probability_table(interaction: discord.Interaction):
     embed.add_field(
         name="보급",
         value=(
-            "빈 상자 38% / 0배\n"
-            "1뚝 24% / 0.9배\n"
-            "2뚝 17% / 1.0배\n"
-            "3뚝 10% / 1.6배\n"
-            "보급 총기 획득 8% / 2.8배\n"
-            "풀세트 보급 대박 3% / 4.5배"
+            "빈 상자 34% / 0배\n"
+            "1뚝 24% / 1.0배\n"
+            "2뚝 19% / 1.0배\n"
+            "3뚝 11% / 1.5배\n"
+            "보급 총기 획득 9% / 2.5배\n"
+            "풀세트 보급 대박 3% / 4.2배"
         ),
         inline=False,
     )
@@ -5748,12 +5748,12 @@ async def loan_money(interaction: discord.Interaction, amount: int):
         )
         return
 
-    required_balance = (amount + 1) // 2
+    required_balance = (amount + 3) // 4
     current_balance = get_balance(interaction.user.id)
     if current_balance < required_balance:
         await interaction.response.send_message(
             (
-                f"대출을 받으려면 현재 잔액이 대출 금액의 절반 이상이어야 합니다.\n"
+                f"대출을 받으려면 현재 잔액이 대출 금액의 25% 이상이어야 합니다.\n"
                 f"필요 잔액: `{format_money(required_balance)}`\n"
                 f"현재 잔액: `{format_money(current_balance)}`"
             ),
@@ -5916,7 +5916,7 @@ async def credit_grade_table(interaction: discord.Interaction):
         name="대출 조건",
         value=(
             "대출은 현재 신용등급의 남은 한도 내에서만 가능합니다.\n"
-            "또한 현재 잔액이 대출 금액의 절반 이상이어야 합니다."
+            "또한 현재 잔액이 대출 금액의 25% 이상이어야 합니다."
         ),
         inline=False,
     )
