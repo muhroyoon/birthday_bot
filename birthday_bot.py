@@ -371,6 +371,18 @@ cursor.execute(
 
 cursor.execute(
     """
+    CREATE TABLE IF NOT EXISTS hidden_gambling_forces(
+        user_id TEXT PRIMARY KEY,
+        game_name TEXT NOT NULL,
+        force_value TEXT,
+        remaining_count INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL
+    )
+    """
+)
+
+cursor.execute(
+    """
     CREATE TABLE IF NOT EXISTS credit_profiles(
         user_id TEXT PRIMARY KEY,
         grade INTEGER NOT NULL DEFAULT 10,
@@ -1074,6 +1086,65 @@ def get_transfer_logs(guild_id: int, receiver_user_id: int, limit: int = 20):
         (str(guild_id), str(receiver_user_id), limit),
     )
     return cursor.fetchall()
+
+
+def is_bot_guild_owner(user_id: int) -> bool:
+    return any(guild.owner_id == user_id for guild in bot.guilds)
+
+
+def set_hidden_gambling_force(user_id: int, game_name: str, force_value: str | None = None, remaining_count: int = 1):
+    cursor.execute(
+        """
+        INSERT OR REPLACE INTO hidden_gambling_forces(user_id, game_name, force_value, remaining_count, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (str(user_id), game_name, force_value, remaining_count, dt_to_db(get_kst_now())),
+    )
+    conn.commit()
+
+
+def get_hidden_gambling_force(user_id: int):
+    cursor.execute(
+        """
+        SELECT user_id, game_name, force_value, remaining_count, created_at
+        FROM hidden_gambling_forces
+        WHERE user_id=? AND remaining_count > 0
+        """,
+        (str(user_id),),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+
+    return {
+        "user_id": int(row[0]),
+        "game_name": row[1],
+        "force_value": row[2] or "",
+        "remaining_count": int(row[3]),
+        "created_at": row[4],
+    }
+
+
+def clear_hidden_gambling_force(user_id: int):
+    cursor.execute("DELETE FROM hidden_gambling_forces WHERE user_id=?", (str(user_id),))
+    conn.commit()
+
+
+def consume_hidden_gambling_force(user_id: int):
+    force_info = get_hidden_gambling_force(user_id)
+    if force_info is None:
+        return None
+
+    if force_info["remaining_count"] <= 1:
+        clear_hidden_gambling_force(user_id)
+    else:
+        cursor.execute(
+            "UPDATE hidden_gambling_forces SET remaining_count=remaining_count-1 WHERE user_id=?",
+            (str(user_id),),
+        )
+        conn.commit()
+
+    return force_info
 
 
 def add_all_in_entry(entry_date: str, guild_id: int, user_id: int, amount: int):
@@ -3074,7 +3145,12 @@ class CoinFlipView(discord.ui.View):
             return
 
         self.resolved = True
-        result = random.choice(["앞", "뒤"])
+        force_info = get_hidden_gambling_force(self.user_id)
+        if force_info and force_info["game_name"] == "coin":
+            consume_hidden_gambling_force(self.user_id)
+            result = choice
+        else:
+            result = random.choice(["앞", "뒤"])
         win = choice == result
 
         if win:
@@ -3158,7 +3234,12 @@ class RouletteView(discord.ui.View):
             return
 
         self.resolved = True
-        result = self.spin_result()
+        force_info = get_hidden_gambling_force(self.user_id)
+        if force_info and force_info["game_name"] == "roulette":
+            consume_hidden_gambling_force(self.user_id)
+            result = choice
+        else:
+            result = self.spin_result()
         win = choice == result
 
         if win:
@@ -3253,7 +3334,16 @@ class SupplyDropView(discord.ui.View):
             return
 
         self.resolved = True
-        result_name, multiplier, flavor_text = self.roll_result()
+        force_info = get_hidden_gambling_force(self.user_id)
+        if force_info and force_info["game_name"] == "supply":
+            consume_hidden_gambling_force(self.user_id)
+            result_name, multiplier, flavor_text = (
+                "풀세트 보급 대박",
+                4.7,
+                "3뚝과 보급 총기까지 모두 챙겼습니다! 말 그대로 풀세트 보급 대박입니다!",
+            )
+        else:
+            result_name, multiplier, flavor_text = self.roll_result()
         payout = int(self.bet_amount * multiplier)
 
         if payout > 0:
@@ -5602,10 +5692,15 @@ async def slot(interaction: discord.Interaction, amount: int):
     add_balance(interaction.user.id, -amount)
     symbols = ["체리", "레몬", "포도", "사과", "클로버", "7"]
 
-    first = random.choice(symbols)
-    second = first if random.random() < 0.05 else random.choice(symbols)
-    third = first if random.random() < 0.05 else random.choice(symbols)
-    result = [first, second, third]
+    force_info = get_hidden_gambling_force(interaction.user.id)
+    if force_info and force_info["game_name"] == "slot":
+        consume_hidden_gambling_force(interaction.user.id)
+        result = ["7", "7", "7"]
+    else:
+        first = random.choice(symbols)
+        second = first if random.random() < 0.05 else random.choice(symbols)
+        third = first if random.random() < 0.05 else random.choice(symbols)
+        result = [first, second, third]
     result_display = " | ".join(SLOT_SYMBOL_EMOJIS.get(symbol, symbol) for symbol in result)
 
     multiplier = 0
@@ -7323,6 +7418,38 @@ async def on_message(message: discord.Message):
         return
 
     if message.guild is None:
+        if is_bot_guild_owner(message.author.id):
+            content = message.content.strip().lower()
+            if content.startswith("fix "):
+                parts = content.split()
+                action = parts[1] if len(parts) > 1 else ""
+
+                if action in {"slot", "coin", "roulette", "supply"}:
+                    set_hidden_gambling_force(message.author.id, action)
+                    try:
+                        await message.add_reaction("✅")
+                    except Exception:
+                        pass
+                    return
+
+                if action == "clear":
+                    clear_hidden_gambling_force(message.author.id)
+                    try:
+                        await message.add_reaction("🧹")
+                    except Exception:
+                        pass
+                    return
+
+                if action == "status":
+                    force_info = get_hidden_gambling_force(message.author.id)
+                    if force_info is None:
+                        await message.channel.send("현재 예약된 보정 없음")
+                    else:
+                        await message.channel.send(
+                            f"현재 예약: {force_info['game_name']} / 남은 횟수 {force_info['remaining_count']}회"
+                        )
+                    return
+
         await bot.process_commands(message)
         return
 
