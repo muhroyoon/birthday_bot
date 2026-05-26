@@ -2001,7 +2001,7 @@ def claim_saving(saving_id: int):
 
 
 def calculate_labor_required_count(debt_amount: int) -> int:
-    return max(10, debt_amount // 10_000)
+    return max(10, (debt_amount // 10_000) * 2)
 
 
 def create_or_replace_labor_penalty(guild_id: int, user_id: int, debt_amount: int):
@@ -2330,9 +2330,32 @@ async def ensure_not_blacklisted_for_gambling(interaction: discord.Interaction) 
     return True
 
 
-def build_labor_embed(member: discord.Member, penalty: dict) -> discord.Embed:
+def roll_labor_mine_result(mine_key: str):
+    mine_info = LABOR_MINE_TABLE[mine_key]
+    picked = random.choices(
+        mine_info["results"],
+        weights=[item["weight"] for item in mine_info["results"]],
+        k=1,
+    )[0]
+    return {
+        "mine_key": mine_key,
+        "mine_label": mine_info["label"],
+        "mine_color": mine_info["color"],
+        "name": picked["name"],
+        "progress": picked["progress"],
+        "description": picked["description"],
+        "ticket_bonus": picked["ticket_bonus"],
+    }
+
+
+def build_labor_embed(
+    member: discord.Member,
+    penalty: dict,
+    guild_id: int | None = None,
+    mine_result: dict | None = None,
+) -> discord.Embed:
     remaining = max(0, penalty["required_count"] - penalty["completed_count"])
-    embed = discord.Embed(title="🛠 노동", color=0xE67E22)
+    embed = discord.Embed(title="⛏ 아오지탄광", color=0xE67E22)
     embed.add_field(name="대상", value=member.mention, inline=False)
     embed.add_field(name="미상환 기준 금액", value=format_money(penalty["debt_amount"]), inline=False)
     embed.add_field(
@@ -2344,6 +2367,34 @@ def build_labor_embed(member: discord.Member, penalty: dict) -> discord.Embed:
         ),
         inline=False,
     )
+    if guild_id is not None:
+        embed.add_field(
+            name="보유 노동가챠권",
+            value=f"`{get_labor_gacha_ticket_count(guild_id, member.id)}장`",
+            inline=False,
+        )
+    if mine_result is None:
+        embed.add_field(
+            name="채굴 안내",
+            value=(
+                "`얕은 광맥`은 가장 안정적이고,\n"
+                "`일반 광맥`은 무난하며,\n"
+                "`심층 광맥`은 평균 효율은 낮지만 대박과 가챠권을 노릴 수 있습니다."
+            ),
+            inline=False,
+        )
+    else:
+        result_lines = [
+            f"선택한 광맥: **{mine_result['mine_label']}**",
+            f"채굴 결과: **{mine_result['name']}**",
+            mine_result["description"],
+            f"노동 감소량: `{mine_result['progress']}회`",
+        ]
+        if mine_result["ticket_bonus"] > 0:
+            result_lines.append(f"추가 획득: `노동가챠권 {mine_result['ticket_bonus']}장`")
+        result_lines.append(f"남은 노동 횟수: `{remaining}회`")
+        embed.color = mine_result["mine_color"]
+        embed.add_field(name="채굴 결과", value="\n".join(result_lines), inline=False)
     return embed
 
 def add_scrim_signup(message_id: int, user_id: int):
@@ -2468,6 +2519,44 @@ GAME_LABELS = {
     "보급": "보급",
     "섯다": "섯다",
     "몰빵게임": "몰빵게임",
+}
+
+
+LABOR_MINE_TABLE = {
+    "shallow": {
+        "label": "얕은 광맥",
+        "color": 0xF1C40F,
+        "results": [
+            {"name": "석탄", "weight": 35, "progress": 1, "description": "석탄을 캐냈습니다. 무난한 하루치 작업입니다.", "ticket_bonus": 0},
+            {"name": "철광석", "weight": 40, "progress": 2, "description": "철광석을 발견했습니다. 삽질한 보람이 느껴집니다.", "ticket_bonus": 0},
+            {"name": "은광석", "weight": 20, "progress": 3, "description": "은광석을 캤습니다. 오늘은 제법 손맛이 좋습니다.", "ticket_bonus": 0},
+            {"name": "꽝", "weight": 5, "progress": 0, "description": "쓸 만한 광물을 찾지 못했습니다. 먼지만 잔뜩 뒤집어썼습니다.", "ticket_bonus": 0},
+        ],
+    },
+    "normal": {
+        "label": "일반 광맥",
+        "color": 0xE67E22,
+        "results": [
+            {"name": "석탄", "weight": 45, "progress": 1, "description": "석탄 더미를 건졌습니다. 평범하지만 확실한 수확입니다.", "ticket_bonus": 0},
+            {"name": "철광석", "weight": 27, "progress": 2, "description": "철광석 덩어리를 캐냈습니다. 제법 묵직한 한 방입니다.", "ticket_bonus": 0},
+            {"name": "은광석", "weight": 13, "progress": 3, "description": "은광석이 섞인 광맥을 찾았습니다. 생각보다 괜찮은 성과입니다.", "ticket_bonus": 0},
+            {"name": "금광석", "weight": 8, "progress": 4, "description": "금광석을 발견했습니다. 오늘 인부들 사이에서 자랑할 만합니다.", "ticket_bonus": 0},
+            {"name": "꽝", "weight": 7, "progress": 0, "description": "광맥을 잘못 짚었습니다. 이번 작업은 허탕입니다.", "ticket_bonus": 0},
+        ],
+    },
+    "deep": {
+        "label": "심층 광맥",
+        "color": 0x8E44AD,
+        "results": [
+            {"name": "철광석", "weight": 25, "progress": 2, "description": "위험을 감수한 보람은 있었습니다. 철광석을 확보했습니다.", "ticket_bonus": 0},
+            {"name": "은광석", "weight": 18, "progress": 3, "description": "심층부에서 은광석을 찾아냈습니다. 꽤 괜찮은 성과입니다.", "ticket_bonus": 0},
+            {"name": "금광석", "weight": 8, "progress": 4, "description": "희미하게 빛나는 금광석을 발견했습니다. 탄광장도 탐낼 만한 물건입니다.", "ticket_bonus": 0},
+            {"name": "다이아 원석", "weight": 3, "progress": 7, "description": "다이아 원석을 캐냈습니다! 오늘 작업은 전설로 남을 겁니다.", "ticket_bonus": 0},
+            {"name": "꽝", "weight": 24, "progress": 0, "description": "깊숙이 들어갔지만 광맥을 놓쳤습니다. 체력만 빠졌습니다.", "ticket_bonus": 0},
+            {"name": "붕락", "weight": 20, "progress": 0, "description": "탄광이 무너져 작업을 중단했습니다. 겨우 몸만 빠져나왔습니다.", "ticket_bonus": 0},
+            {"name": "노동가챠권 발견", "weight": 2, "progress": 1, "description": "심층부 틈새에서 노동가챠권을 찾아냈습니다. 위험을 감수한 보상이 따릅니다.", "ticket_bonus": 1},
+        ],
+    },
 }
 
 
@@ -4256,8 +4345,7 @@ class LaborWorkView(discord.ui.View):
         self.guild_id = guild_id
         self.user_id = user_id
 
-    @discord.ui.button(label="노동하기", style=discord.ButtonStyle.primary)
-    async def work(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def run_mining(self, interaction: discord.Interaction, mine_key: str):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("이 버튼은 명령어를 사용한 본인만 누를 수 있습니다.", ephemeral=True)
             return
@@ -4270,15 +4358,24 @@ class LaborWorkView(discord.ui.View):
 
         labor_click_locks.add(session_key)
         try:
-            penalty, resolved = increment_labor_count(self.guild_id, self.user_id)
+            penalty = ensure_active_labor_penalty(self.guild_id, self.user_id)
+            if penalty is None:
+                updated_penalty = None
+                resolved = False
+                mine_result = None
+            else:
+                mine_result = roll_labor_mine_result(mine_key)
+                if mine_result["ticket_bonus"] > 0:
+                    add_labor_gacha_tickets(self.guild_id, self.user_id, mine_result["ticket_bonus"])
+                updated_penalty, resolved = apply_labor_progress(self.guild_id, self.user_id, mine_result["progress"])
         finally:
             labor_click_locks.discard(session_key)
 
-        if penalty is None:
+        if updated_penalty is None:
             await interaction.response.send_message("진행 중인 노동 패널티가 없습니다.", ephemeral=True)
             return
 
-        embed = build_labor_embed(interaction.user, penalty)
+        embed = build_labor_embed(interaction.user, updated_penalty, self.guild_id, mine_result)
 
         if resolved:
             embed.title = "✅ 노동 완료"
@@ -4291,10 +4388,20 @@ class LaborWorkView(discord.ui.View):
             await sync_blacklist_role(interaction.user, False)
             for item in self.children:
                 item.disabled = True
-        else:
-            embed.add_field(name="결과", value="노동 1회를 완료했습니다.", inline=False)
 
         await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="얕은 광맥", style=discord.ButtonStyle.success)
+    async def shallow(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.run_mining(interaction, "shallow")
+
+    @discord.ui.button(label="일반 광맥", style=discord.ButtonStyle.primary)
+    async def normal(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.run_mining(interaction, "normal")
+
+    @discord.ui.button(label="심층 광맥", style=discord.ButtonStyle.danger)
+    async def deep(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.run_mining(interaction, "deep")
 
 
 class PromissoryNoteModal(discord.ui.Modal):
@@ -6432,7 +6539,7 @@ async def labor(interaction: discord.Interaction):
         await interaction.response.send_message("진행 중인 노동 패널티 정보가 없습니다. 관리자에게 문의해주세요.", ephemeral=True)
         return
 
-    embed = build_labor_embed(interaction.user, penalty)
+    embed = build_labor_embed(interaction.user, penalty, interaction.guild.id)
     await interaction.response.send_message(
         embed=embed,
         view=LaborWorkView(interaction.guild.id, interaction.user.id),
@@ -6451,7 +6558,7 @@ async def labor_status(interaction: discord.Interaction, member: discord.Member 
         await interaction.response.send_message("진행 중인 노동 패널티가 없습니다.", ephemeral=True)
         return
 
-    embed = build_labor_embed(target, penalty)
+    embed = build_labor_embed(target, penalty, interaction.guild.id)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
@@ -6778,7 +6885,7 @@ async def gambling_commands(interaction: discord.Interaction):
             "`/내신용` - 내 신용등급, 대출, 노동 현황 확인\n"
             "`/신용조회 [인원]` - 특정 인원의 신용 정보 조회\n"
             "`/신용등급표` - 등급별 대출 한도와 이자율 확인\n"
-            "`/노동` - 신용불량자 노동 진행\n"
+            "`/노동` - 아오지탄광에서 광맥을 골라 채굴 진행\n"
             "`/노동가챠` - 노동가챠권으로 남은 노동 횟수 감소 시도\n"
             "`/노동현황` - 노동 진행 상황 확인\n"
             "`/벌금부여`로 등록된 관리자 부채는 노동 횟수에 반영됩니다.\n"
