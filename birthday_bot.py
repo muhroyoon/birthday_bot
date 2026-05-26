@@ -4692,12 +4692,12 @@ async def business_certificate(interaction: discord.Interaction):
     embed.add_field(name="등록일", value=f"`{created_text}`", inline=True)
     embed.add_field(name="사업자명", value=business_info["business_name"], inline=False)
     if business_info["logo_url"]:
-        embed.set_thumbnail(url=business_info["logo_url"])
-        embed.add_field(name="로고", value="상단 이미지 참고", inline=False)
+        embed.set_image(url=business_info["logo_url"])
+        embed.add_field(name="로고", value="하단 이미지 참고", inline=False)
     else:
         embed.add_field(name="로고", value="없음", inline=False)
     embed.set_footer(text=f"{interaction.guild.name} 사업자 등록 정보")
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.send_message(embed=embed)
 
 
 @bot.tree.command(name="사업자삭제", description="등록된 사업자 정보를 삭제합니다.")
