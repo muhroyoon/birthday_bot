@@ -5952,6 +5952,17 @@ async def loan_money(interaction: discord.Interaction, amount: int):
     max_amount = get_loan_limit_by_grade(grade)
     remaining_limit = get_remaining_loan_limit(interaction.user.id)
     interest_rate = get_loan_interest_by_grade(grade)
+    active_loan_count = len(get_active_loans(interaction.user.id))
+
+    if active_loan_count >= 2:
+        await interaction.response.send_message(
+            (
+                "동시에 진행할 수 있는 대출은 최대 2건입니다.\n"
+                "기존 대출 일부 또는 전체를 `/중도상환`한 뒤 다시 시도해주세요."
+            ),
+            ephemeral=True,
+        )
+        return
 
     if remaining_limit <= 0:
         await interaction.response.send_message(
