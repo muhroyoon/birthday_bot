@@ -2959,15 +2959,15 @@ class RouletteView(discord.ui.View):
 
     def get_payout(self, choice: str) -> int:
         if choice == "빨강":
-            return int(self.bet_amount * 3.03)
+            return int(self.bet_amount * 3.0)
         if choice == "노랑":
             return int(self.bet_amount * 4.0)
         if choice == "파랑":
             return int(self.bet_amount * 5.0)
         if choice == "검정":
-            return int(self.bet_amount * 7.69)
+            return int(self.bet_amount * 7.7)
         if choice == "초록":
-            return int(self.bet_amount * 11.11)
+            return int(self.bet_amount * 11.1)
         return 0
 
     async def finish(self, interaction: discord.Interaction, choice: str):
@@ -3054,10 +3054,10 @@ class SupplyDropView(discord.ui.View):
             [
                 ("빈 상자", 0.0, "보급 상자를 열었지만 아쉽게도 아무것도 나오지 않았습니다."),
                 ("1뚝", 1.0, "낡은 1뚝을 챙겼습니다. 큰 수확은 아니지만 빈손은 아닙니다."),
-                ("2뚝", 1.0, "2뚝을 획득했습니다. 본전은 지켰습니다."),
-                ("3뚝", 1.7, "3뚝을 획득했습니다! 이번 교전은 조금 더 든든합니다."),
-                ("보급 총기 획득", 2.7, "보급 총기를 획득했습니다! 분위기가 달아오르기 시작합니다."),
-                ("풀세트 보급 대박", 4.67, "3뚝과 보급 총기까지 모두 챙겼습니다! 말 그대로 풀세트 보급 대박입니다!"),
+                ("2뚝", 1.1, "2뚝을 획득했습니다. 본전 이상은 챙겼습니다."),
+                ("3뚝", 1.6, "3뚝을 획득했습니다! 이번 교전은 조금 더 든든합니다."),
+                ("보급 총기 획득", 2.6, "보급 총기를 획득했습니다! 분위기가 달아오르기 시작합니다."),
+                ("풀세트 보급 대박", 4.7, "3뚝과 보급 총기까지 모두 챙겼습니다! 말 그대로 풀세트 보급 대박입니다!"),
             ],
             weights=[34, 24, 19, 11, 9, 3],
             k=1,
@@ -5268,7 +5268,7 @@ async def slot(interaction: discord.Interaction, amount: int):
             elif pair_symbol == "클로버":
                 multiplier = 1.5
             else:
-                multiplier = 1.26
+                multiplier = 1.25
 
 
     
@@ -5347,11 +5347,11 @@ async def roulette(interaction: discord.Interaction, amount: int):
         description=(
             f"베팅 금액: `{format_money(amount)}`\n\n"
             "색상을 선택해주세요.\n\n"
-            "🟥 빨강: 승리 시 3.03배\n"
+            "🟥 빨강: 승리 시 3배\n"
             "🟨 노랑: 승리 시 4배\n"
             "🟦 파랑: 승리 시 5배\n"
-            "⬛ 검정: 승리 시 7.69배\n"
-            "🟩 초록: 승리 시 11.11배\n\n"
+            "⬛ 검정: 승리 시 7.7배\n"
+            "🟩 초록: 승리 시 11.1배\n\n"
             "빨강은 가장 안전하고,\n"
             "뒤로 갈수록 확률은 낮아지지만 배당은 높아집니다.\n"
         ),
@@ -5772,7 +5772,7 @@ async def probability_table(interaction: discord.Interaction):
             "정확히 2개 일치: 약 45.52%\n"
             "7 7 : 약 7.59% / 1.8배\n"
             "클로버 클로버 : 약 7.59% / 1.5배\n"
-            "기타 2개 일치 : 각각 약 7.59% / 1.26배\n\n"
+            "기타 2개 일치 : 각각 약 7.59% / 1.25배\n\n"
             "완전 꽝: 약 50.14%"
         ),
         inline=False,
@@ -5788,11 +5788,11 @@ async def probability_table(interaction: discord.Interaction):
     embed.add_field(
         name="룰렛",
         value=(
-            "빨강 33% / 3.03배\n"
+            "빨강 33% / 3배\n"
             "노랑 25% / 4배\n"
             "파랑 20% / 5배\n"
-            "검정 13% / 7.69배\n"
-            "초록 9% / 11.11배"
+            "검정 13% / 7.7배\n"
+            "초록 9% / 11.1배"
         ),
         inline=False,
     )
@@ -5802,10 +5802,10 @@ async def probability_table(interaction: discord.Interaction):
         value=(
             "빈 상자 34% / 0배\n"
             "1뚝 24% / 1.0배\n"
-            "2뚝 19% / 1.0배\n"
-            "3뚝 11% / 1.7배\n"
-            "보급 총기 획득 9% / 2.7배\n"
-            "풀세트 보급 대박 3% / 4.67배"
+            "2뚝 19% / 1.1배\n"
+            "3뚝 11% / 1.6배\n"
+            "보급 총기 획득 9% / 2.6배\n"
+            "풀세트 보급 대박 3% / 4.7배"
         ),
         inline=False,
     )
