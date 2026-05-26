@@ -349,6 +349,21 @@ cursor.execute(
         target_user_id TEXT NOT NULL,
         giver_user_id TEXT NOT NULL,
         amount INTEGER NOT NULL,
+        note TEXT,
+        created_at TEXT NOT NULL
+    )
+    """
+)
+
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS transfer_logs(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL,
+        sender_user_id TEXT NOT NULL,
+        receiver_user_id TEXT NOT NULL,
+        amount INTEGER NOT NULL,
+        note TEXT,
         created_at TEXT NOT NULL
     )
     """
@@ -490,6 +505,13 @@ if "last_loan_used_at" not in credit_profile_columns:
     conn.commit()
 if "loan_progress_amount" not in credit_profile_columns:
     cursor.execute("ALTER TABLE credit_profiles ADD COLUMN loan_progress_amount INTEGER NOT NULL DEFAULT 0")
+    conn.commit()
+
+cursor.execute("PRAGMA table_info(money_grant_logs)")
+money_grant_log_columns = [row[1] for row in cursor.fetchall()]
+
+if "note" not in money_grant_log_columns:
+    cursor.execute("ALTER TABLE money_grant_logs ADD COLUMN note TEXT")
     conn.commit()
 
 cursor.execute("PRAGMA table_info(promissory_notes)")
@@ -963,13 +985,27 @@ def get_recent_game_history(guild_id: int, game_name: str, limit: int = 10):
     return cursor.fetchall()
 
 
-def add_money_grant_log(guild_id: int, target_user_id: int, giver_user_id: int, amount: int):
+def format_history_result_text(result_text: str) -> str:
+    if " - " in result_text:
+        actor, detail_text = result_text.split(" - ", 1)
+        detail_parts = [part.strip() for part in detail_text.split(" / ") if part.strip()]
+        lines = [f"플레이어: **{actor}**"]
+        lines.extend(f"• {part}" for part in detail_parts)
+        return "\n".join(lines)
+
+    detail_parts = [part.strip() for part in result_text.split(" / ") if part.strip()]
+    if len(detail_parts) >= 2:
+        return "\n".join(f"• {part}" for part in detail_parts)
+    return result_text
+
+
+def add_money_grant_log(guild_id: int, target_user_id: int, giver_user_id: int, amount: int, note: str | None = None):
     cursor.execute(
         """
-        INSERT INTO money_grant_logs(guild_id, target_user_id, giver_user_id, amount, created_at)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO money_grant_logs(guild_id, target_user_id, giver_user_id, amount, note, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
         """,
-        (str(guild_id), str(target_user_id), str(giver_user_id), amount, dt_to_db(get_kst_now())),
+        (str(guild_id), str(target_user_id), str(giver_user_id), amount, note, dt_to_db(get_kst_now())),
     )
     conn.commit()
 
@@ -977,13 +1013,44 @@ def add_money_grant_log(guild_id: int, target_user_id: int, giver_user_id: int, 
 def get_money_grant_logs(guild_id: int, target_user_id: int, limit: int = 20):
     cursor.execute(
         """
-        SELECT giver_user_id, amount, created_at
+        SELECT giver_user_id, amount, note, created_at
         FROM money_grant_logs
         WHERE guild_id=? AND target_user_id=?
         ORDER BY id DESC
         LIMIT ?
         """,
         (str(guild_id), str(target_user_id), limit),
+    )
+    return cursor.fetchall()
+
+
+def add_transfer_log(
+    guild_id: int,
+    sender_user_id: int,
+    receiver_user_id: int,
+    amount: int,
+    note: str | None = None,
+):
+    cursor.execute(
+        """
+        INSERT INTO transfer_logs(guild_id, sender_user_id, receiver_user_id, amount, note, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (str(guild_id), str(sender_user_id), str(receiver_user_id), amount, note, dt_to_db(get_kst_now())),
+    )
+    conn.commit()
+
+
+def get_transfer_logs(guild_id: int, receiver_user_id: int, limit: int = 20):
+    cursor.execute(
+        """
+        SELECT sender_user_id, amount, note, created_at
+        FROM transfer_logs
+        WHERE guild_id=? AND receiver_user_id=?
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (str(guild_id), str(receiver_user_id), limit),
     )
     return cursor.fetchall()
 
@@ -2829,7 +2896,7 @@ class CoinFlipView(discord.ui.View):
         win = choice == result
 
         if win:
-            payout = int(self.bet_amount * 1.9)
+            payout = int(self.bet_amount * 2)
             add_balance(self.user_id, payout)
             description = f"선택: **{choice}**\n결과: **{result}**\n축하합니다! `{format_money(payout)}`을 획득했습니다."
             color = 0x2ECC71
@@ -2892,15 +2959,15 @@ class RouletteView(discord.ui.View):
 
     def get_payout(self, choice: str) -> int:
         if choice == "빨강":
-            return int(self.bet_amount * 2.9)
+            return int(self.bet_amount * 3.03)
         if choice == "노랑":
-            return int(self.bet_amount * 3.8)
+            return int(self.bet_amount * 4.0)
         if choice == "파랑":
-            return int(self.bet_amount * 4.8)
+            return int(self.bet_amount * 5.0)
         if choice == "검정":
-            return int(self.bet_amount * 7.3)
+            return int(self.bet_amount * 7.69)
         if choice == "초록":
-            return int(self.bet_amount * 10.5)
+            return int(self.bet_amount * 11.11)
         return 0
 
     async def finish(self, interaction: discord.Interaction, choice: str):
@@ -2988,9 +3055,9 @@ class SupplyDropView(discord.ui.View):
                 ("빈 상자", 0.0, "보급 상자를 열었지만 아쉽게도 아무것도 나오지 않았습니다."),
                 ("1뚝", 1.0, "낡은 1뚝을 챙겼습니다. 큰 수확은 아니지만 빈손은 아닙니다."),
                 ("2뚝", 1.0, "2뚝을 획득했습니다. 본전은 지켰습니다."),
-                ("3뚝", 1.5, "3뚝을 획득했습니다! 이번 교전은 조금 더 든든합니다."),
-                ("보급 총기 획득", 2.5, "보급 총기를 획득했습니다! 분위기가 달아오르기 시작합니다."),
-                ("풀세트 보급 대박", 4.2, "3뚝과 보급 총기까지 모두 챙겼습니다! 말 그대로 풀세트 보급 대박입니다!"),
+                ("3뚝", 1.7, "3뚝을 획득했습니다! 이번 교전은 조금 더 든든합니다."),
+                ("보급 총기 획득", 2.7, "보급 총기를 획득했습니다! 분위기가 달아오르기 시작합니다."),
+                ("풀세트 보급 대박", 4.67, "3뚝과 보급 총기까지 모두 챙겼습니다! 말 그대로 풀세트 보급 대박입니다!"),
             ],
             weights=[34, 24, 19, 11, 9, 3],
             k=1,
@@ -3734,13 +3801,14 @@ class HistoryGameSelectView(discord.ui.View):
                 dt = dt_from_db(created_at).strftime("%m-%d %H:%M")
             except Exception:
                 dt = created_at
-            lines.append(f"{idx}. [{dt}] {result_text}")
+            lines.append(f"**{idx}. {dt}**\n{format_history_result_text(result_text)}")
 
         embed = discord.Embed(
             title=f"📜 {game_name} 최근 {min(len(rows), GAME_HISTORY_LIMIT)}게임",
-            description="\n".join(lines),
+            description="\n\n".join(lines),
             color=0x5865F2,
         )
+        embed.set_footer(text="최신 기록이 위에 표시됩니다.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @discord.ui.button(label="슬롯", style=discord.ButtonStyle.primary)
@@ -4902,7 +4970,12 @@ async def ranking(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="송금", description="다른 유저에게 재화를 송금합니다.")
-async def transfer(interaction: discord.Interaction, member: discord.Member, amount: int):
+@app_commands.rename(member="대상", amount="금액", note="비고")
+@app_commands.describe(note="송금 사유나 메모, 비워두면 생략")
+async def transfer(interaction: discord.Interaction, member: discord.Member, amount: int, note: str | None = None):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
     if member.bot:
         await interaction.response.send_message("봇에게는 송금할 수 없습니다.", ephemeral=True)
         return
@@ -4916,20 +4989,69 @@ async def transfer(interaction: discord.Interaction, member: discord.Member, amo
         await interaction.response.send_message("잔액이 부족합니다.", ephemeral=True)
         return
 
+    note_text = (note or "").strip() or None
     add_balance(interaction.user.id, -amount)
     add_balance(member.id, amount)
-    await interaction.response.send_message(
-        f"{member.mention}에게 `{format_money(amount)}`을 송금했습니다.\n현재 잔액: `{format_money(get_balance(interaction.user.id))}`"
+    add_transfer_log(interaction.guild.id, interaction.user.id, member.id, amount, note_text)
+
+    lines = [
+        f"{member.mention}에게 `{format_money(amount)}`을 송금했습니다.",
+        f"현재 잔액: `{format_money(get_balance(interaction.user.id))}`",
+    ]
+    if note_text:
+        lines.append(f"비고: {note_text}")
+
+    await interaction.response.send_message("\n".join(lines))
+
+
+@bot.tree.command(name="송금내역", description="특정 인원의 송금 받은 내역을 확인합니다.")
+@app_commands.rename(member="인원")
+@app_commands.describe(member="조회할 인원, 본인 외 조회는 관리자만 가능")
+async def transfer_history(interaction: discord.Interaction, member: discord.Member):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    if member.id != interaction.user.id and not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("다른 사람의 송금내역은 관리자만 확인할 수 있습니다.", ephemeral=True)
+        return
+
+    rows = get_transfer_logs(interaction.guild.id, member.id, 20)
+    if not rows:
+        await interaction.response.send_message("송금 받은 내역이 없습니다.", ephemeral=True)
+        return
+
+    lines = []
+    for sender_user_id, amount, note_text, created_at in rows:
+        sender = interaction.guild.get_member(int(sender_user_id))
+        sender_name = sender.display_name if sender else f"알 수 없는 유저 ({sender_user_id})"
+        try:
+            created_text = dt_from_db(created_at).strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            created_text = created_at
+
+        line = f"**[{created_text}]**\n보낸 사람: {sender_name}\n금액: {format_money(amount)}"
+        if note_text:
+            line += f"\n비고: {note_text}"
+        lines.append(line)
+
+    embed = discord.Embed(
+        title=f"💸 {member.display_name}님의 송금 받은 내역",
+        description="\n\n".join(lines),
+        color=0x2ECC71,
     )
+    embed.set_footer(text="최근 20개의 받은 송금 내역을 표시합니다.")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(name="돈주기", description="서버 관리자 이상이 여러 유저에게 같은 금액을 지급합니다.")
-@app_commands.rename(targets="대상들", amount="금액")
+@app_commands.rename(targets="대상들", amount="금액", note="비고")
 @app_commands.describe(
     targets="멘션 또는 ID를 공백이나 쉼표로 구분해 입력",
     amount="각 유저에게 지급할 금액",
+    note="지급 사유나 메모, 비워두면 생략",
 )
-async def grant_money(interaction: discord.Interaction, targets: str, amount: int):
+async def grant_money(interaction: discord.Interaction, targets: str, amount: int, note: str | None = None):
     if interaction.guild is None:
         await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
         return
@@ -4961,6 +5083,7 @@ async def grant_money(interaction: discord.Interaction, targets: str, amount: in
 
     success_members = []
     skipped_members = []
+    note_text = (note or "").strip() or None
 
     for user_id in dict.fromkeys(raw_ids):
         member = interaction.guild.get_member(user_id)
@@ -4969,7 +5092,7 @@ async def grant_money(interaction: discord.Interaction, targets: str, amount: in
             continue
 
         add_balance(member.id, amount)
-        add_money_grant_log(interaction.guild.id, member.id, interaction.user.id, amount)
+        add_money_grant_log(interaction.guild.id, member.id, interaction.user.id, amount, note_text)
         success_members.append(member.mention)
 
     if not success_members:
@@ -4980,6 +5103,9 @@ async def grant_money(interaction: discord.Interaction, targets: str, amount: in
         f"총 {len(success_members)}명에게 각각 `{format_money(amount)}`을 지급했습니다.",
         f"대상: {', '.join(success_members)}",
     ]
+
+    if note_text:
+        lines.append(f"비고: {note_text}")
 
     if skipped_members:
         lines.append(f"제외됨: {', '.join(skipped_members)}")
@@ -5127,22 +5253,22 @@ async def slot(interaction: discord.Interaction, amount: int):
 
     if len(set(result)) == 1:
         if result[0] == "7":
-            multiplier = 12
+            multiplier = 14
         elif result[0] == "클로버":
-            multiplier = 8
+            multiplier = 9
         else:
-            multiplier = 6
+            multiplier = 7
     elif len(set(result)) == 2:
         counts = {symbol: result.count(symbol) for symbol in set(result)}
         pair_symbol = max(counts, key=counts.get)
 
         if counts[pair_symbol] == 2:
             if pair_symbol == "7":
-                multiplier = 1.7
+                multiplier = 1.8
             elif pair_symbol == "클로버":
-                multiplier = 1.4
+                multiplier = 1.5
             else:
-                multiplier = 1.15
+                multiplier = 1.26
 
 
     
@@ -5191,7 +5317,7 @@ async def coin(interaction: discord.Interaction, amount: int):
         description=(
             f"베팅 금액: `{format_money(amount)}`\n"
             "아래 버튼에서 `앞` 또는 `뒤`를 선택해주세요.\n"
-            "승리 시 1.9배를 지급합니다.\n"
+            "승리 시 2배를 지급합니다.\n"
             f"{COIN_FLIP_TIMEOUT}초 안에 선택하지 않으면 자동 취소되고 돈이 반환됩니다."
         ),
         color=0xF1C40F,
@@ -5221,11 +5347,11 @@ async def roulette(interaction: discord.Interaction, amount: int):
         description=(
             f"베팅 금액: `{format_money(amount)}`\n\n"
             "색상을 선택해주세요.\n\n"
-            "🟥 빨강: 승리 시 2.9배\n"
-            "🟨 노랑: 승리 시 3.8배\n"
-            "🟦 파랑: 승리 시 4.8배\n"
-            "⬛ 검정: 승리 시 7.3배\n"
-            "🟩 초록: 승리 시 10.5배\n\n"
+            "🟥 빨강: 승리 시 3.03배\n"
+            "🟨 노랑: 승리 시 4배\n"
+            "🟦 파랑: 승리 시 5배\n"
+            "⬛ 검정: 승리 시 7.69배\n"
+            "🟩 초록: 승리 시 11.11배\n\n"
             "빨강은 가장 안전하고,\n"
             "뒤로 갈수록 확률은 낮아지지만 배당은 높아집니다.\n"
         ),
@@ -5640,13 +5766,13 @@ async def probability_table(interaction: discord.Interaction):
         name="슬롯",
         value=(
             "3개 일치: 약 4.34%\n"
-            "7 7 7 : 약 0.72% / 12배\n"
-            "클로버 클로버 클로버 : 약 0.72% / 8배\n"
-            "기타 3개 일치 : 각각 약 0.72% / 6배\n\n"
+            "7 7 7 : 약 0.72% / 14배\n"
+            "클로버 클로버 클로버 : 약 0.72% / 9배\n"
+            "기타 3개 일치 : 각각 약 0.72% / 7배\n\n"
             "정확히 2개 일치: 약 45.52%\n"
-            "7 7 : 약 7.59% / 1.7배\n"
-            "클로버 클로버 : 약 7.59% / 1.4배\n"
-            "기타 2개 일치 : 각각 약 7.59% / 1.15배\n\n"
+            "7 7 : 약 7.59% / 1.8배\n"
+            "클로버 클로버 : 약 7.59% / 1.5배\n"
+            "기타 2개 일치 : 각각 약 7.59% / 1.26배\n\n"
             "완전 꽝: 약 50.14%"
         ),
         inline=False,
@@ -5655,18 +5781,18 @@ async def probability_table(interaction: discord.Interaction):
 
     embed.add_field(
         name="동전",
-        value="앞/뒤 50% 확률\n승리 시 1.9배",
+        value="앞/뒤 50% 확률\n승리 시 2배",
         inline=False,
     )
 
     embed.add_field(
         name="룰렛",
         value=(
-            "빨강 33% / 2.9배\n"
-            "노랑 25% / 3.8배\n"
-            "파랑 20% / 4.8배\n"
-            "검정 13% / 7.3배\n"
-            "초록 9% / 10.5배"
+            "빨강 33% / 3.03배\n"
+            "노랑 25% / 4배\n"
+            "파랑 20% / 5배\n"
+            "검정 13% / 7.69배\n"
+            "초록 9% / 11.11배"
         ),
         inline=False,
     )
@@ -5677,9 +5803,9 @@ async def probability_table(interaction: discord.Interaction):
             "빈 상자 34% / 0배\n"
             "1뚝 24% / 1.0배\n"
             "2뚝 19% / 1.0배\n"
-            "3뚝 11% / 1.5배\n"
-            "보급 총기 획득 9% / 2.5배\n"
-            "풀세트 보급 대박 3% / 4.2배"
+            "3뚝 11% / 1.7배\n"
+            "보급 총기 획득 9% / 2.7배\n"
+            "풀세트 보급 대박 3% / 4.67배"
         ),
         inline=False,
     )
@@ -5778,20 +5904,24 @@ async def money_grant_history(interaction: discord.Interaction, member: discord.
         return
 
     lines = []
-    for giver_user_id, amount, created_at in rows:
+    for giver_user_id, amount, note_text, created_at in rows:
         giver = interaction.guild.get_member(int(giver_user_id))
         giver_name = giver.display_name if giver else f"알 수 없는 유저 ({giver_user_id})"
         try:
             created_text = dt_from_db(created_at).strftime("%Y-%m-%d %H:%M")
         except Exception:
             created_text = created_at
-        lines.append(f"[{created_text}] {giver_name} -> {format_money(amount)}")
+        line = f"**[{created_text}]**\n지급자: {giver_name}\n금액: {format_money(amount)}"
+        if note_text:
+            line += f"\n비고: {note_text}"
+        lines.append(line)
 
     embed = discord.Embed(
         title=f"🧾 {member.display_name}님의 돈 지급 내역",
-        description="\n".join(lines),
+        description="\n\n".join(lines),
         color=0xF1C40F,
     )
+    embed.set_footer(text="최근 20개의 지급 내역을 표시합니다.")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ----------------------------
@@ -6206,10 +6336,8 @@ async def delete_promissory_note_command(interaction: discord.Interaction, note_
         await interaction.response.send_message("이미 정리된 차용증입니다.", ephemeral=True)
         return
 
-    is_party = interaction.user.id in {note_info["lender_user_id"], note_info["borrower_user_id"]}
-    is_admin = interaction.user.guild_permissions.administrator
-    if not is_party and not is_admin:
-        await interaction.response.send_message("당사자 또는 관리자만 차용증을 정리할 수 있습니다.", ephemeral=True)
+    if interaction.user.id != note_info["lender_user_id"]:
+        await interaction.response.send_message("차용증은 채권자만 정리할 수 있습니다.", ephemeral=True)
         return
 
     resolve_promissory_note(note_id)
@@ -6352,7 +6480,8 @@ async def gambling_commands(interaction: discord.Interaction):
             "`/기초생활수급비` - 하루 1회 지원금 받기\n"
             "`/잔액` - 현재 잔액 확인\n"
             "`/랭킹` - 서버 재산 순위 확인\n"
-            "`/송금` - 다른 유저에게 돈 보내기\n"
+            "`/송금` - 비고와 함께 다른 유저에게 돈 보내기\n"
+            "`/송금내역 [인원]` - 특정 인원이 받은 송금 내역 확인\n"
             "`/차용증` - 모달로 차용증 요청 보내기"
         ),
         inline=False,
@@ -6382,7 +6511,7 @@ async def gambling_commands(interaction: discord.Interaction):
             "`/벌금부여`로 등록된 관리자 부채는 노동 횟수에 반영됩니다.\n"
             "`/벌금삭제 [부채번호]` - 상환 완료된 관리자 부채 정리\n"
             "`/차용증목록` - 현재 차용증 목록 확인\n"
-            "`/차용증삭제` - 상환 완료된 차용증 정리"
+            "`/차용증삭제` - 채권자가 상환 완료된 차용증 정리"
         ),
         inline=False,
     )
@@ -6463,7 +6592,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
     admin_embed.add_field(
         name="💰 경제 / 신용 관리",
         value=(
-            "`/돈주기`, `/돈주기내역`, `/돈삭제`, `/벌금부여`, `/벌금삭제`\n"
+            "`/돈주기`, `/돈주기내역`, `/돈삭제`, `/송금내역`, `/벌금부여`, `/벌금삭제`\n"
             "`/신용불량자등록`, `/신용불량자목록`, `/신용불량자삭제`, `/신용초기화`\n"
             "`/노동가챠권지급`\n"
             "`/신용조회`, `/신용등급표`, `/일수`, `/중도상환`"
@@ -6475,7 +6604,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         value=(
             "`/세팅등업패널문구`  여러 줄 패널 문구 설정\n"
             "`/신용불량자등록 @유저`  해당 유저 등록\n"
-            "`/돈주기 @유저 10000`  특정 유저에게 재화 지급"
+            "`/돈주기 @유저 10000 이벤트 보상`  특정 유저에게 비고와 함께 재화 지급"
         ),
         inline=False,
     )
@@ -6492,7 +6621,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
     general_embed.add_field(
         name="🏠 기본 / 정보",
         value=(
-            "`/기초생활수급비`, `/잔액`, `/랭킹`, `/송금`\n"
+            "`/기초생활수급비`, `/잔액`, `/랭킹`, `/송금`, `/송금내역`\n"
             "`/도박명령어`, `/확률표`, `/족보`, `/관리자명령어`"
         ),
         inline=False,
