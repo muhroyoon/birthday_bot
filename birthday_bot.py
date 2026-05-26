@@ -482,6 +482,20 @@ cursor.execute(
 
 cursor.execute(
     """
+    CREATE TABLE IF NOT EXISTS business_registrations(
+        guild_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        business_name TEXT NOT NULL,
+        business_type TEXT,
+        logo_url TEXT,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (guild_id, user_id)
+    )
+    """
+)
+
+cursor.execute(
+    """
     CREATE TABLE IF NOT EXISTS scrim_signups(
         message_id TEXT NOT NULL,
         user_id TEXT NOT NULL,
@@ -512,6 +526,13 @@ money_grant_log_columns = [row[1] for row in cursor.fetchall()]
 
 if "note" not in money_grant_log_columns:
     cursor.execute("ALTER TABLE money_grant_logs ADD COLUMN note TEXT")
+    conn.commit()
+
+cursor.execute("PRAGMA table_info(business_registrations)")
+business_registration_columns = [row[1] for row in cursor.fetchall()]
+
+if "business_type" not in business_registration_columns:
+    cursor.execute("ALTER TABLE business_registrations ADD COLUMN business_type TEXT")
     conn.commit()
 
 cursor.execute("PRAGMA table_info(promissory_notes)")
@@ -2366,6 +2387,78 @@ def get_pending_all_in_dates(guild_id: int, today_date: str):
         (str(guild_id), today_date),
     )
     return [row[0] for row in cursor.fetchall()]
+
+
+def set_business_registration(
+    guild_id: int,
+    user_id: int,
+    business_name: str,
+    business_type: str | None = None,
+    logo_url: str | None = None,
+):
+    cursor.execute(
+        """
+        INSERT OR REPLACE INTO business_registrations(guild_id, user_id, business_name, business_type, logo_url, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (str(guild_id), str(user_id), business_name, business_type, logo_url, dt_to_db(get_kst_now())),
+    )
+    conn.commit()
+
+
+def get_business_registration(guild_id: int, user_id: int):
+    cursor.execute(
+        """
+        SELECT guild_id, user_id, business_name, business_type, logo_url, created_at
+        FROM business_registrations
+        WHERE guild_id=? AND user_id=?
+        """,
+        (str(guild_id), str(user_id)),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+
+    return {
+        "guild_id": row[0],
+        "user_id": int(row[1]),
+        "business_name": row[2],
+        "business_type": row[3] or "",
+        "logo_url": row[4] or "",
+        "created_at": row[5],
+    }
+
+
+def get_all_business_registrations(guild_id: int):
+    cursor.execute(
+        """
+        SELECT user_id, business_name, business_type, logo_url, created_at
+        FROM business_registrations
+        WHERE guild_id=?
+        ORDER BY business_name COLLATE NOCASE ASC, user_id ASC
+        """,
+        (str(guild_id),),
+    )
+    rows = cursor.fetchall()
+    return [
+        {
+            "user_id": int(row[0]),
+            "business_name": row[1],
+            "business_type": row[2] or "",
+            "logo_url": row[3] or "",
+            "created_at": row[4],
+        }
+        for row in rows
+    ]
+
+
+def delete_business_registration(guild_id: int, user_id: int):
+    cursor.execute(
+        "DELETE FROM business_registrations WHERE guild_id=? AND user_id=?",
+        (str(guild_id), str(user_id)),
+    )
+    conn.commit()
+    return cursor.rowcount > 0
 
 
 GAME_LABELS = {
@@ -4529,6 +4622,100 @@ async def set_blacklist_role(interaction: discord.Interaction, role: discord.Rol
     await interaction.response.send_message(f"신용불량자 역할을 {role.mention} 으로 설정했습니다.", ephemeral=True)
 
 
+@bot.tree.command(name="사업자등록", description="특정 인원을 사업자로 등록합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+@app_commands.rename(member="인원")
+async def register_business(interaction: discord.Interaction, member: discord.Member):
+    if member.bot:
+        await interaction.response.send_message("봇은 사업자로 등록할 수 없습니다.", ephemeral=True)
+        return
+
+    await interaction.response.send_modal(BusinessRegistrationModal(member))
+
+
+@bot.tree.command(name="사업자목록", description="등록된 사업자 목록을 확인합니다.")
+async def business_list(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    rows = get_all_business_registrations(interaction.guild.id)
+    if not rows:
+        await interaction.response.send_message("등록된 사업자가 없습니다.", ephemeral=True)
+        return
+
+    lines = []
+    for row in rows[:20]:
+        member = interaction.guild.get_member(row["user_id"])
+        member_text = member.mention if member else f"`{row['user_id']}`"
+        try:
+            created_text = dt_from_db(row["created_at"]).strftime("%Y-%m-%d")
+        except Exception:
+            created_text = row["created_at"]
+        line = f"**{row['business_name']}**\n대표: {member_text}\n업종: {row['business_type'] or '미입력'}\n등록일: `{created_text}`"
+        if row["logo_url"]:
+            line += f"\n로고: {row['logo_url']}"
+        lines.append(line)
+
+    embed = discord.Embed(
+        title="🏢 사업자 목록",
+        description="\n\n".join(lines),
+        color=0x1ABC9C,
+    )
+    embed.set_footer(text="최대 20개까지 표시됩니다.")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="사업자등록증", description="내 사업자 정보를 등록증 형태로 확인합니다.")
+async def business_certificate(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    business_info = get_business_registration(interaction.guild.id, interaction.user.id)
+    if business_info is None:
+        await interaction.response.send_message("등록된 사업자 정보가 없습니다.", ephemeral=True)
+        return
+
+    try:
+        created_text = dt_from_db(business_info["created_at"]).strftime("%Y-%m-%d")
+    except Exception:
+        created_text = business_info["created_at"]
+
+    embed = discord.Embed(
+        title="🏢 사업자등록증",
+        description=f"**{business_info['business_name']}**",
+        color=0xF1C40F,
+    )
+    embed.add_field(name="대표", value=interaction.user.mention, inline=True)
+    embed.add_field(name="업종", value=business_info["business_type"] or "미입력", inline=True)
+    embed.add_field(name="등록일", value=f"`{created_text}`", inline=True)
+    embed.add_field(name="사업자명", value=business_info["business_name"], inline=False)
+    embed.add_field(name="로고", value=business_info["logo_url"] or "없음", inline=False)
+    if business_info["logo_url"]:
+        embed.set_thumbnail(url=business_info["logo_url"])
+    embed.set_footer(text=f"{interaction.guild.name} 사업자 등록 정보")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="사업자삭제", description="등록된 사업자 정보를 삭제합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+@app_commands.rename(member="인원")
+async def delete_business(interaction: discord.Interaction, member: discord.Member):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    if not delete_business_registration(interaction.guild.id, member.id):
+        await interaction.response.send_message("해당 인원은 사업자로 등록되어 있지 않습니다.", ephemeral=True)
+        return
+
+    await interaction.response.send_message(
+        f"{member.mention}님의 사업자 등록 정보를 삭제했습니다.",
+        ephemeral=True,
+    )
+
+
 @bot.tree.command(name="세팅클랜등업역할", description="클랜 등업 역할을 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_upgrade_clan_role(interaction: discord.Interaction, role: discord.Role):
@@ -4900,6 +5087,69 @@ async def savings_join(interaction: discord.Interaction, amount: int):
     embed.add_field(name="만기일", value=due_at.strftime("%Y-%m-%d %H:%M:%S KST"), inline=False)
     embed.add_field(name="현재 잔액", value=format_money(get_balance(interaction.user.id)), inline=False)
     await interaction.response.send_message(embed=embed)
+
+
+class BusinessRegistrationModal(discord.ui.Modal):
+    business_name = discord.ui.TextInput(
+        label="사업자명",
+        placeholder="예: 마리상회, 마리금융",
+        max_length=100,
+        required=True,
+    )
+    business_type = discord.ui.TextInput(
+        label="업종",
+        placeholder="예: 금융업, 유통업, 서비스업",
+        max_length=100,
+        required=True,
+    )
+    logo_url = discord.ui.TextInput(
+        label="로고 URL",
+        placeholder="https://...  비워두면 생략",
+        max_length=500,
+        required=False,
+    )
+
+    def __init__(self, target_member: discord.Member):
+        super().__init__(title="사업자 등록")
+        self.target_member = target_member
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+            return
+
+        business_name = str(self.business_name).strip()
+        business_type = str(self.business_type).strip()
+        logo_url = str(self.logo_url).strip()
+
+        if not business_name:
+            await interaction.response.send_message("사업자명은 비워둘 수 없습니다.", ephemeral=True)
+            return
+        if not business_type:
+            await interaction.response.send_message("업종은 비워둘 수 없습니다.", ephemeral=True)
+            return
+
+        if logo_url and not (logo_url.startswith("http://") or logo_url.startswith("https://")):
+            await interaction.response.send_message("로고는 http:// 또는 https:// 형식의 URL만 사용할 수 있습니다.", ephemeral=True)
+            return
+
+        set_business_registration(
+            interaction.guild.id,
+            self.target_member.id,
+            business_name,
+            business_type,
+            logo_url or None,
+        )
+
+        embed = discord.Embed(title="🏢 사업자 등록 완료", color=0x3498DB)
+        embed.add_field(name="대상", value=self.target_member.mention, inline=False)
+        embed.add_field(name="사업자명", value=business_name, inline=False)
+        embed.add_field(name="업종", value=business_type, inline=False)
+        embed.add_field(name="로고", value=logo_url or "없음", inline=False)
+        if logo_url:
+            embed.set_thumbnail(url=logo_url)
+        embed.set_footer(text="등록된 사업자는 /차용증 기능을 사용할 수 있습니다.")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(name="내적금", description="현재 가입 중인 적금 정보를 확인합니다.")
@@ -6287,6 +6537,14 @@ async def create_promissory_note_command(interaction: discord.Interaction, membe
         await interaction.response.send_message("본인에게 차용증을 보낼 수는 없습니다.", ephemeral=True)
         return
 
+    business_info = get_business_registration(interaction.guild.id, interaction.user.id)
+    if business_info is None:
+        await interaction.response.send_message(
+            "차용증은 사업자 등록이 완료된 인원만 사용할 수 있습니다. 관리자에게 `/사업자등록`을 요청해주세요.",
+            ephemeral=True,
+        )
+        return
+
     await interaction.response.send_modal(PromissoryNoteModal(member))
 
 
@@ -6493,7 +6751,9 @@ async def gambling_commands(interaction: discord.Interaction):
             "`/랭킹` - 서버 재산 순위 확인\n"
             "`/송금` - 비고와 함께 다른 유저에게 돈 보내기\n"
             "`/송금내역 [인원]` - 특정 인원이 받은 송금 내역 확인\n"
-            "`/차용증` - 모달로 차용증 요청 보내기"
+            "`/사업자목록` - 등록된 사업자 목록 확인\n"
+            "`/사업자등록증` - 내 사업자 정보 확인\n"
+            "`/차용증` - 사업자 등록 완료 인원만 사용 가능한 차용증 요청"
         ),
         inline=False,
     )
@@ -6604,6 +6864,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="💰 경제 / 신용 관리",
         value=(
             "`/돈주기`, `/돈주기내역`, `/돈삭제`, `/송금내역`, `/벌금부여`, `/벌금삭제`\n"
+            "`/사업자등록`, `/사업자목록`, `/사업자등록증`, `/사업자삭제`\n"
             "`/신용불량자등록`, `/신용불량자목록`, `/신용불량자삭제`, `/신용초기화`\n"
             "`/노동가챠권지급`\n"
             "`/신용조회`, `/신용등급표`, `/일수`, `/중도상환`"
@@ -6642,7 +6903,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         value=(
             "`/적금`, `/내적금`, `/적금수령`\n"
             "`/일수`, `/중도상환`, `/내신용`, `/신용조회`, `/신용등급표`, `/노동`, `/노동가챠`, `/노동현황`\n"
-            "`/차용증`, `/차용증목록`, `/차용증삭제`"
+            "`/사업자목록`, `/사업자등록증`, `/차용증`, `/차용증목록`, `/차용증삭제`"
         ),
         inline=False,
     )
