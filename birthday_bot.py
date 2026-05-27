@@ -6778,17 +6778,23 @@ async def promissory_note_list(interaction: discord.Interaction, member: discord
         borrower_name = borrower.display_name if borrower else f"알 수 없는 유저 ({note_info['borrower_user_id']})"
         role_text = "채권자" if target.id == note_info["lender_user_id"] else "채무자"
         lines.append(
-            f"`#{note_info['id']}` {role_text} | {lender_name} -> {borrower_name} | "
-            f"원금 {format_money(note_info['principal_amount'])} / 이자 {format_money(note_info['interest_amount'])} / "
-            f"총액 {format_money(note_info['amount'])} | 상환 약속일: {note_info['due_text']}"
+            f"**차용증 #{note_info['id']}**\n"
+            f"내 역할: `{role_text}`\n"
+            f"채권자: {lender_name}\n"
+            f"채무자: {borrower_name}\n"
+            f"원금: `{format_money(note_info['principal_amount'])}`\n"
+            f"이자: `{format_money(note_info['interest_amount'])}`\n"
+            f"총 상환 금액: `{format_money(note_info['amount'])}`\n"
+            f"상환 약속일: `{note_info['due_text']}`"
+            + (f"\n비고: {note_info['note']}" if note_info["note"] else "")
         )
 
     embed = discord.Embed(
         title=f"🗂 {target.display_name}님의 차용증 목록",
-        description="\n".join(lines[:20]),
+        description="\n\n".join(lines[:20]),
         color=0x3498DB,
     )
-    embed.set_footer(text="상환이 완료되면 /차용증삭제 로 정리할 수 있습니다.")
+    embed.set_footer(text="최근 활성 차용증 최대 20개를 표시합니다. 상환 완료 후에는 /차용증삭제 로 정리할 수 있습니다.")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
