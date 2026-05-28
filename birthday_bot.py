@@ -91,7 +91,7 @@ MIN_CREDIT_GRADE = 1
 MAX_CREDIT_GRADE = 10
 INITIAL_CREDIT_GRADE = 10
 LOAN_REPAYMENT_DAYS = 2
-LOAN_LIMIT_RECOVERY_DELAY_MINUTES = 60
+LOAN_LIMIT_RECOVERY_DELAY_MINUTES = 15
 DEFAULT_SAVINGS_DAYS = "3"
 DEFAULT_SAVINGS_INTEREST_RATE = "10"
 DEFAULT_LABOR_DEBT_AMOUNT = 100_000
@@ -4856,7 +4856,7 @@ class LoanConfirmView(discord.ui.View):
             inline=False,
         )
         embed.add_field(name="현재 잔액", value=format_money(get_balance(self.user_id)), inline=False)
-        embed.set_footer(text="대출 상환 후 한도는 1시간 뒤 회복됩니다.")
+        embed.set_footer(text=f"대출 상환 후 한도는 {LOAN_LIMIT_RECOVERY_DELAY_MINUTES}분 뒤 회복됩니다.")
         await interaction.response.edit_message(embed=embed, view=self)
 
     @discord.ui.button(label="취소", style=discord.ButtonStyle.danger)
@@ -6619,7 +6619,7 @@ async def loan_money(interaction: discord.Interaction, amount: int):
         name="대출 조건 확인",
         value=(
             "확인을 누르면 대출이 즉시 실행됩니다.\n"
-            "상환 후 대출 한도는 1시간 뒤 회복됩니다."
+            f"상환 후 대출 한도는 {LOAN_LIMIT_RECOVERY_DELAY_MINUTES}분 뒤 회복됩니다."
         ),
         inline=False,
     )
@@ -6755,7 +6755,7 @@ async def credit_grade_table(interaction: discord.Interaction):
         value=(
             "대출은 현재 신용등급의 남은 한도 내에서만 가능합니다.\n"
             "또한 현재 잔액이 대출 금액의 25% 이상이어야 합니다.\n"
-            "상환 후 대출 한도는 1시간 뒤 회복됩니다."
+            f"상환 후 대출 한도는 {LOAN_LIMIT_RECOVERY_DELAY_MINUTES}분 뒤 회복됩니다."
         ),
         inline=False,
     )
