@@ -39,22 +39,6 @@ def get_kst_now():
     return datetime.now(ZoneInfo("Asia/Seoul"))
 
 
-def normalize_birthday(date_str: str) -> str:
-    value = date_str.strip().replace("/", "-").replace(".", "-")
-    parts = value.split("-")
-
-    if len(parts) != 2:
-        raise ValueError("생일 형식은 MM-DD 로 입력해주세요.")
-
-    month = int(parts[0])
-    day = int(parts[1])
-
-    if not (1 <= month <= 12 and 1 <= day <= 31):
-        raise ValueError("올바른 날짜를 입력해주세요.")
-
-    return f"{month:02d}-{day:02d}"
-
-
 def dt_to_db(value: datetime) -> str:
     return value.isoformat()
 
@@ -225,10 +209,6 @@ active_recruits = {}
 conn = sqlite3.connect("/data/birthday.db")
 cursor = conn.cursor()
 
-cursor.execute("CREATE TABLE IF NOT EXISTS birthdays(user_id TEXT PRIMARY KEY, date TEXT)")
-cursor.execute("CREATE TABLE IF NOT EXISTS congrats(message_id TEXT, user_id TEXT)")
-cursor.execute("CREATE TABLE IF NOT EXISTS congrats_count(user_id TEXT PRIMARY KEY, count INTEGER)")
-cursor.execute("CREATE TABLE IF NOT EXISTS birthday_messages(message_id TEXT PRIMARY KEY, user_id TEXT)")
 cursor.execute("CREATE TABLE IF NOT EXISTS balances(user_id TEXT PRIMARY KEY, balance INTEGER NOT NULL DEFAULT 0)")
 cursor.execute("CREATE TABLE IF NOT EXISTS daily_claims(user_id TEXT PRIMARY KEY, last_claim_date TEXT)")
 cursor.execute("CREATE TABLE IF NOT EXISTS rule_confirm(message_id TEXT, user_id TEXT)")
@@ -2820,93 +2800,6 @@ class UpgradePanelTemplateModal(discord.ui.Modal):
         await interaction.response.send_message("등업 패널 문구를 저장했습니다.", ephemeral=True)
 
 
-class BirthdayView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="🎉 축하하기 (0)", style=discord.ButtonStyle.green, custom_id="birthday_congrats")
-    async def congrats(self, interaction: discord.Interaction, button: discord.ui.Button):
-        cursor.execute(
-            "SELECT * FROM congrats WHERE message_id=? AND user_id=?",
-            (str(interaction.message.id), str(interaction.user.id)),
-        )
-        if cursor.fetchone():
-            await interaction.response.send_message("이미 축하했습니다! 🎉", ephemeral=True)
-            return
-
-        cursor.execute("INSERT INTO congrats VALUES (?,?)", (str(interaction.message.id), str(interaction.user.id)))
-        cursor.execute("INSERT OR IGNORE INTO congrats_count VALUES (?,0)", (str(interaction.user.id),))
-        cursor.execute("UPDATE congrats_count SET count=count+1 WHERE user_id=?", (str(interaction.user.id),))
-        conn.commit()
-
-        cursor.execute("SELECT COUNT(*) FROM congrats WHERE message_id=?", (str(interaction.message.id),))
-        count = cursor.fetchone()[0]
-
-        button.label = f"🎉 축하하기 ({count})"
-        await interaction.message.edit(view=self)
-
-        cursor.execute("SELECT user_id FROM birthday_messages WHERE message_id=?", (str(interaction.message.id),))
-        result = cursor.fetchone()
-        if result:
-            member = interaction.guild.get_member(int(result[0]))
-            if member:
-                try:
-                    embed = discord.Embed(
-                        title="🎂 생일 축하 알림!",
-                        description=f"**{interaction.user.display_name}님이 당신의 생일을 축하했습니다!** 🎉",
-                        color=0xFF69B4,
-                    )
-                    await member.send(embed=embed)
-                except Exception:
-                    pass
-
-        await interaction.response.send_message("🎉 축하 완료!", ephemeral=True)
-
-
-class BirthdayListView(discord.ui.View):
-    def __init__(self, data, per_page=10):
-        super().__init__(timeout=180)
-        self.data = data
-        self.page = 0
-        self.per_page = per_page
-        self.max_page = (len(data) - 1) // per_page if data else 0
-
-    def get_embed(self):
-        now = get_kst_now()
-        start = self.page * self.per_page
-        chunk = self.data[start:start + self.per_page]
-
-        desc = ""
-        for member, date in chunk:
-            month, day = map(int, date.split("-"))
-            if month == now.month and day == now.day:
-                desc += f"🎂 **{member.display_name}** - {date} (오늘!)\n"
-            elif month == now.month:
-                desc += f"📌 **{member.display_name}** - {date}\n"
-            else:
-                desc += f"{member.display_name} - {date}\n"
-
-        embed = discord.Embed(title="🎉 생일 목록", description=desc or "데이터 없음", color=0xFF69B4)
-        embed.set_footer(text=f"{self.page + 1}/{self.max_page + 1}")
-        return embed
-
-    @discord.ui.button(label="← 이전")
-    async def prev(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.page > 0:
-            self.page -= 1
-            await interaction.response.edit_message(embed=self.get_embed(), view=self)
-        else:
-            await interaction.response.defer()
-
-    @discord.ui.button(label="다음 →")
-    async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.page < self.max_page:
-            self.page += 1
-            await interaction.response.edit_message(embed=self.get_embed(), view=self)
-        else:
-            await interaction.response.defer()
-
-
 class RuleConfirmView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -4690,13 +4583,6 @@ async def create_recruit_post(
 # 관리자 설정 명령어
 # ----------------------------
 
-@bot.tree.command(name="세팅생일알림", description="현재 채널을 생일 알림 채널로 설정합니다.")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_birthday_channel(interaction: discord.Interaction):
-    set_guild_setting(interaction.guild.id, "birthday_channel_id", str(interaction.channel.id))
-    await interaction.response.send_message(f"생일 알림 채널을 {interaction.channel.mention} 으로 설정했습니다.", ephemeral=True)
-
-
 @bot.tree.command(name="세팅등업로그", description="현재 채널을 등업 로그 채널로 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_upgrade_log_channel(interaction: discord.Interaction):
@@ -4759,13 +4645,6 @@ async def set_rule_role(interaction: discord.Interaction, role: discord.Role):
 async def set_new_member_role(interaction: discord.Interaction, role: discord.Role):
     set_guild_setting(interaction.guild.id, "new_member_role_id", str(role.id))
     await interaction.response.send_message(f"신입 역할을 {role.mention} 으로 설정했습니다.", ephemeral=True)
-
-
-@bot.tree.command(name="세팅생일역할", description="생일 역할을 설정합니다.")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_birthday_role(interaction: discord.Interaction, role: discord.Role):
-    set_guild_setting(interaction.guild.id, "birthday_role_id", str(role.id))
-    await interaction.response.send_message(f"생일 역할을 {role.mention} 으로 설정했습니다.", ephemeral=True)
 
 
 @bot.tree.command(name="신용불량자역할", description="신용불량자에게 자동으로 부여할 역할을 설정합니다.")
@@ -4961,7 +4840,6 @@ async def savings_setting(interaction: discord.Interaction, days: int, interest_
 async def show_settings(interaction: discord.Interaction):
     guild_id = interaction.guild.id
     keys = [
-        ("생일 알림", "birthday_channel_id"),
         ("등업 로그", "upgrade_log_channel_id"),
         ("퇴장 로그", "leave_log_channel_id"),
         ("규칙 로그", "rule_log_channel_id"),
@@ -4987,7 +4865,6 @@ async def show_role_settings(interaction: discord.Interaction):
     keys = [
         ("규칙 역할", "rule_role_id"),
         ("신입 역할", "new_member_role_id"),
-        ("생일 역할", "birthday_role_id"),
         ("신용불량자 역할", "blacklist_role_id"),
         ("클랜 등업 역할", "upgrade_clan_role_id"),
         ("게스트 등업 역할", "upgrade_guest_role_id"),
@@ -5106,48 +4983,6 @@ async def sticky_check(interaction: discord.Interaction):
     embed.add_field(name="채널", value=interaction.channel.mention, inline=False)
     embed.add_field(name="내용", value=existing["content"], inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
-
-
-@bot.tree.command(name="생일등록", description="유저의 생일을 등록합니다.")
-@app_commands.describe(member="생일을 등록할 유저", date="MM-DD 형식으로 입력")
-async def add_birthday(interaction: discord.Interaction, member: discord.Member, date: str):
-    try:
-        normalized_date = normalize_birthday(date)
-    except ValueError as error:
-        await interaction.response.send_message(str(error), ephemeral=True)
-        return
-
-    cursor.execute("INSERT OR REPLACE INTO birthdays VALUES (?,?)", (str(member.id), normalized_date))
-    conn.commit()
-    await interaction.response.send_message("등록 완료", ephemeral=True)
-
-
-@bot.tree.command(name="생일삭제", description="유저의 생일 정보를 삭제합니다.")
-async def remove_birthday(interaction: discord.Interaction, member: discord.Member):
-    cursor.execute("DELETE FROM birthdays WHERE user_id=?", (str(member.id),))
-    conn.commit()
-    await interaction.response.send_message("삭제 완료", ephemeral=True)
-
-
-@bot.tree.command(name="생일목록", description="등록된 생일 목록을 확인합니다.")
-async def birthday_list(interaction: discord.Interaction):
-    cursor.execute("SELECT * FROM birthdays")
-    data = cursor.fetchall()
-
-    result = []
-    for uid, date in data:
-        member = interaction.guild.get_member(int(uid))
-        if not member:
-            continue
-        try:
-            normalized_date = normalize_birthday(date)
-        except ValueError:
-            continue
-        result.append((member, normalized_date))
-
-    result.sort(key=lambda item: tuple(map(int, item[1].split("-"))))
-    view = BirthdayListView(result)
-    await interaction.response.send_message(embed=view.get_embed(), view=view)
 
 
 @bot.tree.command(name="규칙버튼", description="규칙 확인 버튼 메시지를 생성합니다.")
@@ -6993,9 +6828,9 @@ async def admin_commands_guide(interaction: discord.Interaction):
     admin_embed.add_field(
         name="📌 채널 / 역할 설정",
         value=(
-            "`/세팅생일알림`, `/세팅등업로그`, `/세팅퇴장로그`, `/세팅규칙로그`\n"
+            "`/세팅등업로그`, `/세팅퇴장로그`, `/세팅규칙로그`\n"
             "`/세팅구인채널`, `/세팅몰빵결과채널`, `/세팅가이드안내`, `/세팅환영메시지채널`\n"
-            "`/세팅규칙역할`, `/세팅신입역할`, `/세팅생일역할`, `/신용불량자역할`\n"
+            "`/세팅규칙역할`, `/세팅신입역할`, `/신용불량자역할`\n"
             "`/세팅클랜등업역할`, `/세팅게스트등업역할`, `/세팅시간대역할`"
         ),
         inline=False,
@@ -7082,11 +6917,8 @@ async def admin_commands_guide(interaction: discord.Interaction):
         inline=False,
     )
     general_embed.add_field(
-        name="🎂 생일 / 인증 / 문의",
-        value=(
-            "`/생일등록`, `/생일삭제`, `/생일목록`\n"
-            "`/문의패널`, `/문의하기`, `/신고하기`, `/건의하기`"
-        ),
+        name="📨 인증 / 문의",
+        value="`/문의패널`, `/문의하기`, `/신고하기`, `/건의하기`",
         inline=False,
     )
     general_embed.add_field(
@@ -7496,65 +7328,6 @@ async def probation_role_check_loop():
 
 
 @tasks.loop(minutes=1)
-async def birthday_loop():
-    now = get_kst_now()
-    today_str = now.strftime("%m-%d")
-    yesterday_str = (now - timedelta(days=1)).strftime("%m-%d")
-
-    for guild in bot.guilds:
-        if now.strftime("%H:%M") == "00:00":
-            birthday_channel_id = get_guild_setting_channel_id(guild.id, "birthday_channel_id")
-            if birthday_channel_id is not None:
-                channel = bot.get_channel(birthday_channel_id)
-                if channel is not None:
-                    cursor.execute("SELECT user_id FROM birthdays WHERE date=?", (today_str,))
-                    for (uid,) in cursor.fetchall():
-                        member = guild.get_member(int(uid))
-                        if not member:
-                            continue
-
-                        embed = discord.Embed(
-                            title="🎉 오늘의 주인공 등장!",
-                            description=f"오늘은 {member.mention}님의 생일입니다! 축하해주세요!",
-                            color=0xFF69B4,
-                        )
-                        msg = await channel.send(embed=embed, view=BirthdayView())
-                        cursor.execute("INSERT OR REPLACE INTO birthday_messages VALUES (?,?)", (str(msg.id), str(uid)))
-                        conn.commit()
-
-                        birthday_role_id = get_guild_setting_role_id(guild.id, "birthday_role_id")
-                        if birthday_role_id is not None:
-                            role = guild.get_role(birthday_role_id)
-                            if role and role not in member.roles:
-                                try:
-                                    await member.add_roles(role)
-                                except Exception:
-                                    pass
-
-        cursor.execute("SELECT user_id FROM birthdays WHERE date=?", (yesterday_str,))
-        users = cursor.fetchall()
-
-        birthday_role_id = get_guild_setting_role_id(guild.id, "birthday_role_id")
-        role = guild.get_role(birthday_role_id) if birthday_role_id else None
-
-        for (uid,) in users:
-            member = guild.get_member(int(uid))
-            if not member:
-                continue
-
-            if role and role in member.roles:
-                try:
-                    await member.remove_roles(role)
-                except Exception:
-                    pass
-
-            try:
-                if "🎉" in member.display_name:
-                    await member.edit(nick=member.display_name.replace(" 🎉", ""))
-            except Exception:
-                pass
-
-@tasks.loop(minutes=1)
 async def all_in_game_loop():
     today_date = get_today_kst_date_str()
 
@@ -7677,7 +7450,6 @@ async def on_ready():
 
     await bot.tree.sync()
 
-    bot.add_view(BirthdayView())
     bot.add_view(RuleConfirmView())
     bot.add_view(UpgradePanelView())
     bot.add_view(TimeRoleView())
@@ -7688,9 +7460,6 @@ async def on_ready():
     await restore_nickname_panels()
     await backfill_probation_members()
     await sync_active_voice_sessions()
-
-    if not birthday_loop.is_running():
-        birthday_loop.start()
 
     if not probation_role_check_loop.is_running():
         probation_role_check_loop.start()
