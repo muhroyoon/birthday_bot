@@ -99,7 +99,6 @@ MIN_BET = 100
 COIN_FLIP_TIMEOUT = 60
 ROULETTE_TIMEOUT = 60
 SEOTDA_TIMEOUT = 60
-SEOTDA_BOT_BET_CHANCE_OFFSET = 17
 MAX_PLAYERS = 4
 ALL_IN_COST = 10000
 ALL_IN_GAME_NAME = "몰빵게임"
@@ -3545,51 +3544,7 @@ class SeotdaMatchView(discord.ui.View):
         )
 
     def _bot_should_bet(self) -> bool:
-        first_card_month = self.opponent_cards[0][0]
-        first_card_kwang = self.opponent_cards[0][1]
-        hand_result = evaluate_seotda_hand(self.opponent_cards)
-        hand_score = hand_result["score"]
-
-        if first_card_kwang:
-            first_card_bonus = 8
-        elif first_card_month in {1, 3, 8, 9, 10}:
-            first_card_bonus = 5
-        elif first_card_month in {2, 4, 6, 7}:
-            first_card_bonus = 1
-        else:
-            first_card_bonus = -6
-
-        if hand_score >= 10000:  # 38광땡
-            bet_chance = 100
-        elif hand_score >= 9900:  # 13/18 광땡
-            bet_chance = 99
-        elif hand_score >= 9000:  # 땡
-            bet_chance = 97
-        elif hand_score >= 7980:  # 알리, 독사, 구삥
-            bet_chance = 94
-        elif hand_score >= 7950:  # 장삥, 장사, 세륙
-            bet_chance = 90
-        elif hand_score >= 7009:  # 갑오
-            bet_chance = 84
-        elif hand_score == 7008:  # 8끗
-            bet_chance = 82
-        elif hand_score == 7007:  # 7끗
-            bet_chance = 78
-        elif hand_score == 7006:  # 6끗
-            bet_chance = 72
-        elif hand_score == 7005:  # 5끗
-            bet_chance = 66
-        elif hand_score == 7004:  # 4끗
-            bet_chance = 58
-        elif hand_score in {7003, 7002}:  # 3끗, 2끗
-            bet_chance = 50
-        elif hand_score == 7001:  # 1끗
-            bet_chance = 42
-        else:  # 망통
-            bet_chance = 28
-
-        bet_chance = max(5, min(100, bet_chance + first_card_bonus + SEOTDA_BOT_BET_CHANCE_OFFSET))
-        return random.randint(1, 100) <= bet_chance
+        return True
 
     def _apply_additional_bet(self, role_key: str, user_id: int | None) -> str:
         if user_id is None:
