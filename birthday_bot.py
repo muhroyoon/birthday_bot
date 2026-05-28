@@ -91,6 +91,7 @@ MIN_CREDIT_GRADE = 1
 MAX_CREDIT_GRADE = 10
 INITIAL_CREDIT_GRADE = 10
 LOAN_REPAYMENT_DAYS = 2
+LOAN_LIMIT_RECOVERY_DELAY_MINUTES = 60
 DEFAULT_SAVINGS_DAYS = "3"
 DEFAULT_SAVINGS_INTEREST_RATE = "10"
 DEFAULT_LABOR_DEBT_AMOUNT = 100_000
@@ -394,6 +395,18 @@ cursor.execute(
 
 cursor.execute(
     """
+    CREATE TABLE IF NOT EXISTS loan_limit_holds(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        amount INTEGER NOT NULL,
+        available_at TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )
+    """
+)
+
+cursor.execute(
+    """
     CREATE TABLE IF NOT EXISTS savings(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         guild_id TEXT NOT NULL,
@@ -511,6 +524,38 @@ if "last_loan_used_at" not in credit_profile_columns:
     conn.commit()
 if "loan_progress_amount" not in credit_profile_columns:
     cursor.execute("ALTER TABLE credit_profiles ADD COLUMN loan_progress_amount INTEGER NOT NULL DEFAULT 0")
+    conn.commit()
+
+cursor.execute("PRAGMA table_info(loans)")
+loan_columns = [row[1] for row in cursor.fetchall()]
+if "remaining_principal" not in loan_columns:
+    cursor.execute("ALTER TABLE loans ADD COLUMN remaining_principal INTEGER NOT NULL DEFAULT 0")
+    cursor.execute(
+        """
+        UPDATE loans
+        SET remaining_principal=
+            CASE
+                WHEN status IN ('active', 'overdue') THEN principal
+                ELSE 0
+            END
+        WHERE remaining_principal=0
+        """
+    )
+    conn.commit()
+
+if "remaining_total_repayment" not in loan_columns:
+    cursor.execute("ALTER TABLE loans ADD COLUMN remaining_total_repayment INTEGER NOT NULL DEFAULT 0")
+    cursor.execute(
+        """
+        UPDATE loans
+        SET remaining_total_repayment=
+            CASE
+                WHEN status IN ('active', 'overdue') THEN total_repayment
+                ELSE 0
+            END
+        WHERE remaining_total_repayment=0
+        """
+    )
     conn.commit()
 
 cursor.execute("PRAGMA table_info(money_grant_logs)")
@@ -1344,7 +1389,8 @@ def calculate_total_repayment(principal: int, interest_rate: int) -> int:
 def get_active_loans(user_id: int):
     cursor.execute(
         """
-        SELECT id, guild_id, principal, interest_rate, total_repayment, borrowed_at, due_at, status
+        SELECT id, guild_id, principal, interest_rate, total_repayment, remaining_principal,
+               remaining_total_repayment, borrowed_at, due_at, status
         FROM loans
         WHERE user_id=? AND status IN ('active', 'overdue')
         ORDER BY id DESC
@@ -1361,9 +1407,11 @@ def get_active_loans(user_id: int):
                 "principal": row[2],
                 "interest_rate": row[3],
                 "total_repayment": row[4],
-                "borrowed_at": row[5],
-                "due_at": row[6],
-                "status": row[7],
+                "remaining_principal": row[5],
+                "remaining_total_repayment": row[6],
+                "borrowed_at": row[7],
+                "due_at": row[8],
+                "status": row[9],
             }
         )
     return loans
@@ -1375,11 +1423,92 @@ def get_active_loan(user_id: int):
 
 
 def get_total_active_loan_principal(user_id: int) -> int:
-    return sum(loan["principal"] for loan in get_active_loans(user_id))
+    return sum(loan["remaining_principal"] for loan in get_active_loans(user_id))
 
 
 def get_total_active_loan_repayment(user_id: int) -> int:
-    return sum(loan["total_repayment"] for loan in get_active_loans(user_id))
+    return sum(loan["remaining_total_repayment"] for loan in get_active_loans(user_id))
+
+
+def get_loan_by_id(loan_id: int):
+    cursor.execute(
+        """
+        SELECT id, guild_id, user_id, principal, interest_rate, total_repayment, remaining_principal,
+               remaining_total_repayment, borrowed_at, due_at, repaid_at, status
+        FROM loans
+        WHERE id=?
+        """,
+        (loan_id,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+
+    return {
+        "id": int(row[0]),
+        "guild_id": row[1],
+        "user_id": int(row[2]),
+        "principal": int(row[3]),
+        "interest_rate": int(row[4]),
+        "total_repayment": int(row[5]),
+        "remaining_principal": int(row[6]),
+        "remaining_total_repayment": int(row[7]),
+        "borrowed_at": row[8],
+        "due_at": row[9],
+        "repaid_at": row[10],
+        "status": row[11],
+    }
+
+
+def add_loan_limit_hold(user_id: int, amount: int, available_at: datetime | None = None):
+    if amount <= 0:
+        return
+
+    target_time = available_at or (get_kst_now() + timedelta(minutes=LOAN_LIMIT_RECOVERY_DELAY_MINUTES))
+    cursor.execute(
+        """
+        INSERT INTO loan_limit_holds(user_id, amount, available_at, created_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (str(user_id), amount, dt_to_db(target_time), dt_to_db(get_kst_now())),
+    )
+    conn.commit()
+
+
+def clear_expired_loan_limit_holds(user_id: int):
+    cursor.execute(
+        "DELETE FROM loan_limit_holds WHERE user_id=? AND available_at<=?",
+        (str(user_id), dt_to_db(get_kst_now())),
+    )
+    conn.commit()
+
+
+def get_pending_loan_limit_hold_amount(user_id: int) -> int:
+    clear_expired_loan_limit_holds(user_id)
+    cursor.execute(
+        """
+        SELECT COALESCE(SUM(amount), 0)
+        FROM loan_limit_holds
+        WHERE user_id=? AND available_at>?
+        """,
+        (str(user_id), dt_to_db(get_kst_now())),
+    )
+    row = cursor.fetchone()
+    return int(row[0] or 0)
+
+
+def get_next_loan_limit_release_at(user_id: int):
+    clear_expired_loan_limit_holds(user_id)
+    cursor.execute(
+        """
+        SELECT MIN(available_at)
+        FROM loan_limit_holds
+        WHERE user_id=? AND available_at>?
+        """,
+        (str(user_id), dt_to_db(get_kst_now())),
+    )
+    row = cursor.fetchone()
+    return row[0] if row and row[0] else None
 
 
 def create_manual_credit_debt(guild_id: int, user_id: int, amount: int, reason: str):
@@ -1492,23 +1621,26 @@ def get_remaining_loan_limit(user_id: int) -> int:
 
     grade_limit = get_loan_limit_by_grade(profile["grade"])
     used_limit = get_total_active_loan_principal(user_id)
-    return max(0, grade_limit - used_limit)
+    pending_hold = get_pending_loan_limit_hold_amount(user_id)
+    return max(0, grade_limit - used_limit - pending_hold)
 
 
 def create_loan(guild_id: int, user_id: int, principal: int, interest_rate: int, total_repayment: int, borrowed_at: datetime, due_at: datetime):
     cursor.execute(
         """
         INSERT INTO loans(
-            guild_id, user_id, principal, interest_rate, total_repayment,
+            guild_id, user_id, principal, interest_rate, total_repayment, remaining_principal, remaining_total_repayment,
             borrowed_at, due_at, status, delinquency_processed
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 0)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 0)
         """,
         (
             str(guild_id),
             str(user_id),
             principal,
             interest_rate,
+            total_repayment,
+            principal,
             total_repayment,
             dt_to_db(borrowed_at),
             dt_to_db(due_at),
@@ -1523,10 +1655,16 @@ def repay_loans(loan_ids: list[int]):
     if not loan_ids:
         return
 
+    loan_rows = [get_loan_by_id(loan_id) for loan_id in loan_ids]
+    for loan in loan_rows:
+        if loan is None:
+            continue
+        add_loan_limit_hold(loan["user_id"], loan["remaining_principal"])
+
     cursor.executemany(
         """
         UPDATE loans
-        SET status='repaid', repaid_at=?, delinquency_processed=1
+        SET status='repaid', repaid_at=?, delinquency_processed=1, remaining_principal=0, remaining_total_repayment=0
         WHERE id=?
         """,
         [(dt_to_db(get_kst_now()), loan_id) for loan_id in loan_ids],
@@ -1536,6 +1674,57 @@ def repay_loans(loan_ids: list[int]):
 
 def repay_loan(loan_id: int):
     repay_loans([loan_id])
+
+
+def repay_loan_amount(loan_id: int, amount: int):
+    loan = get_loan_by_id(loan_id)
+    if loan is None or loan["status"] not in {"active", "overdue"}:
+        return None
+
+    remaining_total = loan["remaining_total_repayment"]
+    remaining_principal = loan["remaining_principal"]
+    payment_amount = max(0, min(amount, remaining_total))
+    if payment_amount <= 0:
+        return None
+
+    new_remaining_total = remaining_total - payment_amount
+    if new_remaining_total <= 0:
+        principal_recovered = remaining_principal
+        add_loan_limit_hold(loan["user_id"], principal_recovered)
+        cursor.execute(
+            """
+            UPDATE loans
+            SET remaining_principal=0,
+                remaining_total_repayment=0,
+                status='repaid',
+                repaid_at=?,
+                delinquency_processed=1
+            WHERE id=?
+            """,
+            (dt_to_db(get_kst_now()), loan_id),
+        )
+    else:
+        new_remaining_principal = math.ceil(new_remaining_total * loan["principal"] / loan["total_repayment"])
+        principal_recovered = max(0, remaining_principal - new_remaining_principal)
+        add_loan_limit_hold(loan["user_id"], principal_recovered)
+        cursor.execute(
+            """
+            UPDATE loans
+            SET remaining_principal=?,
+                remaining_total_repayment=?
+            WHERE id=?
+            """,
+            (new_remaining_principal, new_remaining_total, loan_id),
+        )
+
+    conn.commit()
+    return {
+        "loan": loan,
+        "payment_amount": payment_amount,
+        "principal_recovered": principal_recovered,
+        "fully_repaid": new_remaining_total <= 0,
+        "remaining_total_repayment": max(0, new_remaining_total),
+    }
 
 
 def mark_loan_overdue(loan_id: int):
@@ -1553,7 +1742,7 @@ def mark_loan_overdue(loan_id: int):
 def get_due_loans(now: datetime):
     cursor.execute(
         """
-        SELECT id, guild_id, user_id, total_repayment, due_at
+        SELECT id, guild_id, user_id, remaining_total_repayment, due_at
         FROM loans
         WHERE status='active' AND delinquency_processed=0 AND due_at<=?
         ORDER BY id ASC
@@ -1623,6 +1812,8 @@ def build_credit_embed(member: discord.abc.User, guild_id: int | None = None) ->
         interest_text = f"{get_loan_interest_by_grade(profile['grade'])}%"
         remaining_limit_text = format_money(get_remaining_loan_limit(member.id))
         progress_target_text = format_money(get_loan_limit_by_grade(profile["grade"]))
+    pending_hold_amount = get_pending_loan_limit_hold_amount(member.id)
+    next_limit_release_at = get_next_loan_limit_release_at(member.id)
 
     embed = discord.Embed(title=f"📋 {member.display_name}님의 신용 정보", color=0x5865F2)
     embed.add_field(name="현재 신용등급", value=grade_text, inline=False)
@@ -1630,6 +1821,18 @@ def build_credit_embed(member: discord.abc.User, guild_id: int | None = None) ->
     embed.add_field(name="현재 대출 이자율", value=interest_text, inline=True)
     embed.add_field(name="남은 대출 한도", value=remaining_limit_text, inline=True)
     embed.add_field(name="현재 잔액", value=format_money(get_balance(member.id)), inline=False)
+    if pending_hold_amount > 0:
+        release_text = "확인 불가"
+        if next_limit_release_at:
+            try:
+                release_text = dt_from_db(next_limit_release_at).strftime("%Y-%m-%d %H:%M:%S KST")
+            except Exception:
+                release_text = next_limit_release_at
+        embed.add_field(
+            name="한도 회복 대기 금액",
+            value=f"{format_money(pending_hold_amount)}\n회복 예정: `{release_text}`",
+            inline=False,
+        )
     if profile["is_blacklisted"]:
         embed.add_field(name="등급 상승 누적 실적", value="신용불량자 상태에서는 집계되지 않습니다.", inline=False)
     else:
@@ -1679,7 +1882,7 @@ def build_credit_embed(member: discord.abc.User, guild_id: int | None = None) ->
             loan_lines = []
             for idx, loan in enumerate(active_loans[:10], start=1):
                 loan_lines.append(
-                    f"{idx}. 원금 `{format_money(loan['principal'])}` / 상환 `{format_money(loan['total_repayment'])}` / {loan['status']}"
+                    f"#{loan['id']} 원금 `{format_money(loan['remaining_principal'])}` / 상환 `{format_money(loan['remaining_total_repayment'])}` / {loan['status']}"
                 )
             embed.add_field(name="진행 중인 대출 내역", value="\n".join(loan_lines), inline=False)
 
@@ -2049,6 +2252,31 @@ def claim_saving(saving_id: int):
         (dt_to_db(get_kst_now()), saving_id),
     )
     conn.commit()
+
+
+def cancel_saving(saving_id: int):
+    cursor.execute(
+        """
+        UPDATE savings
+        SET status='cancelled', claimed_at=?
+        WHERE id=?
+        """,
+        (dt_to_db(get_kst_now()), saving_id),
+    )
+    conn.commit()
+
+
+def get_due_savings(now: datetime):
+    cursor.execute(
+        """
+        SELECT id, user_id, total_amount
+        FROM savings
+        WHERE status='active' AND due_at<=?
+        ORDER BY id ASC
+        """,
+        (dt_to_db(now),),
+    )
+    return cursor.fetchall()
 
 
 def calculate_labor_required_count(debt_amount: int) -> int:
@@ -4540,6 +4768,115 @@ class StickyMessageModal(discord.ui.Modal, title="고정메시지 설정"):
         )
 
 
+class LoanConfirmView(discord.ui.View):
+    def __init__(self, guild_id: int, user_id: int, amount: int):
+        super().__init__(timeout=120)
+        self.guild_id = guild_id
+        self.user_id = user_id
+        self.amount = amount
+        self.resolved = False
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("이 버튼은 대출을 신청한 본인만 누를 수 있습니다.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="확인", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.resolved:
+            await interaction.response.send_message("이미 처리된 대출 요청입니다.", ephemeral=True)
+            return
+
+        profile = get_credit_profile(self.user_id)
+        if profile["is_blacklisted"]:
+            await interaction.response.send_message("현재 신용불량자 상태라 대출이 불가능합니다.", ephemeral=True)
+            return
+
+        if len(get_active_loans(self.user_id)) >= 2:
+            await interaction.response.send_message("동시에 진행할 수 있는 대출은 최대 2건입니다.", ephemeral=True)
+            return
+
+        remaining_limit = get_remaining_loan_limit(self.user_id)
+        if self.amount > remaining_limit:
+            await interaction.response.send_message(
+                f"남은 대출 한도 `{format_money(remaining_limit)}`를 초과했습니다.",
+                ephemeral=True,
+            )
+            return
+
+        required_balance = (self.amount + 3) // 4
+        current_balance = get_balance(self.user_id)
+        if current_balance < required_balance:
+            await interaction.response.send_message(
+                (
+                    "대출 조건을 다시 확인해주세요.\n"
+                    f"필요 잔액: `{format_money(required_balance)}` / 현재 잔액: `{format_money(current_balance)}`"
+                ),
+                ephemeral=True,
+            )
+            return
+
+        self.resolved = True
+        grade = profile["grade"]
+        interest_rate = get_loan_interest_by_grade(grade)
+        borrowed_at = get_kst_now()
+        due_at = borrowed_at + timedelta(days=LOAN_REPAYMENT_DAYS)
+        total_repayment = calculate_total_repayment(self.amount, interest_rate)
+
+        add_balance(self.user_id, self.amount)
+        create_loan(
+            self.guild_id,
+            self.user_id,
+            self.amount,
+            interest_rate,
+            total_repayment,
+            borrowed_at,
+            due_at,
+        )
+
+        for item in self.children:
+            item.disabled = True
+
+        embed = discord.Embed(title="💳 대출 실행 완료", color=0x3498DB)
+        embed.add_field(name="현재 신용등급", value=f"{grade}등급", inline=False)
+        embed.add_field(name="대출 금액", value=format_money(self.amount), inline=False)
+        embed.add_field(name="이자율", value=f"{interest_rate}%", inline=False)
+        embed.add_field(name="총 상환 금액", value=format_money(total_repayment), inline=False)
+        embed.add_field(name="상환 기한", value=due_at.strftime("%Y-%m-%d %H:%M:%S KST"), inline=False)
+        embed.add_field(name="현재 진행 중인 대출 수", value=f"{len(get_active_loans(self.user_id))}건", inline=False)
+        embed.add_field(name="남은 대출 한도", value=format_money(get_remaining_loan_limit(self.user_id)), inline=False)
+        current_profile = get_credit_profile(self.user_id)
+        embed.add_field(
+            name="등급 상승 누적 실적",
+            value=(
+                f"{format_money(current_profile['loan_progress_amount'])} / "
+                f"{format_money(get_loan_limit_by_grade(current_profile['grade']))}"
+            ),
+            inline=False,
+        )
+        embed.add_field(name="현재 잔액", value=format_money(get_balance(self.user_id)), inline=False)
+        embed.set_footer(text="대출 상환 후 한도는 1시간 뒤 회복됩니다.")
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="취소", style=discord.ButtonStyle.danger)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.resolved:
+            await interaction.response.send_message("이미 처리된 대출 요청입니다.", ephemeral=True)
+            return
+
+        self.resolved = True
+        for item in self.children:
+            item.disabled = True
+
+        embed = discord.Embed(
+            title="💳 대출 취소",
+            description="대출 신청이 취소되었습니다.",
+            color=0x95A5A6,
+        )
+        await interaction.response.edit_message(embed=embed, view=self)
+
+
 async def create_recruit_post(
     interaction: discord.Interaction,
     text_channel: discord.TextChannel,
@@ -5188,6 +5525,32 @@ async def savings_claim(interaction: discord.Interaction):
     embed.add_field(name="수령액", value=format_money(saving["total_amount"]), inline=False)
     embed.add_field(name="현재 잔액", value=format_money(get_balance(interaction.user.id)), inline=False)
     await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="적금중도해지", description="진행 중인 적금을 중도해지하고 원금만 돌려받습니다.")
+async def savings_cancel(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    saving = get_active_saving(interaction.guild.id, interaction.user.id)
+    if saving is None:
+        await interaction.response.send_message("현재 해지할 적금이 없습니다.", ephemeral=True)
+        return
+
+    due_at = dt_from_db(saving["due_at"])
+    if get_kst_now() >= due_at:
+        await interaction.response.send_message("이미 만기된 적금입니다. `/적금수령`을 사용해주세요.", ephemeral=True)
+        return
+
+    add_balance(interaction.user.id, saving["principal"])
+    cancel_saving(saving["id"])
+
+    embed = discord.Embed(title="🏦 적금 중도해지 완료", color=0xE67E22)
+    embed.add_field(name="반환액", value=format_money(saving["principal"]), inline=False)
+    embed.add_field(name="안내", value="중도해지 시 이자는 지급되지 않고 원금만 반환됩니다.", inline=False)
+    embed.add_field(name="현재 잔액", value=format_money(get_balance(interaction.user.id)), inline=False)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(name="랭킹", description="서버 재산 상위 10명을 확인합니다.")
@@ -6203,7 +6566,7 @@ async def loan_money(interaction: discord.Interaction, amount: int):
         await interaction.response.send_message(
             (
                 "동시에 진행할 수 있는 대출은 최대 2건입니다.\n"
-                "기존 대출 일부 또는 전체를 `/중도상환`한 뒤 다시 시도해주세요."
+                "기존 대출을 `/대출상환` 또는 `/중도상환`으로 정리한 뒤 다시 시도해주세요."
             ),
             ephemeral=True,
         )
@@ -6211,7 +6574,7 @@ async def loan_money(interaction: discord.Interaction, amount: int):
 
     if remaining_limit <= 0:
         await interaction.response.send_message(
-            f"현재 {grade}등급의 대출 한도를 모두 사용 중입니다. `/중도상환` 후 다시 시도해주세요.",
+            f"현재 {grade}등급의 대출 한도를 모두 사용 중입니다. `/대출상환` 또는 `/중도상환` 후 다시 시도해주세요.",
             ephemeral=True,
         )
         return
@@ -6243,37 +6606,29 @@ async def loan_money(interaction: discord.Interaction, amount: int):
     due_at = borrowed_at + timedelta(days=LOAN_REPAYMENT_DAYS)
     total_repayment = calculate_total_repayment(amount, interest_rate)
 
-    add_balance(interaction.user.id, amount)
-    create_loan(
-        interaction.guild.id,
-        interaction.user.id,
-        amount,
-        interest_rate,
-        total_repayment,
-        borrowed_at,
-        due_at,
-    )
-
-    embed = discord.Embed(title="💳 대출 실행 완료", color=0x3498DB)
+    embed = discord.Embed(title="💳 대출 실행 확인", color=0xF1C40F)
     embed.add_field(name="현재 신용등급", value=f"{grade}등급", inline=False)
     embed.add_field(name="대출 금액", value=format_money(amount), inline=False)
     embed.add_field(name="이자율", value=f"{interest_rate}%", inline=False)
     embed.add_field(name="총 상환 금액", value=format_money(total_repayment), inline=False)
     embed.add_field(name="상환 기한", value=due_at.strftime("%Y-%m-%d %H:%M:%S KST"), inline=False)
-    embed.add_field(name="현재 진행 중인 대출 수", value=f"{len(get_active_loans(interaction.user.id))}건", inline=False)
-    embed.add_field(name="남은 대출 한도", value=format_money(get_remaining_loan_limit(interaction.user.id)), inline=False)
-    current_profile = get_credit_profile(interaction.user.id)
+    embed.add_field(name="현재 진행 중인 대출 수", value=f"{active_loan_count}건", inline=False)
+    embed.add_field(name="남은 대출 한도", value=format_money(remaining_limit), inline=False)
+    embed.add_field(name="현재 잔액", value=format_money(current_balance), inline=False)
     embed.add_field(
-        name="등급 상승 누적 실적",
+        name="대출 조건 확인",
         value=(
-            f"{format_money(current_profile['loan_progress_amount'])} / "
-            f"{format_money(get_loan_limit_by_grade(current_profile['grade']))}"
+            "확인을 누르면 대출이 즉시 실행됩니다.\n"
+            "상환 후 대출 한도는 1시간 뒤 회복됩니다."
         ),
         inline=False,
     )
-    embed.add_field(name="현재 잔액", value=format_money(get_balance(interaction.user.id)), inline=False)
 
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(
+        embed=embed,
+        view=LoanConfirmView(interaction.guild.id, interaction.user.id, amount),
+        ephemeral=True,
+    )
 
 
 @bot.tree.command(name="중도상환", description="현재 대출을 즉시 전액 상환합니다.")
@@ -6325,6 +6680,11 @@ async def repay_loan_command(interaction: discord.Interaction):
     embed.add_field(name="상환 전 신용등급", value=previous_grade_text, inline=False)
     embed.add_field(name="현재 신용등급", value=current_grade_text, inline=False)
     embed.add_field(name="현재 잔액", value=format_money(get_balance(interaction.user.id)), inline=False)
+    embed.add_field(
+        name="한도 회복 안내",
+        value=f"상환한 원금만큼의 대출 한도는 `{LOAN_LIMIT_RECOVERY_DELAY_MINUTES}분` 뒤 회복됩니다.",
+        inline=False,
+    )
 
     if profile["is_blacklisted"]:
         manual_debt_total = get_total_active_manual_credit_debt(interaction.guild.id, interaction.user.id) if interaction.guild else 0
@@ -6394,7 +6754,8 @@ async def credit_grade_table(interaction: discord.Interaction):
         name="대출 조건",
         value=(
             "대출은 현재 신용등급의 남은 한도 내에서만 가능합니다.\n"
-            "또한 현재 잔액이 대출 금액의 25% 이상이어야 합니다."
+            "또한 현재 잔액이 대출 금액의 25% 이상이어야 합니다.\n"
+            "상환 후 대출 한도는 1시간 뒤 회복됩니다."
         ),
         inline=False,
     )
@@ -6514,6 +6875,80 @@ async def labor_gacha(interaction: discord.Interaction):
         embed.add_field(name="결과 안내", value=f"남은 노동 횟수의 {percent}%가 감소했습니다.", inline=False)
 
     await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="대출상환", description="특정 대출 번호에 원하는 금액만큼 상환합니다.")
+@app_commands.rename(loan_id="대출번호", amount="금액")
+async def repay_single_loan_command(interaction: discord.Interaction, loan_id: int, amount: int):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    if amount <= 0:
+        await interaction.response.send_message("상환 금액은 1원 이상이어야 합니다.", ephemeral=True)
+        return
+
+    loan = get_loan_by_id(loan_id)
+    if loan is None or loan["user_id"] != interaction.user.id or loan["status"] not in {"active", "overdue"}:
+        await interaction.response.send_message("상환 가능한 대출번호를 찾을 수 없습니다.", ephemeral=True)
+        return
+
+    payment_amount = min(amount, loan["remaining_total_repayment"])
+    if not can_afford(interaction.user.id, payment_amount):
+        await interaction.response.send_message(
+            f"상환 금액 `{format_money(payment_amount)}`이 부족합니다.",
+            ephemeral=True,
+        )
+        return
+
+    profile = get_credit_profile(interaction.user.id)
+    previous_grade_text = get_credit_grade_text(interaction.user.id)
+    loan_progress_amount = profile["loan_progress_amount"]
+
+    add_balance(interaction.user.id, -payment_amount)
+    result = repay_loan_amount(loan_id, payment_amount)
+    if result is None:
+        await interaction.response.send_message("대출 상환 처리에 실패했습니다.", ephemeral=True)
+        return
+
+    grade_up = False
+    if profile["is_blacklisted"]:
+        if get_total_credit_obligation(interaction.guild.id, interaction.user.id) <= 0:
+            set_credit_blacklisted(interaction.user.id, False)
+            set_credit_grade(interaction.user.id, INITIAL_CREDIT_GRADE)
+            delete_labor_penalty(interaction.guild.id, interaction.user.id)
+            await sync_blacklist_role(interaction.user, False)
+            grade_up = True
+        else:
+            refresh_active_labor_penalty_debt(interaction.guild.id, interaction.user.id)
+    else:
+        required_amount = get_loan_limit_by_grade(profile["grade"])
+        if loan_progress_amount >= required_amount and not get_active_loans(interaction.user.id):
+            upgrade_credit_grade(interaction.user.id)
+            grade_up = True
+
+    current_grade_text = get_credit_grade_text(interaction.user.id)
+    embed = discord.Embed(title="✅ 대출 부분 상환 완료", color=0x2ECC71)
+    embed.add_field(name="대출번호", value=f"`{loan_id}`", inline=False)
+    embed.add_field(name="상환 금액", value=format_money(result["payment_amount"]), inline=False)
+    embed.add_field(name="남은 상환 금액", value=format_money(result["remaining_total_repayment"]), inline=False)
+    embed.add_field(name="회복 대기 한도", value=format_money(result["principal_recovered"]), inline=False)
+    embed.add_field(name="상환 전 신용등급", value=previous_grade_text, inline=False)
+    embed.add_field(name="현재 신용등급", value=current_grade_text, inline=False)
+    embed.add_field(name="현재 잔액", value=format_money(get_balance(interaction.user.id)), inline=False)
+    embed.add_field(
+        name="한도 회복 안내",
+        value=f"이번 상환으로 회복된 한도는 `{LOAN_LIMIT_RECOVERY_DELAY_MINUTES}분` 뒤 반영됩니다.",
+        inline=False,
+    )
+    if result["fully_repaid"]:
+        embed.add_field(name="대출 상태", value="해당 대출은 전액 상환되어 종료되었습니다.", inline=False)
+    if profile["is_blacklisted"] and not grade_up and get_total_credit_obligation(interaction.guild.id, interaction.user.id) > 0:
+        embed.add_field(name="신용 상태", value="남은 채무가 있어 신용불량자 상태는 유지됩니다.", inline=False)
+    elif grade_up:
+        embed.add_field(name="등급 변화", value="상환 조건이 충족되어 신용 상태가 갱신되었습니다.", inline=False)
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(name="차용증", description="개인 간 차용증 요청 창을 엽니다.")
@@ -6764,7 +7199,8 @@ async def gambling_commands(interaction: discord.Interaction):
         value=(
             "`/적금 [금액]` - 적금 가입\n"
             "`/내적금` - 현재 적금 확인\n"
-            "`/적금수령` - 만기 적금 수령"
+            "`/적금수령` - 만기 적금 수령\n"
+            "`/적금중도해지` - 원금만 돌려받고 적금 해지"
         ),
         inline=False,
     )
@@ -6773,6 +7209,7 @@ async def gambling_commands(interaction: discord.Interaction):
         name="대출 / 신용",
         value=(
             "`/일수 [금액]` - 남은 대출 한도 내에서 추가 대출\n"
+            "`/대출상환 [대출번호] [금액]` - 특정 대출 부분 상환\n"
             "`/중도상환` - 현재 진행 중인 대출 전체 상환\n"
             "`/내신용` - 내 신용등급, 대출, 노동 현황 확인\n"
             "`/신용조회 [인원]` - 특정 인원의 신용 정보 조회\n"
@@ -6868,7 +7305,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
             "`/사업자등록`, `/사업자목록`, `/사업자등록증`, `/사업자삭제`\n"
             "`/신용불량자등록`, `/신용불량자목록`, `/신용불량자삭제`, `/신용초기화`\n"
             "`/노동가챠권지급`\n"
-            "`/신용조회`, `/신용등급표`, `/일수`, `/중도상환`"
+            "`/신용조회`, `/신용등급표`, `/일수`, `/대출상환`, `/중도상환`"
         ),
         inline=False,
     )
@@ -6902,8 +7339,8 @@ async def admin_commands_guide(interaction: discord.Interaction):
     general_embed.add_field(
         name="🏦 적금 / 대출 / 신용",
         value=(
-            "`/적금`, `/내적금`, `/적금수령`\n"
-            "`/일수`, `/중도상환`, `/내신용`, `/신용조회`, `/신용등급표`, `/노동`, `/노동가챠`, `/노동현황`\n"
+            "`/적금`, `/내적금`, `/적금수령`, `/적금중도해지`\n"
+            "`/일수`, `/대출상환`, `/중도상환`, `/내신용`, `/신용조회`, `/신용등급표`, `/노동`, `/노동가챠`, `/노동현황`\n"
             "`/사업자목록`, `/사업자등록증`, `/차용증`, `/차용증목록`, `/차용증삭제`"
         ),
         inline=False,
@@ -7434,6 +7871,16 @@ async def loan_due_check_loop():
             update_last_loan_used_at(int(user_id), last_used_dt + (decay_interval * applied_intervals))
 
 
+@tasks.loop(minutes=1)
+async def savings_auto_claim_loop():
+    now = get_kst_now()
+    rows = get_due_savings(now)
+
+    for saving_id, user_id, total_amount in rows:
+        add_balance(int(user_id), int(total_amount))
+        claim_saving(int(saving_id))
+
+
 
 # ============================================================
 # 봇 시작 설정
@@ -7469,6 +7916,9 @@ async def on_ready():
         
     if not loan_due_check_loop.is_running():
         loan_due_check_loop.start()
+
+    if not savings_auto_claim_loop.is_running():
+        savings_auto_claim_loop.start()
 
 
     print("메인 서버 봇 초기 실행 완료")
