@@ -99,6 +99,7 @@ MIN_BET = 100
 COIN_FLIP_TIMEOUT = 60
 ROULETTE_TIMEOUT = 60
 SEOTDA_TIMEOUT = 60
+SEOTDA_BOT_BET_CHANCE_OFFSET = 17
 MAX_PLAYERS = 4
 ALL_IN_COST = 10000
 ALL_IN_GAME_NAME = "몰빵게임"
@@ -3587,7 +3588,7 @@ class SeotdaMatchView(discord.ui.View):
         else:  # 망통
             bet_chance = 28
 
-        bet_chance = max(5, min(100, bet_chance + first_card_bonus))
+        bet_chance = max(5, min(100, bet_chance + first_card_bonus + SEOTDA_BOT_BET_CHANCE_OFFSET))
         return random.randint(1, 100) <= bet_chance
 
     def _apply_additional_bet(self, role_key: str, user_id: int | None) -> str:
