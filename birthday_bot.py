@@ -4468,7 +4468,7 @@ class ScrimSignupView(discord.ui.View):
         await self.update_embed(interaction.message)
         await interaction.response.send_message("내전 참여가 등록되었습니다.", ephemeral=True)
 
-    @discord.ui.button(label="李몄뿬痍⑥냼", style=discord.ButtonStyle.danger, custom_id="scrim_cancel_button")
+    @discord.ui.button(label="참여취소", style=discord.ButtonStyle.danger, custom_id="scrim_cancel_button")
     async def cancel_signup(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not has_scrim_signup(interaction.message.id, interaction.user.id):
             await interaction.response.send_message("현재 참여 중인 상태가 아닙니다.", ephemeral=True)
