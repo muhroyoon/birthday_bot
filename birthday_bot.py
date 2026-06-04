@@ -2709,7 +2709,8 @@ GAME_LABELS = {
 
 BLACKJACK_TIMEOUT = 90
 BLACKJACK_CARD_VALUES = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
-NUMBER_BASEBALL_ATTEMPTS = 7
+NUMBER_BASEBALL_DIGITS = 4
+NUMBER_BASEBALL_ATTEMPTS = 8
 HORSE_RACE_TABLE = [
     {"name": "즈미", "weight": 20, "payout": 5.0},
     {"name": "훈이", "weight": 18, "payout": 5.5},
@@ -3475,14 +3476,14 @@ class HorseRaceButton(discord.ui.Button):
 
 
 def generate_number_baseball_answer() -> str:
-    return "".join(random.sample("0123456789", 3))
+    return "".join(random.sample("0123456789", NUMBER_BASEBALL_DIGITS))
 
 
 def validate_number_baseball_guess(guess: str) -> str | None:
-    if len(guess) != 3 or not guess.isdigit():
-        return "서로 다른 숫자 3개를 입력해주세요. 예: `137`"
-    if len(set(guess)) != 3:
-        return "중복되지 않는 숫자 3개를 입력해주세요. 예: `137`"
+    if len(guess) != NUMBER_BASEBALL_DIGITS or not guess.isdigit():
+        return f"서로 다른 숫자 {NUMBER_BASEBALL_DIGITS}개를 입력해주세요. 예: `1379`"
+    if len(set(guess)) != NUMBER_BASEBALL_DIGITS:
+        return f"중복되지 않는 숫자 {NUMBER_BASEBALL_DIGITS}개를 입력해주세요. 예: `1379`"
     return None
 
 
@@ -3506,9 +3507,9 @@ class NumberBaseballGuessModal(discord.ui.Modal):
         self.game_view = game_view
         self.guess = discord.ui.TextInput(
             label="예상 숫자",
-            placeholder="예: 137",
-            min_length=3,
-            max_length=3,
+            placeholder="예: 1379",
+            min_length=NUMBER_BASEBALL_DIGITS,
+            max_length=NUMBER_BASEBALL_DIGITS,
             required=True,
         )
         self.add_item(self.guess)
@@ -3542,7 +3543,7 @@ class NumberBaseballView(discord.ui.View):
 
         embed = discord.Embed(
             title="⚾ 숫자야구",
-            description=result_text or "마리봇이 서로 다른 숫자 3개를 정했습니다.",
+            description=result_text or f"마리봇이 서로 다른 숫자 {NUMBER_BASEBALL_DIGITS}개를 정했습니다.",
             color=color,
         )
         embed.add_field(name="베팅 금액", value=format_money(self.bet_amount), inline=False)
@@ -3591,8 +3592,8 @@ class NumberBaseballView(discord.ui.View):
             return
 
         strikes, balls = score_number_baseball(self.answer, guess)
-        if strikes == 3:
-            self.records.append((guess, "3S"))
+        if strikes == NUMBER_BASEBALL_DIGITS:
+            self.records.append((guess, f"{NUMBER_BASEBALL_DIGITS}S"))
             attempt_count = len(self.records)
             multiplier = get_number_baseball_multiplier(attempt_count)
             payout = int(self.bet_amount * multiplier)
@@ -6531,10 +6532,10 @@ async def probability_table(interaction: discord.Interaction):
     embed.add_field(
         name="숫자야구",
         value=(
-            f"서로 다른 숫자 3개를 `{NUMBER_BASEBALL_ATTEMPTS}회` 안에 추리\n"
+            f"서로 다른 숫자 {NUMBER_BASEBALL_DIGITS}개를 `{NUMBER_BASEBALL_ATTEMPTS}회` 안에 추리\n"
             "1~3회 성공 / 4배\n"
             "4~5회 성공 / 2.5배\n"
-            "6~7회 성공 / 1.5배\n"
+            "6~8회 성공 / 1.5배\n"
             "실패 / 베팅금 손실"
         ),
         inline=False,
