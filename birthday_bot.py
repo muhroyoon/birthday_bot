@@ -2702,12 +2702,14 @@ GAME_LABELS = {
     "보급": "보급",
     "블랙잭": "블랙잭",
     "경마": "경마",
+    "숫자야구": "숫자야구",
     "섯다": "섯다",
     "몰빵게임": "몰빵게임",
 }
 
 BLACKJACK_TIMEOUT = 90
 BLACKJACK_CARD_VALUES = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+NUMBER_BASEBALL_ATTEMPTS = 7
 HORSE_RACE_TABLE = [
     {"name": "즈미", "weight": 20, "payout": 5.0},
     {"name": "훈이", "weight": 18, "payout": 5.5},
@@ -3472,6 +3474,164 @@ class HorseRaceButton(discord.ui.Button):
         await self.view.finish(interaction, self.horse_name)
 
 
+def generate_number_baseball_answer() -> str:
+    return "".join(random.sample("0123456789", 3))
+
+
+def validate_number_baseball_guess(guess: str) -> str | None:
+    if len(guess) != 3 or not guess.isdigit():
+        return "서로 다른 숫자 3개를 입력해주세요. 예: `137`"
+    if len(set(guess)) != 3:
+        return "중복되지 않는 숫자 3개를 입력해주세요. 예: `137`"
+    return None
+
+
+def score_number_baseball(answer: str, guess: str) -> tuple[int, int]:
+    strikes = sum(1 for idx, digit in enumerate(guess) if answer[idx] == digit)
+    balls = sum(1 for digit in guess if digit in answer) - strikes
+    return strikes, balls
+
+
+def get_number_baseball_multiplier(attempt_count: int) -> float:
+    if attempt_count <= 3:
+        return 4.0
+    if attempt_count <= 5:
+        return 2.5
+    return 1.5
+
+
+class NumberBaseballGuessModal(discord.ui.Modal):
+    def __init__(self, game_view):
+        super().__init__(title="숫자야구 입력")
+        self.game_view = game_view
+        self.guess = discord.ui.TextInput(
+            label="예상 숫자",
+            placeholder="예: 137",
+            min_length=3,
+            max_length=3,
+            required=True,
+        )
+        self.add_item(self.guess)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.game_view.submit_guess(interaction, str(self.guess).strip())
+
+
+class NumberBaseballView(discord.ui.View):
+    def __init__(self, guild_id: int, user_id: int, bet_amount: int):
+        super().__init__(timeout=120)
+        self.guild_id = guild_id
+        self.user_id = user_id
+        self.bet_amount = bet_amount
+        self.answer = generate_number_baseball_answer()
+        self.records: list[tuple[str, str]] = []
+        self.resolved = False
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("이 버튼은 명령어를 사용한 본인만 누를 수 있습니다.", ephemeral=True)
+            return False
+        return True
+
+    def build_embed(self, result_text: str | None = None, color: int = 0x3498DB):
+        remaining = max(0, NUMBER_BASEBALL_ATTEMPTS - len(self.records))
+        record_text = "\n".join(
+            f"{idx}. `{guess}` → {result}"
+            for idx, (guess, result) in enumerate(self.records, start=1)
+        ) or "아직 입력 기록이 없습니다."
+
+        embed = discord.Embed(
+            title="⚾ 숫자야구",
+            description=result_text or "마리봇이 서로 다른 숫자 3개를 정했습니다.",
+            color=color,
+        )
+        embed.add_field(name="베팅 금액", value=format_money(self.bet_amount), inline=False)
+        embed.add_field(name="남은 기회", value=f"{remaining}회", inline=True)
+        embed.add_field(name="입력 기록", value=record_text, inline=False)
+        embed.add_field(
+            name="규칙",
+            value="숫자와 위치가 모두 맞으면 S\n숫자만 맞으면 B\n아무것도 맞지 않으면 OUT",
+            inline=False,
+        )
+        if self.resolved:
+            embed.add_field(name="정답", value=f"`{self.answer}`", inline=True)
+            embed.add_field(name="현재 잔액", value=format_money(get_balance(self.user_id)), inline=False)
+        else:
+            embed.set_footer(text="숫자 입력 버튼을 눌러 정답을 추리하세요.")
+        return embed
+
+    async def finish(self, interaction: discord.Interaction, result_text: str, result_label: str, color: int):
+        self.resolved = True
+        for item in self.children:
+            item.disabled = True
+
+        add_game_history(
+            self.guild_id,
+            "숫자야구",
+            f"{interaction.user.display_name} - 정답:{self.answer} / 시도:{len(self.records)}회 / {result_label}",
+        )
+
+        await interaction.response.edit_message(
+            embed=self.build_embed(result_text=result_text, color=color),
+            view=self,
+        )
+
+    async def submit_guess(self, interaction: discord.Interaction, guess: str):
+        if self.resolved:
+            await interaction.response.send_message("이미 숫자야구가 종료되었습니다.", ephemeral=True)
+            return
+
+        error_text = validate_number_baseball_guess(guess)
+        if error_text:
+            await interaction.response.send_message(error_text, ephemeral=True)
+            return
+
+        if any(previous_guess == guess for previous_guess, _ in self.records):
+            await interaction.response.send_message("이미 입력했던 숫자입니다. 다른 숫자를 입력해주세요.", ephemeral=True)
+            return
+
+        strikes, balls = score_number_baseball(self.answer, guess)
+        if strikes == 3:
+            self.records.append((guess, "3S"))
+            attempt_count = len(self.records)
+            multiplier = get_number_baseball_multiplier(attempt_count)
+            payout = int(self.bet_amount * multiplier)
+            add_balance(self.user_id, payout)
+            await self.finish(
+                interaction,
+                f"정답입니다! `{attempt_count}회` 만에 맞혀 `{format_money(payout)}`을 획득했습니다.",
+                f"성공 {attempt_count}회 / {multiplier}배",
+                0x2ECC71,
+            )
+            return
+
+        result = "OUT" if strikes == 0 and balls == 0 else f"{strikes}S {balls}B"
+        self.records.append((guess, result))
+
+        if len(self.records) >= NUMBER_BASEBALL_ATTEMPTS:
+            await self.finish(
+                interaction,
+                f"기회를 모두 사용했습니다. `{format_money(self.bet_amount)}`을 잃었습니다.",
+                "실패",
+                0xE74C3C,
+            )
+            return
+
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def on_timeout(self):
+        if self.resolved:
+            return
+        self.resolved = True
+        add_balance(self.user_id, self.bet_amount)
+        for item in self.children:
+            item.disabled = True
+
+    @discord.ui.button(label="숫자 입력", style=discord.ButtonStyle.primary)
+    async def guess_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(NumberBaseballGuessModal(self))
+
+
 class SupplyDropView(discord.ui.View):
     def __init__(self, user_id: int, bet_amount: int):
         super().__init__(timeout=60)
@@ -4234,6 +4394,10 @@ class HistoryGameSelectView(discord.ui.View):
     @discord.ui.button(label="경마", style=discord.ButtonStyle.success)
     async def horse_race_history(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.show_history(interaction, "경마")
+
+    @discord.ui.button(label="숫자야구", style=discord.ButtonStyle.success)
+    async def number_baseball_history(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.show_history(interaction, "숫자야구")
 
     @discord.ui.button(label="섯다", style=discord.ButtonStyle.success)
     async def seotda_history(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -5886,6 +6050,25 @@ async def horse_race(interaction: discord.Interaction, amount: int):
     )
 
 
+@bot.tree.command(name="숫자야구", description="입력한 금액으로 숫자야구에 도전합니다.")
+async def number_baseball(interaction: discord.Interaction, amount: int):
+    if not await ensure_not_blacklisted_for_gambling(interaction):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+    if amount < MIN_BET:
+        await interaction.response.send_message(f"최소 베팅 금액은 `{format_money(MIN_BET)}`입니다.", ephemeral=True)
+        return
+    if not can_afford(interaction.user.id, amount):
+        await interaction.response.send_message("잔액이 부족합니다.", ephemeral=True)
+        return
+
+    add_balance(interaction.user.id, -amount)
+    view = NumberBaseballView(interaction.guild.id, interaction.user.id, amount)
+    await interaction.response.send_message(embed=view.build_embed(), view=view)
+
+
 @bot.tree.command(name="세팅대기방추가", description="대기방 음성채널을 등록합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def add_waiting_room_command(interaction: discord.Interaction, channel: discord.VoiceChannel):
@@ -6341,6 +6524,18 @@ async def probability_table(interaction: discord.Interaction):
             "삼성 12% / 8.3배\n"
             "하랑 11% / 9.1배\n"
             "개쩌는머로 9% / 11.1배"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="숫자야구",
+        value=(
+            f"서로 다른 숫자 3개를 `{NUMBER_BASEBALL_ATTEMPTS}회` 안에 추리\n"
+            "1~3회 성공 / 4배\n"
+            "4~5회 성공 / 2.5배\n"
+            "6~7회 성공 / 1.5배\n"
+            "실패 / 베팅금 손실"
         ),
         inline=False,
     )
@@ -7154,6 +7349,7 @@ async def gambling_commands(interaction: discord.Interaction):
             "`/덕몽 [금액]` - 오리를 찾아라\n"
             "`/블랙잭 [금액]` - 딜러와 21 대결\n"
             "`/경마 [금액]` - 원하는 말에 베팅\n"
+            "`/숫자야구 [금액]` - 숫자 추리 게임\n"
             "`/섯다 [금액] [상대]` - 봇 또는 유저와 섯다 대결\n"
             "`/몰빵참여 [금액]` - 원하는 금액으로 몰빵게임 참여"
         ),
@@ -7269,7 +7465,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="🎮 도박 / 게임",
         value=(
             "`/슬롯`, `/동전`, `/보급`, `/덕몽`\n"
-            "`/블랙잭`, `/경마`\n"
+            "`/블랙잭`, `/경마`, `/숫자야구`\n"
             "`/섯다`, `/몰빵참여`"
         ),
         inline=False,
