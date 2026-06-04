@@ -81,10 +81,8 @@ TOKEN = os.getenv("TOKEN")
 DAILY_REWARD = 10000
 MIN_BET = 100
 COIN_FLIP_TIMEOUT = 60
-ROULETTE_TIMEOUT = 60
 SEOTDA_TIMEOUT = 60
 MAX_PLAYERS = 4
-ALL_IN_COST = 10000
 ALL_IN_GAME_NAME = "몰빵게임"
 GAME_HISTORY_LIMIT = 10
 MIN_CREDIT_GRADE = 1
@@ -487,20 +485,6 @@ cursor.execute(
 
 cursor.execute(
     """
-    CREATE TABLE IF NOT EXISTS business_registrations(
-        guild_id TEXT NOT NULL,
-        user_id TEXT NOT NULL,
-        business_name TEXT NOT NULL,
-        business_type TEXT,
-        logo_url TEXT,
-        created_at TEXT NOT NULL,
-        PRIMARY KEY (guild_id, user_id)
-    )
-    """
-)
-
-cursor.execute(
-    """
     CREATE TABLE IF NOT EXISTS scrim_signups(
         message_id TEXT NOT NULL,
         user_id TEXT NOT NULL,
@@ -563,13 +547,6 @@ money_grant_log_columns = [row[1] for row in cursor.fetchall()]
 
 if "note" not in money_grant_log_columns:
     cursor.execute("ALTER TABLE money_grant_logs ADD COLUMN note TEXT")
-    conn.commit()
-
-cursor.execute("PRAGMA table_info(business_registrations)")
-business_registration_columns = [row[1] for row in cursor.fetchall()]
-
-if "business_type" not in business_registration_columns:
-    cursor.execute("ALTER TABLE business_registrations ADD COLUMN business_type TEXT")
     conn.commit()
 
 cursor.execute("PRAGMA table_info(promissory_notes)")
@@ -2719,87 +2696,27 @@ def get_pending_all_in_dates(guild_id: int, today_date: str):
     return [row[0] for row in cursor.fetchall()]
 
 
-def set_business_registration(
-    guild_id: int,
-    user_id: int,
-    business_name: str,
-    business_type: str | None = None,
-    logo_url: str | None = None,
-):
-    cursor.execute(
-        """
-        INSERT OR REPLACE INTO business_registrations(guild_id, user_id, business_name, business_type, logo_url, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (str(guild_id), str(user_id), business_name, business_type, logo_url, dt_to_db(get_kst_now())),
-    )
-    conn.commit()
-
-
-def get_business_registration(guild_id: int, user_id: int):
-    cursor.execute(
-        """
-        SELECT guild_id, user_id, business_name, business_type, logo_url, created_at
-        FROM business_registrations
-        WHERE guild_id=? AND user_id=?
-        """,
-        (str(guild_id), str(user_id)),
-    )
-    row = cursor.fetchone()
-    if not row:
-        return None
-
-    return {
-        "guild_id": row[0],
-        "user_id": int(row[1]),
-        "business_name": row[2],
-        "business_type": row[3] or "",
-        "logo_url": row[4] or "",
-        "created_at": row[5],
-    }
-
-
-def get_all_business_registrations(guild_id: int):
-    cursor.execute(
-        """
-        SELECT user_id, business_name, business_type, logo_url, created_at
-        FROM business_registrations
-        WHERE guild_id=?
-        ORDER BY business_name COLLATE NOCASE ASC, user_id ASC
-        """,
-        (str(guild_id),),
-    )
-    rows = cursor.fetchall()
-    return [
-        {
-            "user_id": int(row[0]),
-            "business_name": row[1],
-            "business_type": row[2] or "",
-            "logo_url": row[3] or "",
-            "created_at": row[4],
-        }
-        for row in rows
-    ]
-
-
-def delete_business_registration(guild_id: int, user_id: int):
-    cursor.execute(
-        "DELETE FROM business_registrations WHERE guild_id=? AND user_id=?",
-        (str(guild_id), str(user_id)),
-    )
-    conn.commit()
-    return cursor.rowcount > 0
-
-
 GAME_LABELS = {
     "슬롯": "슬롯",
     "동전": "동전",
-    "룰렛": "룰렛",
     "보급": "보급",
+    "블랙잭": "블랙잭",
+    "경마": "경마",
     "섯다": "섯다",
     "몰빵게임": "몰빵게임",
 }
 
+BLACKJACK_TIMEOUT = 90
+BLACKJACK_CARD_VALUES = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+HORSE_RACE_TABLE = [
+    {"name": "즈미", "weight": 20, "payout": 5.0},
+    {"name": "훈이", "weight": 18, "payout": 5.5},
+    {"name": "해랑솔", "weight": 16, "payout": 6.25},
+    {"name": "김천", "weight": 14, "payout": 7.1},
+    {"name": "삼성", "weight": 12, "payout": 8.3},
+    {"name": "하랑", "weight": 11, "payout": 9.1},
+    {"name": "개쩌는머로", "weight": 9, "payout": 11.1},
+]
 
 LABOR_MINE_TABLE = {
     "shallow": {
@@ -3316,11 +3233,44 @@ class CoinFlipView(discord.ui.View):
         await self.finish(interaction, "뒤")
 
 
-class RouletteView(discord.ui.View):
-    def __init__(self, user_id: int, bet_amount: int):
-        super().__init__(timeout=ROULETTE_TIMEOUT)
+def draw_blackjack_card() -> str:
+    return random.choice(BLACKJACK_CARD_VALUES)
+
+
+def blackjack_hand_value(cards: list[str]) -> int:
+    total = 0
+    aces = 0
+    for card in cards:
+        if card == "A":
+            total += 11
+            aces += 1
+        elif card in {"J", "Q", "K"}:
+            total += 10
+        else:
+            total += int(card)
+
+    while total > 21 and aces:
+        total -= 10
+        aces -= 1
+    return total
+
+
+def format_blackjack_cards(cards: list[str], hide_second: bool = False) -> str:
+    if hide_second and len(cards) >= 2:
+        visible_cards = [cards[0], "?"]
+    else:
+        visible_cards = cards
+    return " ".join(f"`{card}`" for card in visible_cards)
+
+
+class BlackjackView(discord.ui.View):
+    def __init__(self, guild_id: int, user_id: int, bet_amount: int):
+        super().__init__(timeout=BLACKJACK_TIMEOUT)
+        self.guild_id = guild_id
         self.user_id = user_id
         self.bet_amount = bet_amount
+        self.player_cards = [draw_blackjack_card(), draw_blackjack_card()]
+        self.dealer_cards = [draw_blackjack_card(), draw_blackjack_card()]
         self.resolved = False
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -3329,60 +3279,177 @@ class RouletteView(discord.ui.View):
             return False
         return True
 
-    def spin_result(self) -> str:
-        return random.choices(
-            ["빨강", "노랑", "파랑", "검정", "초록"],
-            weights=[33, 25, 20, 13, 9],
-            k=1,
-        )[0]
+    def build_embed(self, reveal_dealer: bool = False, result_text: str | None = None, color: int = 0x2C3E50):
+        player_value = blackjack_hand_value(self.player_cards)
+        dealer_value = blackjack_hand_value(self.dealer_cards)
+        dealer_display_value = dealer_value if reveal_dealer else "?"
 
-    def get_payout(self, choice: str) -> int:
-        if choice == "빨강":
-            return int(self.bet_amount * 3.0)
-        if choice == "노랑":
-            return int(self.bet_amount * 4.0)
-        if choice == "파랑":
-            return int(self.bet_amount * 5.0)
-        if choice == "검정":
-            return int(self.bet_amount * 7.7)
-        if choice == "초록":
-            return int(self.bet_amount * 11.1)
-        return 0
+        embed = discord.Embed(title="🃏 블랙잭", color=color)
+        embed.add_field(
+            name="내 패",
+            value=f"{format_blackjack_cards(self.player_cards)}\n합계: `{player_value}`",
+            inline=False,
+        )
+        embed.add_field(
+            name="딜러 패",
+            value=(
+                f"{format_blackjack_cards(self.dealer_cards, hide_second=not reveal_dealer)}\n"
+                f"합계: `{dealer_display_value}`"
+            ),
+            inline=False,
+        )
+        embed.add_field(name="베팅 금액", value=format_money(self.bet_amount), inline=False)
+        if result_text:
+            embed.description = result_text
+            embed.add_field(name="현재 잔액", value=format_money(get_balance(self.user_id)), inline=False)
+        else:
+            embed.set_footer(text="21에 가까울수록 유리합니다. 21을 넘으면 버스트로 패배합니다.")
+        return embed
 
-    async def finish(self, interaction: discord.Interaction, choice: str):
+    async def settle(self, interaction: discord.Interaction, reason: str):
         if self.resolved:
             await interaction.response.send_message("이미 결과가 확정되었습니다.", ephemeral=True)
             return
 
         self.resolved = True
-        force_info = get_hidden_gambling_force(self.user_id)
-        if force_info and force_info["game_name"] == "roulette":
-            consume_hidden_gambling_force(self.user_id)
-            result = choice
-        else:
-            result = self.spin_result()
-        win = choice == result
+        player_value = blackjack_hand_value(self.player_cards)
 
-        if win:
-            payout = self.get_payout(choice)
+        if reason == "stand":
+            while blackjack_hand_value(self.dealer_cards) < 17:
+                self.dealer_cards.append(draw_blackjack_card())
+
+        dealer_value = blackjack_hand_value(self.dealer_cards)
+        payout = 0
+
+        if player_value > 21:
+            result_text = f"버스트입니다. `{format_money(self.bet_amount)}`을 잃었습니다."
+            result_label = "패배"
+            color = 0xE74C3C
+        elif dealer_value > 21 or player_value > dealer_value:
+            is_natural = len(self.player_cards) == 2 and player_value == 21
+            multiplier = 2.5 if is_natural else 2.0
+            payout = int(self.bet_amount * multiplier)
             add_balance(self.user_id, payout)
-            description = f"선택: **{choice}**\n결과: **{result}**\n축하합니다! `{format_money(payout)}`을 획득했습니다."
+            result_text = f"승리했습니다! `{format_money(payout)}`을 획득했습니다."
+            result_label = "블랙잭 승리" if is_natural else "승리"
             color = 0x2ECC71
+        elif player_value == dealer_value:
+            payout = self.bet_amount
+            add_balance(self.user_id, payout)
+            result_text = f"무승부입니다. `{format_money(payout)}`을 돌려받았습니다."
+            result_label = "무승부"
+            color = 0x3498DB
         else:
-            description = f"선택: **{choice}**\n결과: **{result}**\n아쉽네요... `{format_money(self.bet_amount)}`을 잃었습니다."
+            result_text = f"딜러 승리입니다. `{format_money(self.bet_amount)}`을 잃었습니다."
+            result_label = "패배"
             color = 0xE74C3C
 
         for item in self.children:
             item.disabled = True
 
-        balance = get_balance(self.user_id)
-        embed = discord.Embed(title="🎡 룰렛 결과", description=description, color=color)
-        embed.add_field(name="현재 잔액", value=format_money(balance), inline=False)
+        add_game_history(
+            self.guild_id,
+            "블랙잭",
+            (
+                f"{interaction.user.display_name} - 내 패:{' '.join(self.player_cards)}({player_value}) / "
+                f"딜러:{' '.join(self.dealer_cards)}({dealer_value}) / {result_label}"
+            ),
+        )
+
+        await interaction.response.edit_message(
+            embed=self.build_embed(reveal_dealer=True, result_text=result_text, color=color),
+            view=self,
+        )
+
+    async def on_timeout(self):
+        if self.resolved:
+            return
+        self.resolved = True
+        add_balance(self.user_id, self.bet_amount)
+        for item in self.children:
+            item.disabled = True
+
+    @discord.ui.button(label="카드 받기", style=discord.ButtonStyle.primary)
+    async def hit(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.player_cards.append(draw_blackjack_card())
+        if blackjack_hand_value(self.player_cards) > 21:
+            await self.settle(interaction, "bust")
+            return
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    @discord.ui.button(label="멈추기", style=discord.ButtonStyle.success)
+    async def stand(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.settle(interaction, "stand")
+
+
+class HorseRaceView(discord.ui.View):
+    def __init__(self, guild_id: int, user_id: int, bet_amount: int):
+        super().__init__(timeout=60)
+        self.guild_id = guild_id
+        self.user_id = user_id
+        self.bet_amount = bet_amount
+        self.resolved = False
+
+        for horse in HORSE_RACE_TABLE:
+            self.add_item(HorseRaceButton(horse["name"]))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("이 버튼은 명령어를 사용한 본인만 누를 수 있습니다.", ephemeral=True)
+            return False
+        return True
+
+    def pick_winner(self) -> dict:
+        return random.choices(
+            HORSE_RACE_TABLE,
+            weights=[horse["weight"] for horse in HORSE_RACE_TABLE],
+            k=1,
+        )[0]
+
+    async def finish(self, interaction: discord.Interaction, selected_name: str):
+        if self.resolved:
+            await interaction.response.send_message("이미 경주가 종료되었습니다.", ephemeral=True)
+            return
+
+        self.resolved = True
+        winner = self.pick_winner()
+        remaining = [horse["name"] for horse in HORSE_RACE_TABLE if horse["name"] != winner["name"]]
+        random.shuffle(remaining)
+        ranking = [winner["name"]] + remaining
+        is_win = selected_name == winner["name"]
+        payout = int(self.bet_amount * winner["payout"]) if is_win else 0
+
+        if payout > 0:
+            add_balance(self.user_id, payout)
+
+        for item in self.children:
+            item.disabled = True
+
+        ranking_text = "\n".join(f"{idx}위: **{name}**" for idx, name in enumerate(ranking, start=1))
+        if is_win:
+            description = (
+                f"선택한 말: **{selected_name}**\n\n"
+                f"{ranking_text}\n\n"
+                f"적중! `{format_money(payout)}`을 획득했습니다."
+            )
+            color = 0x2ECC71
+            result_label = "적중"
+        else:
+            description = (
+                f"선택한 말: **{selected_name}**\n\n"
+                f"{ranking_text}\n\n"
+                f"아쉽게도 `{format_money(self.bet_amount)}`을 잃었습니다."
+            )
+            color = 0xE74C3C
+            result_label = "실패"
+
+        embed = discord.Embed(title="🏇 경마 결과", description=description, color=color)
+        embed.add_field(name="현재 잔액", value=format_money(get_balance(self.user_id)), inline=False)
 
         add_game_history(
-            interaction.guild.id,
-            "룰렛",
-            f"{interaction.user.display_name} - 선택:{choice} / 결과:{result} / {'승리' if win else '패배'}"
+            self.guild_id,
+            "경마",
+            f"{interaction.user.display_name} - 선택:{selected_name} / 1위:{winner['name']} / {result_label}",
         )
 
         await interaction.response.edit_message(embed=embed, view=self)
@@ -3395,26 +3462,14 @@ class RouletteView(discord.ui.View):
         for item in self.children:
             item.disabled = True
 
-    @discord.ui.button(label="🟥 빨강", style=discord.ButtonStyle.danger)
-    async def red(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.finish(interaction, "빨강")
 
-    @discord.ui.button(label="🟨 노랑", style=discord.ButtonStyle.primary)
-    async def yellow(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.finish(interaction, "노랑")
+class HorseRaceButton(discord.ui.Button):
+    def __init__(self, horse_name: str):
+        super().__init__(label=horse_name, style=discord.ButtonStyle.primary)
+        self.horse_name = horse_name
 
-    @discord.ui.button(label="🟦 파랑", style=discord.ButtonStyle.primary)
-    async def blue(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.finish(interaction, "파랑")
-
-    @discord.ui.button(label="⬛ 검정", style=discord.ButtonStyle.secondary)
-    async def black(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.finish(interaction, "검정")
-
-    @discord.ui.button(label="🟩 초록", style=discord.ButtonStyle.success)
-    async def green(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.finish(interaction, "초록")
-
+    async def callback(self, interaction: discord.Interaction):
+        await self.view.finish(interaction, self.horse_name)
 
 
 class SupplyDropView(discord.ui.View):
@@ -4168,13 +4223,17 @@ class HistoryGameSelectView(discord.ui.View):
     async def coin_history(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.show_history(interaction, "동전")
 
-    @discord.ui.button(label="룰렛", style=discord.ButtonStyle.primary)
-    async def roulette_history(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.show_history(interaction, "룰렛")
-
     @discord.ui.button(label="보급", style=discord.ButtonStyle.success)
     async def supply_history(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.show_history(interaction, "보급")
+
+    @discord.ui.button(label="블랙잭", style=discord.ButtonStyle.success)
+    async def blackjack_history(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.show_history(interaction, "블랙잭")
+
+    @discord.ui.button(label="경마", style=discord.ButtonStyle.success)
+    async def horse_race_history(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.show_history(interaction, "경마")
 
     @discord.ui.button(label="섯다", style=discord.ButtonStyle.success)
     async def seotda_history(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -4991,102 +5050,6 @@ async def set_blacklist_role(interaction: discord.Interaction, role: discord.Rol
     await interaction.response.send_message(f"신용불량자 역할을 {role.mention} 으로 설정했습니다.", ephemeral=True)
 
 
-@bot.tree.command(name="사업자등록", description="특정 인원을 사업자로 등록합니다.")
-@app_commands.checks.has_permissions(administrator=True)
-@app_commands.rename(member="인원")
-async def register_business(interaction: discord.Interaction, member: discord.Member):
-    if member.bot:
-        await interaction.response.send_message("봇은 사업자로 등록할 수 없습니다.", ephemeral=True)
-        return
-
-    await interaction.response.send_modal(BusinessRegistrationModal(member))
-
-
-@bot.tree.command(name="사업자목록", description="등록된 사업자 목록을 확인합니다.")
-async def business_list(interaction: discord.Interaction):
-    if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
-        return
-
-    rows = get_all_business_registrations(interaction.guild.id)
-    if not rows:
-        await interaction.response.send_message("등록된 사업자가 없습니다.", ephemeral=True)
-        return
-
-    lines = []
-    for row in rows[:20]:
-        member = interaction.guild.get_member(row["user_id"])
-        member_text = member.mention if member else f"`{row['user_id']}`"
-        try:
-            created_text = dt_from_db(row["created_at"]).strftime("%Y-%m-%d")
-        except Exception:
-            created_text = row["created_at"]
-        line = f"**{row['business_name']}**\n대표: {member_text}\n업종: {row['business_type'] or '미입력'}\n등록일: `{created_text}`"
-        if row["logo_url"]:
-            line += f"\n로고: {row['logo_url']}"
-        lines.append(line)
-
-    embed = discord.Embed(
-        title="🏢 사업자 목록",
-        description="\n\n".join(lines),
-        color=0x1ABC9C,
-    )
-    embed.set_footer(text="최대 20개까지 표시됩니다.")
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-
-@bot.tree.command(name="사업자등록증", description="내 사업자 정보를 등록증 형태로 확인합니다.")
-async def business_certificate(interaction: discord.Interaction):
-    if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
-        return
-
-    business_info = get_business_registration(interaction.guild.id, interaction.user.id)
-    if business_info is None:
-        await interaction.response.send_message("등록된 사업자 정보가 없습니다.", ephemeral=True)
-        return
-
-    try:
-        created_text = dt_from_db(business_info["created_at"]).strftime("%Y-%m-%d")
-    except Exception:
-        created_text = business_info["created_at"]
-
-    embed = discord.Embed(
-        title="🏢 사업자등록증",
-        description=f"**{business_info['business_name']}**",
-        color=0xF1C40F,
-    )
-    embed.add_field(name="대표", value=interaction.user.mention, inline=True)
-    embed.add_field(name="업종", value=business_info["business_type"] or "미입력", inline=True)
-    embed.add_field(name="등록일", value=f"`{created_text}`", inline=True)
-    embed.add_field(name="사업자명", value=business_info["business_name"], inline=False)
-    if business_info["logo_url"]:
-        embed.set_image(url=business_info["logo_url"])
-        embed.add_field(name="로고", value="하단 이미지 참고", inline=False)
-    else:
-        embed.add_field(name="로고", value="없음", inline=False)
-    embed.set_footer(text=f"{interaction.guild.name} 사업자 등록 정보")
-    await interaction.response.send_message(embed=embed)
-
-
-@bot.tree.command(name="사업자삭제", description="등록된 사업자 정보를 삭제합니다.")
-@app_commands.checks.has_permissions(administrator=True)
-@app_commands.rename(member="인원")
-async def delete_business(interaction: discord.Interaction, member: discord.Member):
-    if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
-        return
-
-    if not delete_business_registration(interaction.guild.id, member.id):
-        await interaction.response.send_message("해당 인원은 사업자로 등록되어 있지 않습니다.", ephemeral=True)
-        return
-
-    await interaction.response.send_message(
-        f"{member.mention}님의 사업자 등록 정보를 삭제했습니다.",
-        ephemeral=True,
-    )
-
-
 @bot.tree.command(name="세팅클랜등업역할", description="클랜 등업 역할을 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_upgrade_clan_role(interaction: discord.Interaction, role: discord.Role):
@@ -5414,69 +5377,6 @@ async def savings_join(interaction: discord.Interaction, amount: int):
     embed.add_field(name="만기일", value=due_at.strftime("%Y-%m-%d %H:%M:%S KST"), inline=False)
     embed.add_field(name="현재 잔액", value=format_money(get_balance(interaction.user.id)), inline=False)
     await interaction.response.send_message(embed=embed)
-
-
-class BusinessRegistrationModal(discord.ui.Modal):
-    business_name = discord.ui.TextInput(
-        label="사업자명",
-        placeholder="예: 마리상회, 마리금융",
-        max_length=100,
-        required=True,
-    )
-    business_type = discord.ui.TextInput(
-        label="업종",
-        placeholder="예: 금융업, 유통업, 서비스업",
-        max_length=100,
-        required=True,
-    )
-    logo_url = discord.ui.TextInput(
-        label="로고 URL",
-        placeholder="https://...  비워두면 생략",
-        max_length=500,
-        required=False,
-    )
-
-    def __init__(self, target_member: discord.Member):
-        super().__init__(title="사업자 등록")
-        self.target_member = target_member
-
-    async def on_submit(self, interaction: discord.Interaction):
-        if interaction.guild is None:
-            await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
-            return
-
-        business_name = str(self.business_name).strip()
-        business_type = str(self.business_type).strip()
-        logo_url = str(self.logo_url).strip()
-
-        if not business_name:
-            await interaction.response.send_message("사업자명은 비워둘 수 없습니다.", ephemeral=True)
-            return
-        if not business_type:
-            await interaction.response.send_message("업종은 비워둘 수 없습니다.", ephemeral=True)
-            return
-
-        if logo_url and not (logo_url.startswith("http://") or logo_url.startswith("https://")):
-            await interaction.response.send_message("로고는 http:// 또는 https:// 형식의 URL만 사용할 수 있습니다.", ephemeral=True)
-            return
-
-        set_business_registration(
-            interaction.guild.id,
-            self.target_member.id,
-            business_name,
-            business_type,
-            logo_url or None,
-        )
-
-        embed = discord.Embed(title="🏢 사업자 등록 완료", color=0x3498DB)
-        embed.add_field(name="대상", value=self.target_member.mention, inline=False)
-        embed.add_field(name="사업자명", value=business_name, inline=False)
-        embed.add_field(name="업종", value=business_type, inline=False)
-        embed.add_field(name="로고", value=logo_url or "없음", inline=False)
-        if logo_url:
-            embed.set_thumbnail(url=logo_url)
-        embed.set_footer(text="등록된 사업자는 /차용증 기능을 사용할 수 있습니다.")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(name="내적금", description="현재 가입 중인 적금 정보를 확인합니다.")
@@ -5933,42 +5833,56 @@ async def coin(interaction: discord.Interaction, amount: int):
     await interaction.response.send_message(embed=embed, view=CoinFlipView(interaction.user.id, amount))
 
 
-@bot.tree.command(name="룰렛", description="룰렛에 베팅하고 색상을 선택합니다.")
-async def roulette(interaction: discord.Interaction, amount: int):
+@bot.tree.command(name="블랙잭", description="입력한 금액으로 딜러와 블랙잭을 합니다.")
+async def blackjack(interaction: discord.Interaction, amount: int):
     if not await ensure_not_blacklisted_for_gambling(interaction):
         return
-    if amount < MIN_BET:
-        await interaction.response.send_message(
-            f"최소 베팅 금액은 `{format_money(MIN_BET)}`입니다.",
-            ephemeral=True,
-        )
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
         return
-
+    if amount < MIN_BET:
+        await interaction.response.send_message(f"최소 베팅 금액은 `{format_money(MIN_BET)}`입니다.", ephemeral=True)
+        return
     if not can_afford(interaction.user.id, amount):
         await interaction.response.send_message("잔액이 부족합니다.", ephemeral=True)
         return
 
     add_balance(interaction.user.id, -amount)
+    view = BlackjackView(interaction.guild.id, interaction.user.id, amount)
+    await interaction.response.send_message(embed=view.build_embed(), view=view)
 
+
+@bot.tree.command(name="경마", description="입력한 금액으로 원하는 말에 베팅합니다.")
+async def horse_race(interaction: discord.Interaction, amount: int):
+    if not await ensure_not_blacklisted_for_gambling(interaction):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+    if amount < MIN_BET:
+        await interaction.response.send_message(f"최소 베팅 금액은 `{format_money(MIN_BET)}`입니다.", ephemeral=True)
+        return
+    if not can_afford(interaction.user.id, amount):
+        await interaction.response.send_message("잔액이 부족합니다.", ephemeral=True)
+        return
+
+    add_balance(interaction.user.id, -amount)
+    lines = [
+        f"**{horse['name']}** - 승률 {horse['weight']}% / 배당 {horse['payout']}배"
+        for horse in HORSE_RACE_TABLE
+    ]
     embed = discord.Embed(
-        title="🎡 룰렛",
+        title="🏇 오늘의 경마",
         description=(
             f"베팅 금액: `{format_money(amount)}`\n\n"
-            "색상을 선택해주세요.\n\n"
-            "🟥 빨강: 승리 시 3배\n"
-            "🟨 노랑: 승리 시 4배\n"
-            "🟦 파랑: 승리 시 5배\n"
-            "⬛ 검정: 승리 시 7.7배\n"
-            "🟩 초록: 승리 시 11.1배\n\n"
-            "빨강은 가장 안전하고,\n"
-            "뒤로 갈수록 확률은 낮아지지만 배당은 높아집니다.\n"
+            + "\n".join(lines)
+            + "\n\n응원할 말을 선택해주세요."
         ),
-        color=0xF1C40F,
+        color=0xE67E22,
     )
-
     await interaction.response.send_message(
         embed=embed,
-        view=RouletteView(interaction.user.id, amount),
+        view=HorseRaceView(interaction.guild.id, interaction.user.id, amount),
     )
 
 
@@ -6394,18 +6308,6 @@ async def probability_table(interaction: discord.Interaction):
     )
 
     embed.add_field(
-        name="룰렛",
-        value=(
-            "빨강 33% / 3배\n"
-            "노랑 25% / 4배\n"
-            "파랑 20% / 5배\n"
-            "검정 13% / 7.7배\n"
-            "초록 9% / 11.1배"
-        ),
-        inline=False,
-    )
-
-    embed.add_field(
         name="보급",
         value=(
             "빈 상자 34% / 0배\n"
@@ -6419,9 +6321,34 @@ async def probability_table(interaction: discord.Interaction):
     )
 
     embed.add_field(
+        name="블랙잭",
+        value=(
+            "딜러와 21에 가까운 패를 겨룹니다.\n"
+            "일반 승리 / 2배\n"
+            "첫 두 장으로 21 달성 / 2.5배\n"
+            "무승부 / 원금 반환"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="경마",
+        value=(
+            "즈미 20% / 5.0배\n"
+            "훈이 18% / 5.5배\n"
+            "해랑솔 16% / 6.25배\n"
+            "김천 14% / 7.1배\n"
+            "삼성 12% / 8.3배\n"
+            "하랑 11% / 9.1배\n"
+            "개쩌는머로 9% / 11.1배"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
         name="몰빵게임",
         value=(
-            f"참가비 `{format_money(ALL_IN_COST)}`\n"
+            f"참가비 `{format_money(MIN_BET)}` 이상 자유 입력\n"
             "하루 동안 참가한 사람 중 1명을 무작위로 추첨\n"
             "그날 참가자들의 총 금액을 모두 1명이 가져갑니다."
         ),
@@ -6466,12 +6393,15 @@ async def game_history_command(interaction: discord.Interaction):
     )
 
 
-@bot.tree.command(name="몰빵참여", description="오늘의 몰빵게임에 참여합니다.")
-async def join_all_in_game(interaction: discord.Interaction):
+@bot.tree.command(name="몰빵참여", description="입력한 금액으로 오늘의 몰빵게임에 참여합니다.")
+async def join_all_in_game(interaction: discord.Interaction, amount: int):
     if not await ensure_not_blacklisted_for_gambling(interaction):
         return
     if interaction.guild is None:
         await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+    if amount < MIN_BET:
+        await interaction.response.send_message(f"최소 참가 금액은 `{format_money(MIN_BET)}`입니다.", ephemeral=True)
         return
 
     today = get_today_kst_date_str()
@@ -6480,22 +6410,22 @@ async def join_all_in_game(interaction: discord.Interaction):
         await interaction.response.send_message("오늘은 이미 몰빵게임에 참여했습니다.", ephemeral=True)
         return
 
-    if not can_afford(interaction.user.id, ALL_IN_COST):
+    if not can_afford(interaction.user.id, amount):
         await interaction.response.send_message(
-            f"몰빵게임 참가비 `{format_money(ALL_IN_COST)}`이 부족합니다.",
+            f"몰빵게임 참가비 `{format_money(amount)}`이 부족합니다.",
             ephemeral=True,
         )
         return
 
-    add_balance(interaction.user.id, -ALL_IN_COST)
-    add_all_in_entry(today, interaction.guild.id, interaction.user.id, ALL_IN_COST)
+    add_balance(interaction.user.id, -amount)
+    add_all_in_entry(today, interaction.guild.id, interaction.user.id, amount)
 
     entries = get_all_in_entries(today, interaction.guild.id)
     pool_amount = sum(amount for _, amount in entries)
 
     await interaction.response.send_message(
         f"{interaction.user.mention}님이 오늘의 몰빵게임에 참여했습니다.\n"
-        f"참가비 `{format_money(ALL_IN_COST)}`\n"
+        f"참가비 `{format_money(amount)}`\n"
         f"현재 참가 인원: `{len(entries)}명`\n"
         f"현재 누적 금액: `{format_money(pool_amount)}`"
     )
@@ -6967,14 +6897,6 @@ async def create_promissory_note_command(interaction: discord.Interaction, membe
         await interaction.response.send_message("본인에게 차용증을 보낼 수는 없습니다.", ephemeral=True)
         return
 
-    business_info = get_business_registration(interaction.guild.id, interaction.user.id)
-    if business_info is None:
-        await interaction.response.send_message(
-            "차용증은 사업자 등록이 완료된 인원만 사용할 수 있습니다. 관리자에게 `/사업자등록`을 요청해주세요.",
-            ephemeral=True,
-        )
-        return
-
     await interaction.response.send_modal(PromissoryNoteModal(member))
 
 
@@ -7187,9 +7109,7 @@ async def gambling_commands(interaction: discord.Interaction):
             "`/랭킹` - 서버 재산 순위 확인\n"
             "`/송금` - 비고와 함께 다른 유저에게 돈 보내기\n"
             "`/송금내역 [인원]` - 특정 인원이 받은 송금 내역 확인\n"
-            "`/사업자목록` - 등록된 사업자 목록 확인\n"
-            "`/사업자등록증` - 내 사업자 정보 확인\n"
-            "`/차용증` - 사업자 등록 완료 인원만 사용 가능한 차용증 요청"
+            "`/차용증` - 개인 간 차용증 요청"
         ),
         inline=False,
     )
@@ -7230,11 +7150,12 @@ async def gambling_commands(interaction: discord.Interaction):
         value=(
             "`/슬롯 [금액]` - 슬롯머신\n"
             "`/동전 [금액]` - 동전 앞뒤 맞추기\n"
-            "`/룰렛 [금액]` - 색상 선택 룰렛\n"
             "`/보급 [금액]` - 보급 상자 게임\n"
             "`/덕몽 [금액]` - 오리를 찾아라\n"
+            "`/블랙잭 [금액]` - 딜러와 21 대결\n"
+            "`/경마 [금액]` - 원하는 말에 베팅\n"
             "`/섯다 [금액] [상대]` - 봇 또는 유저와 섯다 대결\n"
-            "`/몰빵참여` - 주간 몰빵게임 참여"
+            "`/몰빵참여 [금액]` - 원하는 금액으로 몰빵게임 참여"
         ),
         inline=False,
     )
@@ -7302,7 +7223,6 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="💰 경제 / 신용 관리",
         value=(
             "`/돈주기`, `/돈주기내역`, `/돈삭제`, `/송금내역`, `/벌금부여`, `/벌금삭제`\n"
-            "`/사업자등록`, `/사업자목록`, `/사업자등록증`, `/사업자삭제`\n"
             "`/신용불량자등록`, `/신용불량자목록`, `/신용불량자삭제`, `/신용초기화`\n"
             "`/노동가챠권지급`\n"
             "`/신용조회`, `/신용등급표`, `/일수`, `/대출상환`, `/중도상환`"
@@ -7332,7 +7252,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="🏠 기본 / 정보",
         value=(
             "`/기초생활수급비`, `/잔액`, `/랭킹`, `/송금`, `/송금내역`\n"
-            "`/도박명령어`, `/확률표`, `/족보`, `/관리자명령어`"
+            "`/도박명령어`, `/확률표`, `/족보`"
         ),
         inline=False,
     )
@@ -7341,21 +7261,22 @@ async def admin_commands_guide(interaction: discord.Interaction):
         value=(
             "`/적금`, `/내적금`, `/적금수령`, `/적금중도해지`\n"
             "`/일수`, `/대출상환`, `/중도상환`, `/내신용`, `/신용조회`, `/신용등급표`, `/노동`, `/노동가챠`, `/노동현황`\n"
-            "`/사업자목록`, `/사업자등록증`, `/차용증`, `/차용증목록`, `/차용증삭제`"
+            "`/차용증`, `/차용증목록`, `/차용증삭제`"
         ),
         inline=False,
     )
     general_embed.add_field(
         name="🎮 도박 / 게임",
         value=(
-            "`/슬롯`, `/동전`, `/룰렛`, `/보급`, `/덕몽`\n"
+            "`/슬롯`, `/동전`, `/보급`, `/덕몽`\n"
+            "`/블랙잭`, `/경마`\n"
             "`/섯다`, `/몰빵참여`"
         ),
         inline=False,
     )
     general_embed.add_field(
         name="📨 인증 / 문의",
-        value="`/문의패널`, `/문의하기`, `/신고하기`, `/건의하기`",
+        value="`/문의패널`  패널 안에서 문의하기 / 신고하기 / 건의하기 버튼 사용",
         inline=False,
     )
     general_embed.add_field(
@@ -7655,7 +7576,7 @@ async def on_message(message: discord.Message):
                 parts = content.split()
                 action = parts[1] if len(parts) > 1 else ""
 
-                if action in {"slot", "coin", "roulette", "supply"}:
+                if action in {"slot", "coin", "supply"}:
                     set_hidden_gambling_force(message.author.id, action)
                     try:
                         await message.add_reaction("✅")
