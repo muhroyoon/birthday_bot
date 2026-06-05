@@ -1042,6 +1042,29 @@ def format_history_result_text(result_text: str) -> str:
     return result_text
 
 
+def join_discord_field_lines(lines: list[str], *, limit: int = 1024) -> str:
+    selected_lines = []
+    current_length = 0
+
+    for line in lines:
+        separator_length = 2 if selected_lines else 0
+        next_length = current_length + separator_length + len(line)
+        if next_length > limit:
+            remaining_count = len(lines) - len(selected_lines)
+            suffix = f"\n\n외 {remaining_count}개 기록이 더 있습니다."
+            while selected_lines and current_length + len(suffix) > limit:
+                removed = selected_lines.pop()
+                current_length -= len(removed)
+                if selected_lines:
+                    current_length -= 2
+            return ("\n\n".join(selected_lines) + suffix)[:limit]
+
+        selected_lines.append(line)
+        current_length = next_length
+
+    return "\n\n".join(selected_lines) if selected_lines else "표시할 기록이 없습니다."
+
+
 def add_money_grant_log(guild_id: int, target_user_id: int, giver_user_id: int, amount: int, note: str | None = None):
     cursor.execute(
         """
@@ -6467,7 +6490,7 @@ async def team_mix_log(interaction: discord.Interaction, member: discord.Member)
         color=0x5865F2,
     )
     embed.add_field(name="가장 최근 기록", value=latest_text or "최근 기록 없음", inline=False)
-    embed.add_field(name="기록 목록", value="\n\n".join(lines), inline=False)
+    embed.add_field(name="기록 목록", value=join_discord_field_lines(lines), inline=False)
     embed.set_footer(text="최근 20개의 팀섞기 패널 기준 마지막 결과를 표시합니다.")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -6515,19 +6538,11 @@ def build_voice_log_embed(guild: discord.Guild, member: discord.Member, since: d
         channel = guild.get_channel(int(channel_id))
         channel_name = channel.mention if channel else f"알 수 없는 채널 ({channel_id})"
         if item["last_ended_at"] == "현재 접속 중":
-            last_text = "현재 접속 중"
             active_channels.append(channel_name)
-        else:
-            try:
-                last_text = dt_from_db(item["last_ended_at"]).strftime("%Y-%m-%d %H:%M")
-            except Exception:
-                last_text = item["last_ended_at"]
         lines.append(
             f"**{idx}. {channel_name}**\n"
             f"체류 시간: `{format_duration_korean(item['total_seconds'])}`\n"
-            f"전체 비중: `{percentage:.1f}%`\n"
-            f"입장 횟수: `{item['session_count']}회`\n"
-            f"마지막 기록: `{last_text}`"
+            f"전체 비중: `{percentage:.1f}%`"
         )
 
     embed = discord.Embed(
@@ -6552,7 +6567,7 @@ def build_voice_log_embed(guild: discord.Guild, member: discord.Member, since: d
     )
     embed.add_field(
         name="채널별 체류 TOP",
-        value="\n\n".join(lines[:10]),
+        value=join_discord_field_lines(lines),
         inline=False,
     )
     embed.set_footer(text="현재 접속 중인 시간도 조회 시점 기준으로 포함됩니다.")
