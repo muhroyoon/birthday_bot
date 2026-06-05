@@ -6438,21 +6438,36 @@ async def team_mix_log(interaction: discord.Interaction, member: discord.Member)
         return
 
     lines = []
-    for channel_id, team_size, team_label, members_text, created_at in rows:
+    latest_text = None
+    for idx, (channel_id, team_size, team_label, members_text, created_at) in enumerate(rows, start=1):
         try:
             created_text = dt_from_db(created_at).strftime("%Y-%m-%d %H:%M")
         except Exception:
             created_text = created_at
+
+        channel_text = f"<#{channel_id}>"
+        member_lines = "\n".join(f"- {name.strip()}" for name in members_text.split(",") if name.strip())
+        if latest_text is None:
+            latest_text = (
+                f"시간: `{created_text}`\n"
+                f"채널: {channel_text}\n"
+                f"팀 구성: `{team_size}인 팀` / `{team_label}`"
+            )
+
         lines.append(
-            f"[{created_text}] <#{channel_id}> / {team_size}인 팀 / {team_label}\n"
-            f"참여 멤버: {members_text}"
+            f"**{idx}. {created_text}**\n"
+            f"채널: {channel_text}\n"
+            f"팀 구성: `{team_size}인 팀` / `{team_label}`\n"
+            f"참여 멤버\n{member_lines}"
         )
 
     embed = discord.Embed(
         title=f"📝 {member.display_name}님의 팀섞기 기록",
-        description="\n\n".join(lines),
+        description="최근 팀섞기 패널 기준 마지막 결과만 정리해서 표시합니다.",
         color=0x5865F2,
     )
+    embed.add_field(name="가장 최근 기록", value=latest_text or "최근 기록 없음", inline=False)
+    embed.add_field(name="기록 목록", value="\n\n".join(lines), inline=False)
     embed.set_footer(text="최근 20개의 팀섞기 패널 기준 마지막 결과를 표시합니다.")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -6489,19 +6504,26 @@ def build_voice_log_embed(guild: discord.Guild, member: discord.Member, since: d
         return None, "해당 기간 기준 집계 가능한 음성채널 기록이 없습니다."
 
     lines = []
-    for channel_id, item in sorted_rows[:10]:
+    top_channel_id, top_channel_item = sorted_rows[0]
+    top_channel = guild.get_channel(int(top_channel_id))
+    top_channel_name = top_channel.mention if top_channel else f"알 수 없는 채널 ({top_channel_id})"
+    total_sessions = sum(item["session_count"] for _, item in sorted_rows)
+    active_channels = []
+
+    for idx, (channel_id, item) in enumerate(sorted_rows[:10], start=1):
         percentage = (item["total_seconds"] / total_seconds) * 100
         channel = guild.get_channel(int(channel_id))
         channel_name = channel.mention if channel else f"알 수 없는 채널 ({channel_id})"
         if item["last_ended_at"] == "현재 접속 중":
             last_text = "현재 접속 중"
+            active_channels.append(channel_name)
         else:
             try:
                 last_text = dt_from_db(item["last_ended_at"]).strftime("%Y-%m-%d %H:%M")
             except Exception:
                 last_text = item["last_ended_at"]
         lines.append(
-            f"{channel_name}\n"
+            f"**{idx}. {channel_name}**\n"
             f"체류 시간: `{format_duration_korean(item['total_seconds'])}`\n"
             f"전체 비중: `{percentage:.1f}%`\n"
             f"입장 횟수: `{item['session_count']}회`\n"
@@ -6510,7 +6532,7 @@ def build_voice_log_embed(guild: discord.Guild, member: discord.Member, since: d
 
     embed = discord.Embed(
         title=f"🎧 {member.display_name}님의 음성채널 로그",
-        description="\n\n".join(lines[:10]),
+        description=f"지정한 기간 동안 가장 오래 머문 채널은 **{top_channel_name}**입니다.",
         color=0x3498DB,
     )
     embed.add_field(
@@ -6518,8 +6540,22 @@ def build_voice_log_embed(guild: discord.Guild, member: discord.Member, since: d
         value=f"`{since.strftime('%Y-%m-%d')}` ~ `{until.strftime('%Y-%m-%d')}` / 관전자 시간 제외",
         inline=False,
     )
-    embed.add_field(name="총 체류 시간", value=f"`{format_duration_korean(total_seconds)}`", inline=False)
-    embed.set_footer(text="지정한 기간 안의 음성 세션 기준으로 집계합니다.")
+    embed.add_field(
+        name="한눈에 보기",
+        value=(
+            f"총 체류 시간: `{format_duration_korean(total_seconds)}`\n"
+            f"입장 기록: `{total_sessions}회`\n"
+            f"체류 채널 수: `{len(sorted_rows)}개`\n"
+            f"현재 접속: `{', '.join(active_channels) if active_channels else '없음'}`"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="채널별 체류 TOP",
+        value="\n\n".join(lines[:10]),
+        inline=False,
+    )
+    embed.set_footer(text="현재 접속 중인 시간도 조회 시점 기준으로 포함됩니다.")
     return embed, None
 
 
@@ -6673,15 +6709,30 @@ async def pair_voice_compare(
 
     solo_1 = max(0, total_1 - overlap_total)
     solo_2 = max(0, total_2 - overlap_total)
+    overlap_rate_1 = (overlap_total / total_1) * 100 if total_1 > 0 else 0
+    overlap_rate_2 = (overlap_total / total_2) * 100 if total_2 > 0 else 0
+    combined_total = total_1 + total_2
+    together_share = (overlap_total * 2 / combined_total) * 100 if combined_total > 0 else 0
 
     channel_lines = []
-    for channel_id, seconds in sorted(overlap_by_channel.items(), key=lambda item: (-item[1], item[0]))[:10]:
+    for idx, (channel_id, seconds) in enumerate(
+        sorted(overlap_by_channel.items(), key=lambda item: (-item[1], item[0]))[:10],
+        start=1,
+    ):
         channel = interaction.guild.get_channel(channel_id)
         channel_name = channel.mention if channel else f"알 수 없는 채널 ({channel_id})"
-        channel_lines.append(f"{channel_name}: `{format_duration_korean(seconds)}`")
+        channel_percentage = (seconds / overlap_total) * 100 if overlap_total > 0 else 0
+        channel_lines.append(
+            f"**{idx}. {channel_name}**\n"
+            f"함께 체류: `{format_duration_korean(seconds)}` / `{channel_percentage:.1f}%`"
+        )
 
     embed = discord.Embed(
         title=f"🎙 {member1.display_name} / {member2.display_name} 끼리끼리조회",
+        description=(
+            f"두 사람이 같은 음성채널에 함께 있었던 시간은 "
+            f"**{format_duration_korean(overlap_total)}**입니다."
+        ),
         color=0x5865F2,
     )
     embed.add_field(
@@ -6689,22 +6740,39 @@ async def pair_voice_compare(
         value=f"`{since.strftime('%Y-%m-%d')}` ~ `{until.strftime('%Y-%m-%d')}` / 관전자 시간 제외",
         inline=False,
     )
-    embed.add_field(name=f"{member1.display_name} 총 체류", value=f"`{format_duration_korean(total_1)}`", inline=True)
-    embed.add_field(name=f"{member2.display_name} 총 체류", value=f"`{format_duration_korean(total_2)}`", inline=True)
-    embed.add_field(name="같은 채널 동시 체류", value=f"`{format_duration_korean(overlap_total)}`", inline=False)
-    embed.add_field(name=f"{member1.display_name} 단독 체류", value=f"`{format_duration_korean(solo_1)}`", inline=True)
-    embed.add_field(name=f"{member2.display_name} 단독 체류", value=f"`{format_duration_korean(solo_2)}`", inline=True)
-
-    if total_1 > 0:
-        embed.add_field(name=f"{member1.display_name} 기준 겹침 비율", value=f"`{(overlap_total / total_1) * 100:.1f}%`", inline=True)
-    if total_2 > 0:
-        embed.add_field(name=f"{member2.display_name} 기준 겹침 비율", value=f"`{(overlap_total / total_2) * 100:.1f}%`", inline=True)
+    embed.add_field(
+        name="한눈에 보기",
+        value=(
+            f"함께 체류: `{format_duration_korean(overlap_total)}`\n"
+            f"전체 체류 대비 함께한 비중: `{together_share:.1f}%`\n"
+            f"{member1.display_name} 기준 겹침: `{overlap_rate_1:.1f}%`\n"
+            f"{member2.display_name} 기준 겹침: `{overlap_rate_2:.1f}%`"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name=f"{member1.display_name}",
+        value=(
+            f"총 체류: `{format_duration_korean(total_1)}`\n"
+            f"단독 체류: `{format_duration_korean(solo_1)}`"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name=f"{member2.display_name}",
+        value=(
+            f"총 체류: `{format_duration_korean(total_2)}`\n"
+            f"단독 체류: `{format_duration_korean(solo_2)}`"
+        ),
+        inline=True,
+    )
 
     embed.add_field(
-        name="같이 있었던 채널",
+        name="같이 있었던 채널 TOP",
         value="\n".join(channel_lines) if channel_lines else "같은 채널에 함께 있었던 기록이 없습니다.",
         inline=False,
     )
+    embed.set_footer(text="함께 체류 시간은 두 사람이 같은 음성채널에 동시에 있었던 시간만 집계합니다.")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
