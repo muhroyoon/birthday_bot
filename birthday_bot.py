@@ -563,6 +563,7 @@ cursor.execute(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         guild_id TEXT NOT NULL,
         user_id TEXT NOT NULL,
+        message_id TEXT,
         channel_id TEXT NOT NULL,
         team_size INTEGER NOT NULL,
         team_label TEXT NOT NULL,
@@ -571,6 +572,13 @@ cursor.execute(
     )
     """
 )
+
+cursor.execute("PRAGMA table_info(team_mix_logs)")
+team_mix_log_columns = [row[1] for row in cursor.fetchall()]
+
+if "message_id" not in team_mix_log_columns:
+    cursor.execute("ALTER TABLE team_mix_logs ADD COLUMN message_id TEXT")
+    conn.commit()
 
 cursor.execute(
     """
@@ -1907,20 +1915,25 @@ async def sync_blacklist_role(member: discord.Member, should_have_role: bool):
         pass
 
 
-def add_team_mix_logs(guild_id: int, channel_id: int, team_size: int, teams: list[list[discord.Member]]):
+def add_team_mix_logs(guild_id: int, message_id: int, channel_id: int, team_size: int, teams: list[list[discord.Member]]):
     created_at = dt_to_db(get_kst_now())
+    cursor.execute(
+        "DELETE FROM team_mix_logs WHERE guild_id=? AND message_id=?",
+        (str(guild_id), str(message_id)),
+    )
     for index, team_members in enumerate(teams, start=1):
         team_label = f"팀 {index}"
         members_text = ", ".join(member.display_name for member in team_members)
         for member in team_members:
             cursor.execute(
                 """
-                INSERT INTO team_mix_logs(guild_id, user_id, channel_id, team_size, team_label, members_text, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO team_mix_logs(guild_id, user_id, message_id, channel_id, team_size, team_label, members_text, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(guild_id),
                     str(member.id),
+                    str(message_id),
                     str(channel_id),
                     team_size,
                     team_label,
@@ -2703,6 +2716,7 @@ GAME_LABELS = {
     "블랙잭": "블랙잭",
     "경마": "경마",
     "숫자야구": "숫자야구",
+    "야추": "야추",
     "섯다": "섯다",
     "몰빵게임": "몰빵게임",
 }
@@ -2711,6 +2725,7 @@ BLACKJACK_TIMEOUT = 90
 BLACKJACK_CARD_VALUES = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
 NUMBER_BASEBALL_DIGITS = 4
 NUMBER_BASEBALL_ATTEMPTS = 8
+NUMBER_BASEBALL_COST = 100_000
 HORSE_RACE_TABLE = [
     {"name": "즈미", "weight": 20, "payout": 5.0},
     {"name": "훈이", "weight": 18, "payout": 5.5},
@@ -2720,6 +2735,28 @@ HORSE_RACE_TABLE = [
     {"name": "하랑", "weight": 11, "payout": 9.1},
     {"name": "개쩌는머로", "weight": 9, "payout": 11.1},
 ]
+DICE_POKER_PAYOUTS = {
+    "야추": 20.0,
+    "포카드": 8.0,
+    "풀하우스": 4.0,
+    "라지 스트레이트": 3.0,
+    "스몰 스트레이트": 2.0,
+    "트리플": 2.2,
+    "투페어": 1.5,
+    "원페어": 1.1,
+    "노페어": 0.0,
+}
+DICE_POKER_RANKS = {
+    "노페어": 0,
+    "원페어": 1,
+    "투페어": 2,
+    "트리플": 3,
+    "스몰 스트레이트": 4,
+    "라지 스트레이트": 5,
+    "풀하우스": 6,
+    "포카드": 7,
+    "야추": 8,
+}
 
 LABOR_MINE_TABLE = {
     "shallow": {
@@ -3501,6 +3538,224 @@ def get_number_baseball_multiplier(attempt_count: int) -> float:
     return 1.5
 
 
+def roll_dice_poker_hand() -> list[int]:
+    return [random.randint(1, 6) for _ in range(5)]
+
+
+def evaluate_dice_poker_hand(dice: list[int]) -> tuple[str, float]:
+    counts = sorted([dice.count(value) for value in set(dice)], reverse=True)
+    unique_values = set(dice)
+
+    if counts == [5]:
+        hand_name = "야추"
+    elif counts == [4, 1]:
+        hand_name = "포카드"
+    elif counts == [3, 2]:
+        hand_name = "풀하우스"
+    elif unique_values == {1, 2, 3, 4, 5} or unique_values == {2, 3, 4, 5, 6}:
+        hand_name = "라지 스트레이트"
+    elif any(sequence.issubset(unique_values) for sequence in ({1, 2, 3, 4}, {2, 3, 4, 5}, {3, 4, 5, 6})):
+        hand_name = "스몰 스트레이트"
+    elif counts == [3, 1, 1]:
+        hand_name = "트리플"
+    elif counts == [2, 2, 1]:
+        hand_name = "투페어"
+    elif counts == [2, 1, 1, 1]:
+        hand_name = "원페어"
+    else:
+        hand_name = "노페어"
+
+    return hand_name, DICE_POKER_PAYOUTS[hand_name]
+
+
+def get_dice_poker_tiebreaker(dice: list[int]) -> tuple[int, ...]:
+    counts = {}
+    for value in dice:
+        counts[value] = counts.get(value, 0) + 1
+    grouped_values = sorted(counts.items(), key=lambda item: (item[1], item[0]), reverse=True)
+    return tuple(value for value, count in grouped_values for _ in range(count))
+
+
+def compare_dice_poker_hands(left_dice: list[int], right_dice: list[int]) -> int:
+    left_name, _ = evaluate_dice_poker_hand(left_dice)
+    right_name, _ = evaluate_dice_poker_hand(right_dice)
+    left_rank = DICE_POKER_RANKS[left_name]
+    right_rank = DICE_POKER_RANKS[right_name]
+
+    if left_rank > right_rank:
+        return 1
+    if left_rank < right_rank:
+        return -1
+
+    left_tiebreaker = get_dice_poker_tiebreaker(left_dice)
+    right_tiebreaker = get_dice_poker_tiebreaker(right_dice)
+    if left_tiebreaker > right_tiebreaker:
+        return 1
+    if left_tiebreaker < right_tiebreaker:
+        return -1
+    return 0
+
+
+def format_dice_poker_hand(dice: list[int]) -> str:
+    dice_faces = {
+        1: "⚀",
+        2: "⚁",
+        3: "⚂",
+        4: "⚃",
+        5: "⚄",
+        6: "⚅",
+    }
+    return " ".join(dice_faces[value] for value in dice)
+
+
+def build_yahtzee_result_embed(
+    challenger: discord.Member | discord.User | None,
+    opponent: discord.Member | discord.User | None,
+    challenger_dice: list[int],
+    opponent_dice: list[int],
+    amount: int,
+    result_text: str,
+    color: int,
+):
+    challenger_name = challenger.display_name if challenger else "도전자"
+    opponent_name = opponent.display_name if opponent else "마리봇"
+    challenger_hand, _ = evaluate_dice_poker_hand(challenger_dice)
+    opponent_hand, _ = evaluate_dice_poker_hand(opponent_dice)
+    pot_amount = amount * 2
+
+    embed = discord.Embed(title="🎲 야추 대결 결과", description=result_text, color=color)
+    embed.add_field(
+        name=challenger_name,
+        value=(
+            f"{format_dice_poker_hand(challenger_dice)}\n"
+            f"숫자: `{' '.join(str(value) for value in challenger_dice)}`\n"
+            f"족보: **{challenger_hand}**"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name=opponent_name,
+        value=(
+            f"{format_dice_poker_hand(opponent_dice)}\n"
+            f"숫자: `{' '.join(str(value) for value in opponent_dice)}`\n"
+            f"족보: **{opponent_hand}**"
+        ),
+        inline=False,
+    )
+    embed.add_field(name="판돈", value=f"`{format_money(pot_amount)}`", inline=False)
+    return embed
+
+
+def resolve_yahtzee_match(guild_id: int, challenger, opponent, amount: int):
+    challenger_dice = roll_dice_poker_hand()
+    opponent_dice = roll_dice_poker_hand()
+    challenger_name = challenger.display_name if challenger else "도전자"
+    opponent_name = opponent.display_name if opponent else "마리봇"
+    comparison = compare_dice_poker_hands(challenger_dice, opponent_dice)
+    challenger_hand, _ = evaluate_dice_poker_hand(challenger_dice)
+    opponent_hand, _ = evaluate_dice_poker_hand(opponent_dice)
+    pot_amount = amount * 2
+
+    if comparison > 0:
+        add_balance(challenger.id, pot_amount)
+        result_text = f"{challenger.mention}님 승리!\n`{format_money(pot_amount)}`을 획득했습니다."
+        color = 0x2ECC71
+        history_text = f"{challenger_name} vs {opponent_name} / {challenger_hand} 승리"
+    elif comparison < 0:
+        if opponent is not None and not getattr(opponent, "bot", False):
+            add_balance(opponent.id, pot_amount)
+        result_text = f"{opponent.mention if opponent else '마리봇'} 승리!"
+        if opponent is not None and not getattr(opponent, "bot", False):
+            result_text += f"\n`{format_money(pot_amount)}`을 획득했습니다."
+        color = 0x3498DB
+        history_text = f"{challenger_name} vs {opponent_name} / {opponent_hand} 승리"
+    else:
+        add_balance(challenger.id, amount)
+        if opponent is not None and not getattr(opponent, "bot", False):
+            add_balance(opponent.id, amount)
+        result_text = "같은 수준의 족보가 나와 무승부입니다. 각자 베팅금이 반환되었습니다."
+        color = 0x95A5A6
+        history_text = f"{challenger_name} vs {opponent_name} / 무승부 ({challenger_hand})"
+
+    add_game_history(guild_id, "야추", history_text)
+    return build_yahtzee_result_embed(
+        challenger,
+        opponent,
+        challenger_dice,
+        opponent_dice,
+        amount,
+        result_text,
+        color,
+    )
+
+
+class YahtzeeChallengeView(discord.ui.View):
+    def __init__(self, challenger_id: int, opponent_id: int, amount: int):
+        super().__init__(timeout=60)
+        self.challenger_id = challenger_id
+        self.opponent_id = opponent_id
+        self.amount = amount
+        self.resolved = False
+
+    async def _ensure_opponent(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.opponent_id:
+            await interaction.response.send_message("이 버튼은 대결 요청을 받은 본인만 누를 수 있습니다.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="수락", style=discord.ButtonStyle.success)
+    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.resolved or not await self._ensure_opponent(interaction):
+            return
+
+        challenger = interaction.guild.get_member(self.challenger_id)
+        opponent = interaction.guild.get_member(self.opponent_id)
+        if challenger is None or opponent is None:
+            await interaction.response.send_message("대결 대상 중 한 명을 찾을 수 없습니다.", ephemeral=True)
+            return
+
+        if not can_afford(challenger.id, self.amount):
+            await interaction.response.send_message("도전자의 잔액이 부족해 대결을 시작할 수 없습니다.", ephemeral=True)
+            return
+
+        if not can_afford(opponent.id, self.amount):
+            await interaction.response.send_message("본인의 잔액이 부족해 대결을 시작할 수 없습니다.", ephemeral=True)
+            return
+
+        self.resolved = True
+        add_balance(challenger.id, -self.amount)
+        add_balance(opponent.id, -self.amount)
+
+        for item in self.children:
+            item.disabled = True
+
+        embed = resolve_yahtzee_match(interaction.guild.id, challenger, opponent, self.amount)
+        await interaction.response.edit_message(content=None, embed=embed, view=self)
+
+    @discord.ui.button(label="거절", style=discord.ButtonStyle.danger)
+    async def decline(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.resolved or not await self._ensure_opponent(interaction):
+            return
+
+        self.resolved = True
+        challenger = interaction.guild.get_member(self.challenger_id)
+        opponent = interaction.guild.get_member(self.opponent_id)
+        embed = discord.Embed(
+            title="🎲 야추 대결 요청",
+            description=f"{opponent.mention if opponent else '상대방'}님이 대결을 거절했습니다.",
+            color=0xE74C3C,
+        )
+        if challenger is not None and opponent is not None:
+            embed.add_field(name="도전자", value=challenger.mention, inline=True)
+            embed.add_field(name="상대", value=opponent.mention, inline=True)
+        embed.add_field(name="베팅금", value=f"`{format_money(self.amount)}`", inline=False)
+
+        for item in self.children:
+            item.disabled = True
+
+        await interaction.response.edit_message(embed=embed, view=self)
+
+
 class NumberBaseballGuessModal(discord.ui.Modal):
     def __init__(self, game_view):
         super().__init__(title="숫자야구 입력")
@@ -4152,7 +4407,7 @@ class TeamSelectView(discord.ui.View):
 
         random.shuffle(players)
         teams = [players[i:i + team_size] for i in range(0, len(players), team_size)]
-        add_team_mix_logs(interaction.guild.id, channel.id, team_size, teams)
+        add_team_mix_logs(interaction.guild.id, interaction.message.id, channel.id, team_size, teams)
 
         embed = discord.Embed(
             title="🎲 랜덤 팀 결과",
@@ -4399,6 +4654,10 @@ class HistoryGameSelectView(discord.ui.View):
     @discord.ui.button(label="숫자야구", style=discord.ButtonStyle.success)
     async def number_baseball_history(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.show_history(interaction, "숫자야구")
+
+    @discord.ui.button(label="야추", style=discord.ButtonStyle.success)
+    async def yahtzee_history(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.show_history(interaction, "야추")
 
     @discord.ui.button(label="섯다", style=discord.ButtonStyle.success)
     async def seotda_history(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -6051,8 +6310,30 @@ async def horse_race(interaction: discord.Interaction, amount: int):
     )
 
 
-@bot.tree.command(name="숫자야구", description="입력한 금액으로 숫자야구에 도전합니다.")
-async def number_baseball(interaction: discord.Interaction, amount: int):
+@bot.tree.command(name="숫자야구", description="고정 참가비로 숫자야구에 도전합니다.")
+async def number_baseball(interaction: discord.Interaction):
+    if not await ensure_not_blacklisted_for_gambling(interaction):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+    amount = NUMBER_BASEBALL_COST
+    if not can_afford(interaction.user.id, amount):
+        await interaction.response.send_message(
+            f"숫자야구 참가비 `{format_money(amount)}`이 부족합니다.",
+            ephemeral=True,
+        )
+        return
+
+    add_balance(interaction.user.id, -amount)
+    view = NumberBaseballView(interaction.guild.id, interaction.user.id, amount)
+    await interaction.response.send_message(embed=view.build_embed(), view=view)
+
+
+@bot.tree.command(name="야추", description="입력한 금액으로 봇 또는 유저와 야추 대결을 합니다.")
+@app_commands.rename(amount="금액", member="상대")
+@app_commands.describe(amount="베팅 금액", member="비워두면 봇과 대결합니다.")
+async def yahtzee(interaction: discord.Interaction, amount: int, member: discord.Member | None = None):
     if not await ensure_not_blacklisted_for_gambling(interaction):
         return
     if interaction.guild is None:
@@ -6065,9 +6346,43 @@ async def number_baseball(interaction: discord.Interaction, amount: int):
         await interaction.response.send_message("잔액이 부족합니다.", ephemeral=True)
         return
 
-    add_balance(interaction.user.id, -amount)
-    view = NumberBaseballView(interaction.guild.id, interaction.user.id, amount)
-    await interaction.response.send_message(embed=view.build_embed(), view=view)
+    if member is None:
+        add_balance(interaction.user.id, -amount)
+        embed = resolve_yahtzee_match(interaction.guild.id, interaction.user, interaction.client.user, amount)
+        await interaction.response.send_message(embed=embed)
+        return
+
+    if member.bot:
+        await interaction.response.send_message("봇과 대결하려면 상대를 비워두고 `/야추`를 사용해주세요.", ephemeral=True)
+        return
+
+    if member.id == interaction.user.id:
+        await interaction.response.send_message("본인과는 대결할 수 없습니다.", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="🎲 야추 대결 요청",
+        description=f"{member.mention}님, {interaction.user.mention}님이 야추 대결을 신청했습니다.",
+        color=0xF1C40F,
+    )
+    embed.add_field(name="도전자", value=interaction.user.mention, inline=True)
+    embed.add_field(name="상대", value=member.mention, inline=True)
+    embed.add_field(name="베팅금", value=f"`{format_money(amount)}`", inline=False)
+    embed.add_field(
+        name="룰",
+        value=(
+            "수락 시 두 사람 모두 같은 금액을 겁니다.\n"
+            "각자 주사위 5개를 굴려 더 높은 족보가 승리합니다.\n"
+            "같은 족보라면 주사위 숫자 조합으로 승패를 비교합니다."
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="상대방만 수락 또는 거절할 수 있습니다.")
+    await interaction.response.send_message(
+        content=member.mention,
+        embed=embed,
+        view=YahtzeeChallengeView(interaction.user.id, member.id, amount),
+    )
 
 
 @bot.tree.command(name="세팅대기방추가", description="대기방 음성채널을 등록합니다.")
@@ -6138,34 +6453,12 @@ async def team_mix_log(interaction: discord.Interaction, member: discord.Member)
         description="\n\n".join(lines),
         color=0x5865F2,
     )
-    embed.set_footer(text="최근 20개의 팀섞기 참여 기록을 표시합니다.")
+    embed.set_footer(text="최근 20개의 팀섞기 패널 기준 마지막 결과를 표시합니다.")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="음성채널로그", description="특정 인원의 음성채널 체류 기록을 확인합니다.")
-@app_commands.rename(member="인원", start_date="시작일", end_date="종료일")
-@app_commands.describe(
-    member="조회할 인원",
-    start_date="예: 2026-05-01, 비워두면 최근 30일",
-    end_date="예: 2026-05-31, 비워두면 현재까지",
-)
-async def voice_channel_log(
-    interaction: discord.Interaction,
-    member: discord.Member,
-    start_date: str | None = None,
-    end_date: str | None = None,
-):
-    if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
-        return
-
-    try:
-        since, until = parse_date_range(start_date, end_date, default_days=30)
-    except ValueError as e:
-        await interaction.response.send_message(str(e), ephemeral=True)
-        return
-
-    intervals = get_voice_channel_intervals_between(interaction.guild.id, member.id, since, until)
+def build_voice_log_embed(guild: discord.Guild, member: discord.Member, since: datetime, until: datetime):
+    intervals = get_voice_channel_intervals_between(guild.id, member.id, since, until)
     summary_map = {}
     for item in intervals:
         seconds = max(0, int((item["end"] - item["start"]).total_seconds()))
@@ -6185,8 +6478,7 @@ async def voice_channel_log(
                 channel_entry["last_ended_at"] = end_text
 
     if not summary_map:
-        await interaction.response.send_message("해당 기간 기준 음성채널 체류 기록이 없습니다.", ephemeral=True)
-        return
+        return None, "해당 기간 기준 음성채널 체류 기록이 없습니다."
 
     sorted_rows = sorted(
         summary_map.items(),
@@ -6194,13 +6486,12 @@ async def voice_channel_log(
     )
     total_seconds = sum(item["total_seconds"] for _, item in sorted_rows)
     if total_seconds <= 0:
-        await interaction.response.send_message("해당 기간 기준 집계 가능한 음성채널 기록이 없습니다.", ephemeral=True)
-        return
+        return None, "해당 기간 기준 집계 가능한 음성채널 기록이 없습니다."
 
     lines = []
     for channel_id, item in sorted_rows[:10]:
         percentage = (item["total_seconds"] / total_seconds) * 100
-        channel = interaction.guild.get_channel(int(channel_id))
+        channel = guild.get_channel(int(channel_id))
         channel_name = channel.mention if channel else f"알 수 없는 채널 ({channel_id})"
         if item["last_ended_at"] == "현재 접속 중":
             last_text = "현재 접속 중"
@@ -6229,7 +6520,114 @@ async def voice_channel_log(
     )
     embed.add_field(name="총 체류 시간", value=f"`{format_duration_korean(total_seconds)}`", inline=False)
     embed.set_footer(text="지정한 기간 안의 음성 세션 기준으로 집계합니다.")
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    return embed, None
+
+
+class VoiceLogCustomRangeModal(discord.ui.Modal):
+    def __init__(self, member: discord.Member):
+        super().__init__(title="음성로그 조회기간 입력")
+        self.member = member
+        self.start_date = discord.ui.TextInput(
+            label="시작일",
+            placeholder="예: 2026-06-01",
+            min_length=10,
+            max_length=10,
+            required=True,
+        )
+        self.end_date = discord.ui.TextInput(
+            label="종료일",
+            placeholder="예: 2026-06-05",
+            min_length=10,
+            max_length=10,
+            required=True,
+        )
+        self.add_item(self.start_date)
+        self.add_item(self.end_date)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+            return
+
+        try:
+            since, until = parse_date_range(str(self.start_date), str(self.end_date), default_days=30)
+        except ValueError as e:
+            await interaction.response.send_message(str(e), ephemeral=True)
+            return
+
+        embed, error_text = build_voice_log_embed(interaction.guild, self.member, since, until)
+        if error_text:
+            await interaction.response.send_message(error_text, ephemeral=True)
+            return
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class VoiceLogPeriodView(discord.ui.View):
+    def __init__(self, requester_id: int, member: discord.Member):
+        super().__init__(timeout=120)
+        self.requester_id = requester_id
+        self.member = member
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("이 조회 패널은 명령어를 사용한 사람만 선택할 수 있습니다.", ephemeral=True)
+            return False
+        return True
+
+    async def show_period(self, interaction: discord.Interaction, since: datetime, until: datetime):
+        embed, error_text = build_voice_log_embed(interaction.guild, self.member, since, until)
+        for item in self.children:
+            item.disabled = True
+
+        if error_text:
+            await interaction.response.edit_message(content=error_text, embed=None, view=self)
+            return
+        await interaction.response.edit_message(content=None, embed=embed, view=self)
+
+    @discord.ui.button(label="오늘", style=discord.ButtonStyle.primary)
+    async def today(self, interaction: discord.Interaction, button: discord.ui.Button):
+        now = get_kst_now()
+        since = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        await self.show_period(interaction, since, now)
+
+    @discord.ui.button(label="어제", style=discord.ButtonStyle.secondary)
+    async def yesterday(self, interaction: discord.Interaction, button: discord.ui.Button):
+        now = get_kst_now()
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        since = today_start - timedelta(days=1)
+        until = today_start - timedelta(seconds=1)
+        await self.show_period(interaction, since, until)
+
+    @discord.ui.button(label="일주일", style=discord.ButtonStyle.success)
+    async def week(self, interaction: discord.Interaction, button: discord.ui.Button):
+        now = get_kst_now()
+        await self.show_period(interaction, now - timedelta(days=7), now)
+
+    @discord.ui.button(label="조회기간입력", style=discord.ButtonStyle.primary)
+    async def custom_range(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(VoiceLogCustomRangeModal(self.member))
+
+
+@bot.tree.command(name="음성로그", description="특정 인원의 음성채널 체류 기록을 기간별로 확인합니다.")
+@app_commands.rename(member="인원")
+@app_commands.describe(member="조회할 인원")
+async def voice_channel_log(interaction: discord.Interaction, member: discord.Member):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title=f"🎧 {member.display_name}님의 음성로그",
+        description="조회할 기간을 선택해주세요.",
+        color=0x3498DB,
+    )
+    embed.add_field(name="빠른 조회", value="오늘 / 어제 / 일주일", inline=False)
+    embed.add_field(name="직접 입력", value="조회기간입력 버튼을 눌러 시작일과 종료일을 입력합니다.", inline=False)
+    await interaction.response.send_message(
+        embed=embed,
+        view=VoiceLogPeriodView(interaction.user.id, member),
+        ephemeral=True,
+    )
 
 
 @bot.tree.command(name="끼리끼리조회", description="두 인원의 음성채널 체류 시간과 겹친 시간을 비교합니다.")
@@ -6532,11 +6930,23 @@ async def probability_table(interaction: discord.Interaction):
     embed.add_field(
         name="숫자야구",
         value=(
+            f"참가비 `{format_money(NUMBER_BASEBALL_COST)}` 고정\n"
             f"서로 다른 숫자 {NUMBER_BASEBALL_DIGITS}개를 `{NUMBER_BASEBALL_ATTEMPTS}회` 안에 추리\n"
             "1~3회 성공 / 4배\n"
             "4~5회 성공 / 2.5배\n"
             "6~8회 성공 / 1.5배\n"
             "실패 / 베팅금 손실"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="야추",
+        value=(
+            "봇 또는 유저와 주사위 5개 대결\n"
+            "족보 순위:\n"
+            "야추 > 포카드 > 풀하우스 > 라지 스트레이트 > 스몰 스트레이트 > 트리플 > 투페어 > 원페어 > 노페어\n"
+            "승리 시 판돈 획득 / 무승부 시 베팅금 반환"
         ),
         inline=False,
     )
@@ -7350,7 +7760,8 @@ async def gambling_commands(interaction: discord.Interaction):
             "`/덕몽 [금액]` - 오리를 찾아라\n"
             "`/블랙잭 [금액]` - 딜러와 21 대결\n"
             "`/경마 [금액]` - 원하는 말에 베팅\n"
-            "`/숫자야구 [금액]` - 숫자 추리 게임\n"
+            "`/숫자야구` - 10만원 고정 숫자 추리 게임\n"
+            "`/야추 [금액] [상대]` - 봇 또는 유저와 주사위 족보 대결\n"
             "`/섯다 [금액] [상대]` - 봇 또는 유저와 섯다 대결\n"
             "`/몰빵참여 [금액]` - 원하는 금액으로 몰빵게임 참여"
         ),
@@ -7466,7 +7877,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="🎮 도박 / 게임",
         value=(
             "`/슬롯`, `/동전`, `/보급`, `/덕몽`\n"
-            "`/블랙잭`, `/경마`, `/숫자야구`\n"
+            "`/블랙잭`, `/경마`, `/숫자야구`, `/야추`\n"
             "`/섯다`, `/몰빵참여`"
         ),
         inline=False,
@@ -7479,7 +7890,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
     general_embed.add_field(
         name="👥 구인 / 팀 / 기타",
         value=(
-            "`/구인`, `/종겜구인`, `/팀`, `/팀섞기로그`, `/음성채널로그`, `/끼리끼리조회`, `/시간설정패널`\n"
+            "`/구인`, `/종겜구인`, `/팀`, `/팀섞기로그`, `/음성로그`, `/끼리끼리조회`, `/시간설정패널`\n"
             "`/등업패널`, `/규칙버튼`, `/닉네임패널생성`"
         ),
         inline=False,
