@@ -2740,6 +2740,7 @@ GAME_LABELS = {
     "경마": "경마",
     "숫자야구": "숫자야구",
     "야추": "야추",
+    "지뢰찾기": "지뢰찾기",
     "섯다": "섯다",
     "몰빵게임": "몰빵게임",
 }
@@ -2779,6 +2780,23 @@ DICE_POKER_RANKS = {
     "풀하우스": 6,
     "포카드": 7,
     "야추": 8,
+}
+MINESWEEPER_SIZE = 4
+MINESWEEPER_MINE_COUNT = 3
+MINESWEEPER_MULTIPLIERS = {
+    1: 1.15,
+    2: 1.30,
+    3: 1.50,
+    4: 1.75,
+    5: 2.05,
+    6: 2.45,
+    7: 3.00,
+    8: 3.80,
+    9: 5.00,
+    10: 6.50,
+    11: 8.50,
+    12: 11.00,
+    13: 15.00,
 }
 
 LABOR_MINE_TABLE = {
@@ -4175,6 +4193,150 @@ class NumberBaseballView(discord.ui.View):
         await interaction.response.send_modal(NumberBaseballGuessModal(self))
 
 
+def get_minesweeper_multiplier(safe_count: int) -> float:
+    return MINESWEEPER_MULTIPLIERS.get(safe_count, 1.0)
+
+
+class MinesweeperCellButton(discord.ui.Button):
+    def __init__(self, index: int):
+        super().__init__(
+            label="⬜",
+            style=discord.ButtonStyle.secondary,
+            row=index // MINESWEEPER_SIZE,
+        )
+        self.index = index
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.view.reveal_cell(interaction, self)
+
+
+class MinesweeperCashoutButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="수익 확정", style=discord.ButtonStyle.success, row=4)
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.view.cash_out(interaction)
+
+
+class MinesweeperView(discord.ui.View):
+    def __init__(self, guild_id: int, user_id: int, bet_amount: int):
+        super().__init__(timeout=120)
+        self.guild_id = guild_id
+        self.user_id = user_id
+        self.bet_amount = bet_amount
+        self.safe_count = 0
+        self.resolved = False
+        total_cells = MINESWEEPER_SIZE * MINESWEEPER_SIZE
+        self.mine_positions = set(random.sample(range(total_cells), MINESWEEPER_MINE_COUNT))
+
+        for index in range(total_cells):
+            self.add_item(MinesweeperCellButton(index))
+        self.add_item(MinesweeperCashoutButton())
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("이 버튼은 명령어를 사용한 본인만 누를 수 있습니다.", ephemeral=True)
+            return False
+        return True
+
+    def current_multiplier(self) -> float:
+        return get_minesweeper_multiplier(self.safe_count)
+
+    def current_payout(self) -> int:
+        return int(self.bet_amount * self.current_multiplier())
+
+    def build_embed(self, title: str = "💣 지뢰찾기", description: str | None = None, color: int = 0xF1C40F):
+        multiplier = self.current_multiplier()
+        embed = discord.Embed(
+            title=title,
+            description=description or "안전 칸을 열수록 배당이 올라갑니다. 지뢰를 밟기 전에 수익을 확정하세요.",
+            color=color,
+        )
+        embed.add_field(name="베팅 금액", value=format_money(self.bet_amount), inline=True)
+        embed.add_field(name="안전 칸", value=f"`{self.safe_count}개`", inline=True)
+        embed.add_field(name="현재 배당", value=f"`{multiplier:.2f}배`", inline=True)
+        embed.add_field(name="예상 수령액", value=format_money(self.current_payout()), inline=False)
+        embed.set_footer(text=f"{MINESWEEPER_SIZE}x{MINESWEEPER_SIZE} 보드 / 지뢰 {MINESWEEPER_MINE_COUNT}개")
+        return embed
+
+    def disable_all_buttons(self):
+        for item in self.children:
+            item.disabled = True
+
+    def reveal_all_mines(self):
+        for item in self.children:
+            if isinstance(item, MinesweeperCellButton) and item.index in self.mine_positions:
+                item.label = "💣"
+                item.style = discord.ButtonStyle.danger
+
+    async def reveal_cell(self, interaction: discord.Interaction, button: MinesweeperCellButton):
+        if self.resolved:
+            await interaction.response.send_message("이미 종료된 지뢰찾기입니다.", ephemeral=True)
+            return
+
+        if button.index in self.mine_positions:
+            self.resolved = True
+            button.label = "💥"
+            button.style = discord.ButtonStyle.danger
+            self.reveal_all_mines()
+            self.disable_all_buttons()
+            embed = self.build_embed(
+                title="💥 지뢰 폭발!",
+                description=f"지뢰를 밟았습니다. `{format_money(self.bet_amount)}`을 잃었습니다.",
+                color=0xE74C3C,
+            )
+            add_game_history(
+                self.guild_id,
+                "지뢰찾기",
+                f"{interaction.user.display_name} - 안전:{self.safe_count}개 / 폭발",
+            )
+            await interaction.response.edit_message(embed=embed, view=self)
+            return
+
+        button.label = "💎"
+        button.style = discord.ButtonStyle.success
+        button.disabled = True
+        self.safe_count += 1
+
+        max_safe_count = MINESWEEPER_SIZE * MINESWEEPER_SIZE - MINESWEEPER_MINE_COUNT
+        if self.safe_count >= max_safe_count:
+            await self.cash_out(interaction, auto_complete=True)
+            return
+
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def cash_out(self, interaction: discord.Interaction, auto_complete: bool = False):
+        if self.resolved:
+            await interaction.response.send_message("이미 종료된 지뢰찾기입니다.", ephemeral=True)
+            return
+
+        self.resolved = True
+        payout = self.current_payout()
+        add_balance(self.user_id, payout)
+        self.disable_all_buttons()
+
+        title = "✅ 지뢰찾기 완전 성공" if auto_complete else "✅ 지뢰찾기 수익 확정"
+        embed = self.build_embed(
+            title=title,
+            description=f"`{format_money(payout)}`을 획득했습니다.",
+            color=0x2ECC71,
+        )
+        embed.add_field(name="현재 잔액", value=format_money(get_balance(self.user_id)), inline=False)
+        add_game_history(
+            self.guild_id,
+            "지뢰찾기",
+            f"{interaction.user.display_name} - 안전:{self.safe_count}개 / {self.current_multiplier():.2f}배 수익 확정",
+        )
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def on_timeout(self):
+        if self.resolved:
+            return
+        self.resolved = True
+        add_balance(self.user_id, self.bet_amount)
+        self.disable_all_buttons()
+
+
 class SupplyDropView(discord.ui.View):
     def __init__(self, user_id: int, bet_amount: int):
         super().__init__(timeout=60)
@@ -4945,6 +5107,10 @@ class HistoryGameSelectView(discord.ui.View):
     @discord.ui.button(label="야추", style=discord.ButtonStyle.success)
     async def yahtzee_history(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.show_history(interaction, "야추")
+
+    @discord.ui.button(label="지뢰찾기", style=discord.ButtonStyle.success)
+    async def minesweeper_history(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.show_history(interaction, "지뢰찾기")
 
     @discord.ui.button(label="섯다", style=discord.ButtonStyle.success)
     async def seotda_history(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -6674,6 +6840,25 @@ async def yahtzee(interaction: discord.Interaction, amount: int, member: discord
     )
 
 
+@bot.tree.command(name="지뢰찾기", description="입력한 금액으로 지뢰를 피해 보상을 쌓습니다.")
+async def minesweeper(interaction: discord.Interaction, amount: int):
+    if not await ensure_not_blacklisted_for_gambling(interaction):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+    if amount < MIN_BET:
+        await interaction.response.send_message(f"최소 베팅 금액은 `{format_money(MIN_BET)}`입니다.", ephemeral=True)
+        return
+    if not can_afford(interaction.user.id, amount):
+        await interaction.response.send_message("잔액이 부족합니다.", ephemeral=True)
+        return
+
+    add_balance(interaction.user.id, -amount)
+    view = MinesweeperView(interaction.guild.id, interaction.user.id, amount)
+    await interaction.response.send_message(embed=view.build_embed(), view=view)
+
+
 @bot.tree.command(name="세팅대기방추가", description="대기방 음성채널을 등록합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def add_waiting_room_command(interaction: discord.Interaction, channel: discord.VoiceChannel):
@@ -7297,6 +7482,18 @@ async def probability_table(interaction: discord.Interaction):
             "족보 순위:\n"
             "야추 > 포카드 > 풀하우스 > 라지 스트레이트 > 스몰 스트레이트 > 트리플 > 투페어 > 원페어 > 노페어\n"
             "승리 시 판돈 획득 / 무승부 시 베팅금 반환"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="지뢰찾기",
+        value=(
+            f"{MINESWEEPER_SIZE}x{MINESWEEPER_SIZE} 보드 / 지뢰 {MINESWEEPER_MINE_COUNT}개\n"
+            "안전 칸을 열수록 배당 상승\n"
+            "1개 1.15배 / 3개 1.50배 / 5개 2.05배\n"
+            "8개 3.80배 / 10개 6.50배 / 13개 15배\n"
+            "지뢰 클릭 시 베팅금 손실"
         ),
         inline=False,
     )
@@ -8112,6 +8309,7 @@ async def gambling_commands(interaction: discord.Interaction):
             "`/경마 [금액]` - 원하는 말에 베팅\n"
             "`/숫자야구` - 10만원 고정 숫자 추리 게임\n"
             "`/야추 [금액] [상대]` - 봇 또는 유저와 주사위 족보 대결\n"
+            "`/지뢰찾기 [금액]` - 지뢰를 피해 수익 확정\n"
             "`/섯다 [금액] [상대]` - 봇 또는 유저와 섯다 대결\n"
             "`/몰빵참여 [금액]` - 원하는 금액으로 몰빵게임 참여"
         ),
@@ -8227,7 +8425,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="🎮 도박 / 게임",
         value=(
             "`/슬롯`, `/동전`, `/보급`, `/덕몽`\n"
-            "`/블랙잭`, `/경마`, `/숫자야구`, `/야추`\n"
+            "`/블랙잭`, `/경마`, `/숫자야구`, `/야추`, `/지뢰찾기`\n"
             "`/섯다`, `/몰빵참여`"
         ),
         inline=False,
