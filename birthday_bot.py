@@ -3669,6 +3669,277 @@ def build_yahtzee_result_embed(
     return embed
 
 
+def format_yahtzee_visible_dice(dice: list[int], reveal_all: bool = False) -> str:
+    if reveal_all:
+        return format_dice_poker_hand(dice)
+    return f"{format_dice_poker_hand(dice[:3])} ? ?"
+
+
+def format_yahtzee_action(action: str | None) -> str:
+    if action == "bet":
+        return "배팅"
+    if action == "allin":
+        return "올인"
+    if action == "die":
+        return "다이"
+    return "선택 대기"
+
+
+def build_yahtzee_progress_embed(
+    challenger: discord.Member | discord.User | None,
+    opponent: discord.Member | discord.User | None,
+    challenger_dice: list[int],
+    opponent_dice: list[int],
+    amount: int,
+    pot_amount: int,
+    challenger_action: str | None,
+    opponent_action: str | None,
+):
+    challenger_name = challenger.display_name if challenger else "도전자"
+    opponent_name = opponent.display_name if opponent else "마리봇"
+    embed = discord.Embed(
+        title="🎲 야추 대결",
+        description="각자 주사위 5개 중 3개가 먼저 공개되었습니다.\n배팅 또는 다이를 선택해주세요.",
+        color=0xF1C40F,
+    )
+    embed.add_field(name="기본 베팅금", value=f"`{format_money(amount)}`", inline=True)
+    embed.add_field(name="현재 판돈", value=f"`{format_money(pot_amount)}`", inline=True)
+    embed.add_field(
+        name=challenger_name,
+        value=(
+            f"{format_yahtzee_visible_dice(challenger_dice)}\n"
+            f"상태: `{format_yahtzee_action(challenger_action)}`"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name=opponent_name,
+        value=(
+            f"{format_yahtzee_visible_dice(opponent_dice)}\n"
+            f"상태: `{format_yahtzee_action(opponent_action)}`"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="둘 다 배팅해야 남은 주사위 2개를 공개하고 승부합니다.")
+    return embed
+
+
+class YahtzeeMatchView(discord.ui.View):
+    def __init__(self, guild_id: int, challenger_id: int, opponent_id: int | None, amount: int):
+        super().__init__(timeout=SEOTDA_TIMEOUT)
+        self.guild_id = guild_id
+        self.challenger_id = challenger_id
+        self.opponent_id = opponent_id
+        self.amount = amount
+        self.pot_amount = amount * 2
+        self.challenger_dice = roll_dice_poker_hand()
+        self.opponent_dice = roll_dice_poker_hand()
+        self.challenger_action: str | None = None
+        self.opponent_action: str | None = None
+        self.challenger_bet_amount = 0
+        self.opponent_bet_amount = 0
+        self.resolved = False
+
+    def _is_bot_match(self) -> bool:
+        return self.opponent_id is None
+
+    def _get_role_key(self, user_id: int) -> str | None:
+        if user_id == self.challenger_id:
+            return "challenger"
+        if user_id == self.opponent_id:
+            return "opponent"
+        return None
+
+    def _set_action(self, role_key: str, action: str):
+        if role_key == "challenger":
+            self.challenger_action = action
+        elif role_key == "opponent":
+            self.opponent_action = action
+
+    def _get_action(self, role_key: str) -> str | None:
+        return self.challenger_action if role_key == "challenger" else self.opponent_action
+
+    def _get_participants(self, guild: discord.Guild, bot_user: discord.ClientUser | None):
+        challenger = guild.get_member(self.challenger_id)
+        if self._is_bot_match():
+            opponent = bot_user
+        else:
+            opponent = guild.get_member(self.opponent_id)
+        return challenger, opponent
+
+    def build_embed(self, guild: discord.Guild, bot_user: discord.ClientUser | None):
+        challenger, opponent = self._get_participants(guild, bot_user)
+        return build_yahtzee_progress_embed(
+            challenger,
+            opponent,
+            self.challenger_dice,
+            self.opponent_dice,
+            self.amount,
+            self.pot_amount,
+            self.challenger_action,
+            self.opponent_action,
+        )
+
+    def _apply_additional_bet(self, role_key: str, user_id: int | None) -> str:
+        if user_id is None:
+            additional_amount = self.amount
+        else:
+            current_balance = get_balance(user_id)
+            additional_amount = min(current_balance, self.amount)
+            if additional_amount > 0:
+                add_balance(user_id, -additional_amount)
+
+        if role_key == "challenger":
+            self.challenger_bet_amount = additional_amount
+        else:
+            self.opponent_bet_amount = additional_amount
+
+        self.pot_amount += additional_amount
+        return "bet" if additional_amount >= self.amount else "allin"
+
+    def _settle_all_in_difference(self):
+        matched_amount = min(self.challenger_bet_amount, self.opponent_bet_amount)
+
+        if self.challenger_bet_amount > matched_amount:
+            refund = self.challenger_bet_amount - matched_amount
+            add_balance(self.challenger_id, refund)
+            self.pot_amount -= refund
+            self.challenger_bet_amount = matched_amount
+
+        if self.opponent_id is not None and self.opponent_bet_amount > matched_amount:
+            refund = self.opponent_bet_amount - matched_amount
+            add_balance(self.opponent_id, refund)
+            self.pot_amount -= refund
+            self.opponent_bet_amount = matched_amount
+
+        if self.opponent_id is None and self.opponent_bet_amount > matched_amount:
+            refund = self.opponent_bet_amount - matched_amount
+            self.pot_amount -= refund
+            self.opponent_bet_amount = matched_amount
+
+    async def _resolve_round(self, interaction: discord.Interaction):
+        self.resolved = True
+        challenger, opponent = self._get_participants(interaction.guild, interaction.client.user)
+
+        if self.challenger_action == "die" and self.opponent_action == "die":
+            add_balance(self.challenger_id, self.amount)
+            if not self._is_bot_match():
+                add_balance(self.opponent_id, self.amount)
+            embed = discord.Embed(
+                title="🎲 야추 대결 결과",
+                description="두 사람이 모두 다이를 선택해 무승부가 되었습니다.\n처음 건 금액은 각각 반환되었습니다.",
+                color=0x95A5A6,
+            )
+            embed.add_field(name="판돈", value=f"`{format_money(self.pot_amount)}`", inline=False)
+            add_game_history(interaction.guild.id, "야추", f"{challenger.display_name} vs {opponent.display_name if opponent else '마리봇'} / 양쪽 다이 무승부")
+            await interaction.response.edit_message(embed=embed, view=None)
+            return
+
+        if self.challenger_action == "die" and self.opponent_action in {"bet", "allin"}:
+            if not self._is_bot_match():
+                add_balance(self.opponent_id, self.pot_amount)
+            embed = discord.Embed(
+                title="🎲 야추 대결 결과",
+                description=f"{challenger.mention}님이 다이를 선택했습니다.\n{opponent.mention if opponent else '마리봇'} 승리!",
+                color=0x3498DB,
+            )
+            embed.add_field(name="판돈", value=f"`{format_money(self.pot_amount)}`", inline=False)
+            add_game_history(interaction.guild.id, "야추", f"{challenger.display_name} vs {opponent.display_name if opponent else '마리봇'} / 다이 패배")
+            await interaction.response.edit_message(embed=embed, view=None)
+            return
+
+        if self.challenger_action in {"bet", "allin"} and self.opponent_action == "die":
+            add_balance(self.challenger_id, self.pot_amount)
+            embed = discord.Embed(
+                title="🎲 야추 대결 결과",
+                description=f"{opponent.mention if opponent else '마리봇'}이 다이를 선택했습니다.\n{challenger.mention}님 승리!",
+                color=0x2ECC71,
+            )
+            embed.add_field(name="판돈", value=f"`{format_money(self.pot_amount)}`", inline=False)
+            add_game_history(interaction.guild.id, "야추", f"{challenger.display_name} vs {opponent.display_name if opponent else '마리봇'} / 다이 승리")
+            await interaction.response.edit_message(embed=embed, view=None)
+            return
+
+        self._settle_all_in_difference()
+        comparison = compare_dice_poker_hands(self.challenger_dice, self.opponent_dice)
+        challenger_hand, _ = evaluate_dice_poker_hand(self.challenger_dice)
+        opponent_hand, _ = evaluate_dice_poker_hand(self.opponent_dice)
+
+        if comparison > 0:
+            add_balance(self.challenger_id, self.pot_amount)
+            result_text = f"{challenger.mention}님 승리!\n`{format_money(self.pot_amount)}`을 획득했습니다."
+            color = 0x2ECC71
+            history_text = f"{challenger.display_name} vs {opponent.display_name if opponent else '마리봇'} / {challenger_hand} 승리"
+        elif comparison < 0:
+            if not self._is_bot_match():
+                add_balance(self.opponent_id, self.pot_amount)
+            result_text = f"{opponent.mention if opponent else '마리봇'} 승리!"
+            if not self._is_bot_match():
+                result_text += f"\n`{format_money(self.pot_amount)}`을 획득했습니다."
+            color = 0x3498DB
+            history_text = f"{challenger.display_name} vs {opponent.display_name if opponent else '마리봇'} / {opponent_hand} 승리"
+        else:
+            add_balance(self.challenger_id, self.pot_amount // 2)
+            if not self._is_bot_match():
+                add_balance(self.opponent_id, self.pot_amount // 2)
+            result_text = "같은 수준의 족보가 나와 무승부입니다. 판돈은 반씩 반환되었습니다."
+            color = 0x95A5A6
+            history_text = f"{challenger.display_name} vs {opponent.display_name if opponent else '마리봇'} / 무승부 ({challenger_hand})"
+
+        embed = build_yahtzee_result_embed(
+            challenger,
+            opponent,
+            self.challenger_dice,
+            self.opponent_dice,
+            self.pot_amount // 2,
+            result_text,
+            color,
+        )
+        add_game_history(interaction.guild.id, "야추", history_text)
+        await interaction.response.edit_message(embed=embed, view=None)
+
+    async def _handle_choice(self, interaction: discord.Interaction, action: str):
+        if self.resolved:
+            await interaction.response.send_message("이미 결과가 확정된 판입니다.", ephemeral=True)
+            return
+
+        role_key = self._get_role_key(interaction.user.id)
+        if role_key is None:
+            await interaction.response.send_message("대결 당사자만 버튼을 누를 수 있습니다.", ephemeral=True)
+            return
+
+        if self._get_action(role_key) is not None:
+            await interaction.response.send_message("이미 선택을 완료했습니다.", ephemeral=True)
+            return
+
+        if action == "bet":
+            action = self._apply_additional_bet(role_key, interaction.user.id)
+
+        self._set_action(role_key, action)
+
+        if self._is_bot_match() and role_key == "challenger":
+            if action == "die":
+                self.opponent_action = "bet"
+                self.opponent_bet_amount = 0
+            else:
+                bot_action = self._apply_additional_bet("opponent", None)
+                self._set_action("opponent", bot_action)
+
+        if self.challenger_action is not None and self.opponent_action is not None:
+            await self._resolve_round(interaction)
+            return
+
+        await interaction.response.edit_message(embed=self.build_embed(interaction.guild, interaction.client.user), view=self)
+
+    @discord.ui.button(label="배팅", style=discord.ButtonStyle.success)
+    async def bet(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle_choice(interaction, "bet")
+
+    @discord.ui.button(label="다이", style=discord.ButtonStyle.danger)
+    async def die(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle_choice(interaction, "die")
+
+
 def resolve_yahtzee_match(guild_id: int, challenger, opponent, amount: int):
     challenger_dice = roll_dice_poker_hand()
     opponent_dice = roll_dice_poker_hand()
@@ -3752,8 +4023,9 @@ class YahtzeeChallengeView(discord.ui.View):
         for item in self.children:
             item.disabled = True
 
-        embed = resolve_yahtzee_match(interaction.guild.id, challenger, opponent, self.amount)
-        await interaction.response.edit_message(content=None, embed=embed, view=self)
+        match_view = YahtzeeMatchView(interaction.guild.id, self.challenger_id, self.opponent_id, self.amount)
+        embed = match_view.build_embed(interaction.guild, interaction.client.user)
+        await interaction.response.edit_message(content=None, embed=embed, view=match_view)
 
     @discord.ui.button(label="거절", style=discord.ButtonStyle.danger)
     async def decline(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -6371,8 +6643,10 @@ async def yahtzee(interaction: discord.Interaction, amount: int, member: discord
 
     if member is None:
         add_balance(interaction.user.id, -amount)
-        embed = resolve_yahtzee_match(interaction.guild.id, interaction.user, interaction.client.user, amount)
-        await interaction.response.send_message(embed=embed)
+        match_view = YahtzeeMatchView(interaction.guild.id, interaction.user.id, None, amount)
+        embed = match_view.build_embed(interaction.guild, interaction.client.user)
+        embed.add_field(name="상대", value="봇", inline=False)
+        await interaction.response.send_message(embed=embed, view=match_view)
         return
 
     if member.bot:
@@ -6394,9 +6668,9 @@ async def yahtzee(interaction: discord.Interaction, amount: int, member: discord
     embed.add_field(
         name="룰",
         value=(
-            "수락 시 두 사람 모두 같은 금액을 겁니다.\n"
-            "각자 주사위 5개를 굴려 더 높은 족보가 승리합니다.\n"
-            "같은 족보라면 주사위 숫자 조합으로 승패를 비교합니다."
+            "수락 시 두 사람 모두 같은 금액을 먼저 겁니다.\n"
+            "각자 주사위 5개 중 3개를 먼저 공개합니다.\n"
+            "배팅 또는 다이를 선택하고, 둘 다 배팅해야 최종 주사위를 공개합니다."
         ),
         inline=False,
     )
@@ -7026,7 +7300,8 @@ async def probability_table(interaction: discord.Interaction):
     embed.add_field(
         name="야추",
         value=(
-            "봇 또는 유저와 주사위 5개 대결\n"
+            "첫 주사위 3개 공개 후 배팅/다이 진행\n"
+            "두 사람 모두 배팅해야 최종 주사위 공개\n"
             "족보 순위:\n"
             "야추 > 포카드 > 풀하우스 > 라지 스트레이트 > 스몰 스트레이트 > 트리플 > 투페어 > 원페어 > 노페어\n"
             "승리 시 판돈 획득 / 무승부 시 베팅금 반환"
