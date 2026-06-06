@@ -3620,15 +3620,7 @@ def compare_dice_poker_hands(left_dice: list[int], right_dice: list[int]) -> int
 
 
 def format_dice_poker_hand(dice: list[int]) -> str:
-    dice_faces = {
-        1: "⚀",
-        2: "⚁",
-        3: "⚂",
-        4: "⚃",
-        5: "⚄",
-        6: "⚅",
-    }
-    return " ".join(dice_faces[value] for value in dice)
+    return " | ".join(f"🎲 {value}" for value in dice)
 
 
 def build_yahtzee_result_embed(
@@ -3672,7 +3664,7 @@ def build_yahtzee_result_embed(
 def format_yahtzee_visible_dice(dice: list[int], reveal_all: bool = False) -> str:
     if reveal_all:
         return format_dice_poker_hand(dice)
-    return f"{format_dice_poker_hand(dice[:3])} ? ?"
+    return f"{format_dice_poker_hand(dice[:3])} | ? | ?"
 
 
 def format_yahtzee_action(action: str | None) -> str:
