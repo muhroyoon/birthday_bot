@@ -8721,7 +8721,9 @@ async def on_voice_state_update(member, before, after):
 
 @bot.event
 async def on_message(message: discord.Message):
-    if message.guild is not None:
+    is_self_message = bot.user is not None and message.author.id == bot.user.id
+
+    if message.guild is not None and not is_self_message:
         sticky = get_sticky_message(message.guild.id, message.channel.id)
         if sticky:
             if sticky.get("message_id") and message.id == sticky["message_id"]:
