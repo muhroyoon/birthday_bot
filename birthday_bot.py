@@ -96,15 +96,15 @@ DEFAULT_LABOR_DEBT_AMOUNT = 100_000
 LOAN_GRADE_DECAY_DAYS = 2
 
 LABOR_GACHA_RESULTS = [
-    ("꽝", 0, 30),
-    ("-10%", 10, 22),
-    ("-20%", 20, 15),
-    ("-30%", 30, 10),
-    ("-40%", 40, 7),
-    ("-50%", 50, 5),
-    ("-60%", 60, 4),
-    ("-70%", 70, 3),
-    ("-80%", 80, 2),
+    ("꽝", 0, 2000),
+    ("-10%", 10, 1120),
+    ("-20%", 20, 520),
+    ("-30%", 30, 200),
+    ("-40%", 40, 90),
+    ("-50%", 50, 40),
+    ("-60%", 60, 16),
+    ("-70%", 70, 8),
+    ("-80%", 80, 4),
     ("-90%", 90, 1),
     ("-100%", 100, 1),
 ]
@@ -2825,12 +2825,12 @@ LABOR_MINE_TABLE = {
         "label": "심층 광맥",
         "color": 0x8E44AD,
         "results": [
-            {"name": "철광석", "weight": 250, "progress": 2, "description": "위험을 감수한 보람은 있었습니다. 철광석을 확보했습니다.", "ticket_bonus": 0},
-            {"name": "은광석", "weight": 180, "progress": 3, "description": "심층부에서 은광석을 찾아냈습니다. 꽤 괜찮은 성과입니다.", "ticket_bonus": 0},
-            {"name": "금광석", "weight": 80, "progress": 4, "description": "희미하게 빛나는 금광석을 발견했습니다. 탄광장도 탐낼 만한 물건입니다.", "ticket_bonus": 0},
-            {"name": "다이아 원석", "weight": 30, "progress": 7, "description": "다이아 원석을 캐냈습니다! 오늘 작업은 전설로 남을 겁니다.", "ticket_bonus": 0},
-            {"name": "꽝", "weight": 240, "progress": 0, "description": "깊숙이 들어갔지만 광맥을 놓쳤습니다. 체력만 빠졌습니다.", "ticket_bonus": 0},
-            {"name": "붕락", "weight": 200, "progress": 0, "description": "탄광이 무너져 작업을 중단했습니다. 겨우 몸만 빠져나왔습니다.", "ticket_bonus": 0},
+            {"name": "철광석", "weight": 500, "progress": 2, "description": "위험을 감수한 보람은 있었습니다. 철광석을 확보했습니다.", "ticket_bonus": 0},
+            {"name": "은광석", "weight": 360, "progress": 3, "description": "심층부에서 은광석을 찾아냈습니다. 꽤 괜찮은 성과입니다.", "ticket_bonus": 0},
+            {"name": "금광석", "weight": 160, "progress": 4, "description": "희미하게 빛나는 금광석을 발견했습니다. 탄광장도 탐낼 만한 물건입니다.", "ticket_bonus": 0},
+            {"name": "다이아 원석", "weight": 60, "progress": 7, "description": "다이아 원석을 캐냈습니다! 오늘 작업은 전설로 남을 겁니다.", "ticket_bonus": 0},
+            {"name": "꽝", "weight": 480, "progress": 0, "description": "깊숙이 들어갔지만 광맥을 놓쳤습니다. 체력만 빠졌습니다.", "ticket_bonus": 0},
+            {"name": "붕락", "weight": 439, "progress": 0, "description": "탄광이 무너져 작업을 중단했습니다. 겨우 몸만 빠져나왔습니다.", "ticket_bonus": 0},
             {"name": "노동가챠권 발견", "weight": 1, "progress": 1, "description": "심층부 틈새에서 노동가챠권을 찾아냈습니다. 위험을 감수한 보상이 따릅니다.", "ticket_bonus": 1},
         ],
     },
@@ -8721,6 +8721,17 @@ async def on_voice_state_update(member, before, after):
 
 @bot.event
 async def on_message(message: discord.Message):
+    if message.guild is not None:
+        sticky = get_sticky_message(message.guild.id, message.channel.id)
+        if sticky:
+            if sticky.get("message_id") and message.id == sticky["message_id"]:
+                await bot.process_commands(message)
+                return
+            try:
+                await refresh_sticky_message(message.channel)
+            except Exception:
+                pass
+
     if message.author.bot:
         await bot.process_commands(message)
         return
@@ -8760,16 +8771,6 @@ async def on_message(message: discord.Message):
 
         await bot.process_commands(message)
         return
-
-    sticky = get_sticky_message(message.guild.id, message.channel.id)
-    if sticky:
-        if sticky.get("message_id") and message.id == sticky["message_id"]:
-            await bot.process_commands(message)
-            return
-        try:
-            await refresh_sticky_message(message.channel)
-        except Exception:
-            pass
 
     await bot.process_commands(message)
 
