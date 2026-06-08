@@ -1981,6 +1981,19 @@ def get_team_mix_logs(guild_id: int, user_id: int, limit: int = 20):
     return cursor.fetchall()
 
 
+def get_team_mix_count_between(guild_id: int, user_id: int, start_dt: datetime, end_dt: datetime) -> int:
+    cursor.execute(
+        """
+        SELECT COUNT(DISTINCT COALESCE(message_id, id))
+        FROM team_mix_logs
+        WHERE guild_id=? AND user_id=? AND created_at>=? AND created_at<=?
+        """,
+        (str(guild_id), str(user_id), dt_to_db(start_dt), dt_to_db(end_dt)),
+    )
+    row = cursor.fetchone()
+    return int(row[0] or 0) if row else 0
+
+
 def start_voice_session(guild_id: int, user_id: int, channel_id: int):
     cursor.execute(
         """
@@ -2119,6 +2132,28 @@ def get_voice_channel_intervals_between(guild_id: int, user_id: int, start_dt: d
             }
         )
     return intervals
+
+
+def get_voice_log_user_ids_between(guild_id: int, start_dt: datetime, end_dt: datetime) -> list[int]:
+    cursor.execute(
+        """
+        SELECT DISTINCT user_id
+        FROM voice_channel_logs
+        WHERE guild_id=? AND ended_at>=? AND started_at<=?
+        UNION
+        SELECT DISTINCT user_id
+        FROM voice_channel_sessions
+        WHERE guild_id=? AND started_at<=?
+        """,
+        (str(guild_id), dt_to_db(start_dt), dt_to_db(end_dt), str(guild_id), dt_to_db(end_dt)),
+    )
+    user_ids = []
+    for (user_id,) in cursor.fetchall():
+        try:
+            user_ids.append(int(user_id))
+        except (TypeError, ValueError):
+            continue
+    return user_ids
 
 
 def clear_active_voice_session(guild_id: int, user_id: int):
@@ -6983,6 +7018,33 @@ def build_voice_log_embed(guild: discord.Guild, member: discord.Member, since: d
     top_channel_name = top_channel.mention if top_channel else f"알 수 없는 채널 ({top_channel_id})"
     total_sessions = sum(item["session_count"] for _, item in sorted_rows)
     active_channels = []
+    team_mix_count = get_team_mix_count_between(guild.id, member.id, since, until)
+    companion_rows = []
+
+    for candidate_id in get_voice_log_user_ids_between(guild.id, since, until):
+        if candidate_id == member.id:
+            continue
+
+        candidate = guild.get_member(candidate_id)
+        if candidate is None or candidate.bot or is_spectator_member(candidate, guild.id):
+            continue
+
+        candidate_intervals = get_voice_channel_intervals_between(guild.id, candidate_id, since, until)
+        overlap_seconds = sum(calculate_voice_overlap_seconds(intervals, candidate_intervals).values())
+        if overlap_seconds <= 0:
+            continue
+
+        companion_rows.append((candidate, overlap_seconds))
+
+    companion_rows.sort(key=lambda item: (-item[1], item[0].display_name))
+    companion_lines = []
+    for idx, (candidate, overlap_seconds) in enumerate(companion_rows[:3], start=1):
+        percentage = (overlap_seconds / total_seconds) * 100 if total_seconds > 0 else 0
+        companion_lines.append(
+            f"**{idx}. {candidate.display_name}**\n"
+            f"같이 있던 시간: `{format_duration_korean(overlap_seconds)}`\n"
+            f"전체 체류 대비: `{percentage:.1f}%`"
+        )
 
     for idx, (channel_id, item) in enumerate(sorted_rows[:10], start=1):
         percentage = (item["total_seconds"] / total_seconds) * 100
@@ -7012,8 +7074,14 @@ def build_voice_log_embed(guild: discord.Guild, member: discord.Member, since: d
             f"총 체류 시간: `{format_duration_korean(total_seconds)}`\n"
             f"입장 기록: `{total_sessions}회`\n"
             f"체류 채널 수: `{len(sorted_rows)}개`\n"
+            f"팀섞기 참여: `{team_mix_count}회`\n"
             f"현재 접속: `{', '.join(active_channels) if active_channels else '없음'}`"
         ),
+        inline=False,
+    )
+    embed.add_field(
+        name="같이 있던 인원 TOP 3",
+        value=join_discord_field_lines(companion_lines) if companion_lines else "같은 음성채널에 함께 있었던 기록이 없습니다.",
         inline=False,
     )
     embed.add_field(
