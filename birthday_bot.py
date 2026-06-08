@@ -7062,7 +7062,7 @@ def build_voice_log_embed(guild: discord.Guild, member: discord.Member, since: d
     for idx, (candidate, overlap_seconds) in enumerate(companion_rows[:3], start=1):
         percentage = (overlap_seconds / total_seconds) * 100 if total_seconds > 0 else 0
         companion_lines.append(
-            f"**{idx}. {candidate.display_name}**\n"
+            f"{idx}. {candidate.display_name}\n"
             f"같이 있던 시간: `{format_duration_korean(overlap_seconds)}`\n"
             f"전체 체류 대비: `{percentage:.1f}%`"
         )
@@ -7072,7 +7072,7 @@ def build_voice_log_embed(guild: discord.Guild, member: discord.Member, since: d
         channel = guild.get_channel(int(channel_id))
         channel_name = channel.name if channel else f"알 수 없는 채널 ({channel_id})"
         lines.append(
-            f"**{idx}. {channel_name}**\n"
+            f"{idx}. {channel_name}\n"
             f"체류 시간: `{format_duration_korean(item['total_seconds'])}`\n"
             f"전체 비중: `{percentage:.1f}%`"
         )
@@ -7097,12 +7097,12 @@ def build_voice_log_embed(guild: discord.Guild, member: discord.Member, since: d
     )
     embed.add_field(
         name="같이 있던 인원 TOP3",
-        value=join_compact_discord_field_lines(companion_lines) if companion_lines else "같은 음성채널에 함께 있었던 기록이 없습니다.",
+        value=join_discord_field_lines(companion_lines) if companion_lines else "같은 음성채널에 함께 있었던 기록이 없습니다.",
         inline=False,
     )
     embed.add_field(
         name="채널별 체류 TOP",
-        value=join_compact_discord_field_lines(lines),
+        value=join_discord_field_lines(lines),
         inline=False,
     )
     return embed, None
