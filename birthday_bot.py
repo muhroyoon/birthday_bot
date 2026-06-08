@@ -1065,6 +1065,29 @@ def join_discord_field_lines(lines: list[str], *, limit: int = 1024) -> str:
     return "\n\n".join(selected_lines) if selected_lines else "표시할 기록이 없습니다."
 
 
+def join_compact_discord_field_lines(lines: list[str], *, limit: int = 1024) -> str:
+    selected_lines = []
+    current_length = 0
+
+    for line in lines:
+        separator_length = 1 if selected_lines else 0
+        next_length = current_length + separator_length + len(line)
+        if next_length > limit:
+            remaining_count = len(lines) - len(selected_lines)
+            suffix = f"\n외 {remaining_count}개 기록이 더 있습니다."
+            while selected_lines and current_length + len(suffix) > limit:
+                removed = selected_lines.pop()
+                current_length -= len(removed)
+                if selected_lines:
+                    current_length -= 1
+            return ("\n".join(selected_lines) + suffix)[:limit]
+
+        selected_lines.append(line)
+        current_length = next_length
+
+    return "\n".join(selected_lines) if selected_lines else "표시할 기록이 없습니다."
+
+
 def add_money_grant_log(guild_id: int, target_user_id: int, giver_user_id: int, amount: int, note: str | None = None):
     cursor.execute(
         """
@@ -7074,15 +7097,14 @@ def build_voice_log_embed(guild: discord.Guild, member: discord.Member, since: d
     )
     embed.add_field(
         name="같이 있던 인원 TOP3",
-        value=join_discord_field_lines(companion_lines) if companion_lines else "같은 음성채널에 함께 있었던 기록이 없습니다.",
+        value=join_compact_discord_field_lines(companion_lines) if companion_lines else "같은 음성채널에 함께 있었던 기록이 없습니다.",
         inline=False,
     )
     embed.add_field(
         name="채널별 체류 TOP",
-        value=join_discord_field_lines(lines),
+        value=join_compact_discord_field_lines(lines),
         inline=False,
     )
-    embed.set_footer(text="현재 접속 중인 시간도 조회 시점 기준으로 포함됩니다.")
     return embed, None
 
 
