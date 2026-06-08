@@ -2860,13 +2860,13 @@ LABOR_MINE_TABLE = {
         "label": "심층 광맥",
         "color": 0x8E44AD,
         "results": [
-            {"name": "철광석", "weight": 500, "progress": 2, "description": "위험을 감수한 보람은 있었습니다. 철광석을 확보했습니다.", "ticket_bonus": 0},
-            {"name": "은광석", "weight": 360, "progress": 3, "description": "심층부에서 은광석을 찾아냈습니다. 꽤 괜찮은 성과입니다.", "ticket_bonus": 0},
-            {"name": "금광석", "weight": 160, "progress": 4, "description": "희미하게 빛나는 금광석을 발견했습니다. 탄광장도 탐낼 만한 물건입니다.", "ticket_bonus": 0},
-            {"name": "다이아 원석", "weight": 60, "progress": 7, "description": "다이아 원석을 캐냈습니다! 오늘 작업은 전설로 남을 겁니다.", "ticket_bonus": 0},
-            {"name": "꽝", "weight": 480, "progress": 0, "description": "깊숙이 들어갔지만 광맥을 놓쳤습니다. 체력만 빠졌습니다.", "ticket_bonus": 0},
-            {"name": "붕락", "weight": 439, "progress": 0, "description": "탄광이 무너져 작업을 중단했습니다. 겨우 몸만 빠져나왔습니다.", "ticket_bonus": 0},
-            {"name": "노동가챠권 발견", "weight": 1, "progress": 1, "description": "심층부 틈새에서 노동가챠권을 찾아냈습니다. 위험을 감수한 보상이 따릅니다.", "ticket_bonus": 1},
+            {"name": "철광석", "weight": 625, "progress": 2, "description": "위험을 감수한 보람은 있었습니다. 철광석을 확보했습니다.", "ticket_bonus": 0},
+            {"name": "은광석", "weight": 450, "progress": 3, "description": "심층부에서 은광석을 찾아냈습니다. 꽤 괜찮은 성과입니다.", "ticket_bonus": 0},
+            {"name": "금광석", "weight": 200, "progress": 4, "description": "희미하게 빛나는 금광석을 발견했습니다. 탄광장도 탐낼 만한 물건입니다.", "ticket_bonus": 0},
+            {"name": "다이아 원석", "weight": 75, "progress": 7, "description": "다이아 원석을 캐냈습니다! 오늘 작업은 전설로 남을 겁니다.", "ticket_bonus": 0},
+            {"name": "꽝", "weight": 600, "progress": 0, "description": "깊숙이 들어갔지만 광맥을 놓쳤습니다. 체력만 빠졌습니다.", "ticket_bonus": 0},
+            {"name": "붕락", "weight": 548, "progress": 0, "description": "탄광이 무너져 작업을 중단했습니다. 겨우 몸만 빠져나왔습니다.", "ticket_bonus": 0},
+            {"name": "노동가챠권 발견", "weight": 2, "progress": 1, "description": "심층부 틈새에서 노동가챠권을 찾아냈습니다. 위험을 감수한 보상이 따릅니다.", "ticket_bonus": 1},
         ],
     },
 }
@@ -7015,9 +7015,7 @@ def build_voice_log_embed(guild: discord.Guild, member: discord.Member, since: d
     lines = []
     top_channel_id, top_channel_item = sorted_rows[0]
     top_channel = guild.get_channel(int(top_channel_id))
-    top_channel_name = top_channel.mention if top_channel else f"알 수 없는 채널 ({top_channel_id})"
-    total_sessions = sum(item["session_count"] for _, item in sorted_rows)
-    active_channels = []
+    top_channel_name = top_channel.name if top_channel else f"알 수 없는 채널 ({top_channel_id})"
     team_mix_count = get_team_mix_count_between(guild.id, member.id, since, until)
     companion_rows = []
 
@@ -7049,9 +7047,7 @@ def build_voice_log_embed(guild: discord.Guild, member: discord.Member, since: d
     for idx, (channel_id, item) in enumerate(sorted_rows[:10], start=1):
         percentage = (item["total_seconds"] / total_seconds) * 100
         channel = guild.get_channel(int(channel_id))
-        channel_name = channel.mention if channel else f"알 수 없는 채널 ({channel_id})"
-        if item["last_ended_at"] == "현재 접속 중":
-            active_channels.append(channel_name)
+        channel_name = channel.name if channel else f"알 수 없는 채널 ({channel_id})"
         lines.append(
             f"**{idx}. {channel_name}**\n"
             f"체류 시간: `{format_duration_korean(item['total_seconds'])}`\n"
@@ -7072,15 +7068,12 @@ def build_voice_log_embed(guild: discord.Guild, member: discord.Member, since: d
         name="한눈에 보기",
         value=(
             f"총 체류 시간: `{format_duration_korean(total_seconds)}`\n"
-            f"입장 기록: `{total_sessions}회`\n"
-            f"체류 채널 수: `{len(sorted_rows)}개`\n"
-            f"팀섞기 참여: `{team_mix_count}회`\n"
-            f"현재 접속: `{', '.join(active_channels) if active_channels else '없음'}`"
+            f"팀섞기 참여: `{team_mix_count}회`"
         ),
         inline=False,
     )
     embed.add_field(
-        name="같이 있던 인원 TOP 3",
+        name="같이 있던 인원 TOP3",
         value=join_discord_field_lines(companion_lines) if companion_lines else "같은 음성채널에 함께 있었던 기록이 없습니다.",
         inline=False,
     )
@@ -8791,10 +8784,13 @@ async def on_voice_state_update(member, before, after):
 async def on_message(message: discord.Message):
     is_self_message = bot.user is not None and message.author.id == bot.user.id
 
-    if message.guild is not None and not is_self_message:
+    if message.guild is not None:
         sticky = get_sticky_message(message.guild.id, message.channel.id)
         if sticky:
             if sticky.get("message_id") and message.id == sticky["message_id"]:
+                await bot.process_commands(message)
+                return
+            if is_self_message and message.content == sticky["content"]:
                 await bot.process_commands(message)
                 return
             try:
