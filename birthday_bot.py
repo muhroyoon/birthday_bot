@@ -2370,7 +2370,7 @@ async def resolve_playlist_audio_url(url: str):
         "quiet": True,
         "noplaylist": True,
         "default_search": "auto",
-        "js_runtimes": {"node": {}},
+        "js_runtimes": {"node": {"path": None}},
     }
 
     def extract():
@@ -2418,23 +2418,17 @@ async def start_next_playlist_track(guild: discord.Guild):
         return
 
     try:
-        header_text = "".join(
-            f"{key}: {str(value).replace(chr(34), '')}\r\n"
-            for key, value in audio_info.get("http_headers", {}).items()
-        )
-        before_options = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
-        if header_text:
-            before_options += f' -headers "{header_text}"'
-
         ffmpeg_options = {
-            "before_options": before_options,
-            "options": "-vn",
+            "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+            "options": "-vn -loglevel warning",
         }
+        ffmpeg_path = get_ffmpeg_executable_path()
         source = discord.FFmpegPCMAudio(
             audio_info["stream_url"],
-            executable=get_ffmpeg_executable_path(),
+            executable=ffmpeg_path,
             **ffmpeg_options,
         )
+        print(f"플레이리스트 ffmpeg 경로: {ffmpeg_path}")
 
         def after_play(error):
             if error:
@@ -2444,8 +2438,9 @@ async def start_next_playlist_track(guild: discord.Guild):
         voice_client.play(source, after=after_play)
     except Exception as e:
         text_channel = guild.get_channel(playlist_text_channels.get(guild.id, 0))
+        error_text = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
         if text_channel:
-            await text_channel.send(f"`{track['title']}` 재생 시작 중 오류가 발생했습니다: {e}")
+            await text_channel.send(f"`{track['title']}` 재생 시작 중 오류가 발생했습니다: {error_text}")
         await start_next_playlist_track(guild)
         return
 
