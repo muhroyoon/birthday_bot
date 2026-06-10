@@ -2448,6 +2448,21 @@ async def start_next_playlist_track(guild: discord.Guild):
         )
 
 
+async def disconnect_playlist_if_alone(guild: discord.Guild):
+    voice_client = guild.voice_client
+    if voice_client is None or not voice_client.is_connected() or voice_client.channel is None:
+        return
+
+    human_members = [member for member in voice_client.channel.members if not member.bot]
+    if human_members:
+        return
+
+    playlist_queues.pop(guild.id, None)
+    playlist_now_playing.pop(guild.id, None)
+    playlist_text_channels.pop(guild.id, None)
+    await voice_client.disconnect(force=True)
+
+
 def get_active_saving(guild_id: int, user_id: int):
     cursor.execute(
         """
@@ -9100,6 +9115,9 @@ async def on_member_remove(member: discord.Member):
 
 @bot.event
 async def on_voice_state_update(member, before, after):
+    if member.bot:
+        return
+
     guild_id = member.guild.id
     current_is_spectator = is_spectator_member(member, guild_id)
     active_session = get_active_voice_session(guild_id, member.id)
@@ -9159,6 +9177,8 @@ async def on_voice_state_update(member, before, after):
             continue
 
         await view.update_embed()
+
+    await disconnect_playlist_if_alone(member.guild)
 
 
 @bot.event
