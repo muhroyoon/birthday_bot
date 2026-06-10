@@ -2356,6 +2356,7 @@ async def resolve_playlist_audio_url(url: str):
         "quiet": True,
         "noplaylist": True,
         "default_search": "auto",
+        "js_runtimes": ["node"],
     }
 
     def extract():
