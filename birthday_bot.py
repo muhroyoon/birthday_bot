@@ -7900,10 +7900,17 @@ async def playlist_play(interaction: discord.Interaction, track_id: int | None =
     try:
         voice_client = interaction.guild.voice_client
         if voice_client is None:
-            voice_client = await voice_channel.connect()
+            voice_client = await voice_channel.connect(timeout=10, reconnect=False)
         elif voice_client.channel != voice_channel:
             await voice_client.move_to(voice_channel)
     except Exception as e:
+        if getattr(e, "code", None) == 4017:
+            await interaction.followup.send(
+                "이 음성채널은 E2EE/DAVE 보안 음성 연결이 필요해서 봇이 접속하지 못했습니다.\n"
+                "일반 음성채널에서 다시 시도하거나, 해당 채널의 E2EE/DAVE 관련 설정을 꺼주세요.",
+                ephemeral=True,
+            )
+            return
         await interaction.followup.send(f"음성채널에 연결하지 못했습니다: {e}", ephemeral=True)
         return
 
