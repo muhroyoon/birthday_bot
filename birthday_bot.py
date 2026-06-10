@@ -2,6 +2,7 @@ import os
 import math
 import random
 import sqlite3
+import asyncio
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -200,6 +201,9 @@ intents.voice_states = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 active_recruits = {}
+playlist_queues: dict[int, list[dict]] = {}
+playlist_now_playing: dict[int, dict] = {}
+playlist_text_channels: dict[int, int] = {}
 
 # ============================================================
 # 데이터베이스 초기화
@@ -602,6 +606,19 @@ cursor.execute(
         started_at TEXT NOT NULL,
         ended_at TEXT NOT NULL,
         duration_seconds INTEGER NOT NULL
+    )
+    """
+)
+
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS playlist_tracks(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL,
+        owner_user_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        url TEXT NOT NULL,
+        created_at TEXT NOT NULL
     )
     """
 )
@@ -2259,6 +2276,154 @@ def calculate_voice_overlap_seconds(intervals_a: list[dict], intervals_b: list[d
             overlap_by_channel[channel_id] = overlap_seconds
 
     return overlap_by_channel
+
+
+def add_playlist_track(guild_id: int, owner_user_id: int, title: str, url: str):
+    cursor.execute(
+        """
+        INSERT INTO playlist_tracks(guild_id, owner_user_id, title, url, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (str(guild_id), str(owner_user_id), title.strip(), url.strip(), dt_to_db(get_kst_now())),
+    )
+    conn.commit()
+    return cursor.lastrowid
+
+
+def get_playlist_tracks(guild_id: int, limit: int = 30):
+    cursor.execute(
+        """
+        SELECT id, owner_user_id, title, url, created_at
+        FROM playlist_tracks
+        WHERE guild_id=?
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (str(guild_id), limit),
+    )
+    return cursor.fetchall()
+
+
+def get_playlist_track(guild_id: int, track_id: int):
+    cursor.execute(
+        """
+        SELECT id, owner_user_id, title, url, created_at
+        FROM playlist_tracks
+        WHERE guild_id=? AND id=?
+        """,
+        (str(guild_id), track_id),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "id": row[0],
+        "owner_user_id": int(row[1]),
+        "title": row[2],
+        "url": row[3],
+        "created_at": row[4],
+    }
+
+
+def delete_playlist_track(guild_id: int, track_id: int):
+    cursor.execute(
+        "DELETE FROM playlist_tracks WHERE guild_id=? AND id=?",
+        (str(guild_id), track_id),
+    )
+    conn.commit()
+    return cursor.rowcount > 0
+
+
+def build_playlist_track_from_row(row) -> dict:
+    track_id, owner_user_id, title, url, created_at = row
+    return {
+        "id": track_id,
+        "owner_user_id": int(owner_user_id),
+        "title": title,
+        "url": url,
+        "created_at": created_at,
+    }
+
+
+async def resolve_playlist_audio_url(url: str):
+    try:
+        import yt_dlp
+    except ImportError:
+        raise RuntimeError("음악 재생을 위해 서버에 `yt-dlp` 설치가 필요합니다.")
+
+    options = {
+        "format": "bestaudio/best",
+        "quiet": True,
+        "noplaylist": True,
+        "default_search": "auto",
+    }
+
+    def extract():
+        with yt_dlp.YoutubeDL(options) as ydl:
+            info = ydl.extract_info(url, download=False)
+            if "entries" in info:
+                info = next((entry for entry in info["entries"] if entry), None)
+            if not info:
+                raise RuntimeError("재생 정보를 가져오지 못했습니다.")
+            return {
+                "title": info.get("title") or "제목 없음",
+                "stream_url": info.get("url"),
+                "webpage_url": info.get("webpage_url") or url,
+            }
+
+    return await asyncio.to_thread(extract)
+
+
+async def start_next_playlist_track(guild: discord.Guild):
+    queue = playlist_queues.get(guild.id, [])
+    voice_client = guild.voice_client
+
+    if voice_client is None:
+        playlist_now_playing.pop(guild.id, None)
+        return
+
+    if not queue:
+        playlist_now_playing.pop(guild.id, None)
+        return
+
+    track = queue.pop(0)
+    playlist_now_playing[guild.id] = track
+
+    try:
+        audio_info = await resolve_playlist_audio_url(track["url"])
+    except Exception as e:
+        text_channel = guild.get_channel(playlist_text_channels.get(guild.id, 0))
+        if text_channel:
+            await text_channel.send(f"`{track['title']}` 재생 준비 중 오류가 발생했습니다: {e}")
+        await start_next_playlist_track(guild)
+        return
+
+    try:
+        ffmpeg_options = {
+            "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+            "options": "-vn",
+        }
+        source = discord.FFmpegPCMAudio(audio_info["stream_url"], **ffmpeg_options)
+
+        def after_play(error):
+            if error:
+                print(f"플레이리스트 재생 오류: {error}")
+            bot.loop.create_task(start_next_playlist_track(guild))
+
+        voice_client.play(source, after=after_play)
+    except Exception as e:
+        text_channel = guild.get_channel(playlist_text_channels.get(guild.id, 0))
+        if text_channel:
+            await text_channel.send(f"`{track['title']}` 재생 시작 중 오류가 발생했습니다: {e}")
+        await start_next_playlist_track(guild)
+        return
+
+    text_channel = guild.get_channel(playlist_text_channels.get(guild.id, 0))
+    if text_channel:
+        await text_channel.send(
+            f"🎶 지금 재생 중: **{track['title']}**\n"
+            f"등록 링크: {track['url']}"
+        )
 
 
 def get_active_saving(guild_id: int, user_id: int):
@@ -7629,6 +7794,168 @@ async def game_history_command(interaction: discord.Interaction):
     )
 
 
+@bot.tree.command(name="플리등록", description="서버 플레이리스트에 음악 링크를 등록합니다.")
+@app_commands.rename(title="제목", url="링크")
+@app_commands.describe(title="목록에 표시할 음악 제목", url="유튜브 등 재생할 음악 링크")
+async def playlist_add(interaction: discord.Interaction, title: str, url: str):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    title = title.strip()
+    url = url.strip()
+    if not title or not url:
+        await interaction.response.send_message("제목과 링크를 모두 입력해주세요.", ephemeral=True)
+        return
+
+    track_id = add_playlist_track(interaction.guild.id, interaction.user.id, title, url)
+    await interaction.response.send_message(
+        f"🎵 플레이리스트에 등록했습니다.\n"
+        f"곡번호: `{track_id}`\n"
+        f"제목: **{title}**"
+    )
+
+
+@bot.tree.command(name="플리목록", description="서버 플레이리스트 목록을 확인합니다.")
+async def playlist_list(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    rows = get_playlist_tracks(interaction.guild.id, 30)
+    if not rows:
+        await interaction.response.send_message("등록된 플레이리스트가 없습니다.", ephemeral=True)
+        return
+
+    lines = []
+    for track_id, owner_user_id, title, url, created_at in rows:
+        owner = interaction.guild.get_member(int(owner_user_id))
+        owner_name = owner.display_name if owner else f"알 수 없는 유저 ({owner_user_id})"
+        lines.append(
+            f"`{track_id}` **{title}**\n"
+            f"등록자: {owner_name}\n"
+            f"링크: {url}"
+        )
+
+    embed = discord.Embed(
+        title="🎵 서버 플레이리스트",
+        description="`/플리재생 곡번호`로 특정 곡을 재생하거나, 곡번호 없이 전체 목록을 재생할 수 있습니다.",
+        color=0x1DB954,
+    )
+    embed.add_field(name="최근 등록곡", value=join_discord_field_lines(lines), inline=False)
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="플리삭제", description="서버 플레이리스트에서 곡을 삭제합니다.")
+@app_commands.rename(track_id="곡번호")
+@app_commands.describe(track_id="삭제할 곡번호")
+async def playlist_delete(interaction: discord.Interaction, track_id: int):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    track = get_playlist_track(interaction.guild.id, track_id)
+    if track is None:
+        await interaction.response.send_message("해당 곡번호의 음악을 찾을 수 없습니다.", ephemeral=True)
+        return
+
+    can_delete = track["owner_user_id"] == interaction.user.id
+    if isinstance(interaction.user, discord.Member):
+        can_delete = can_delete or interaction.user.guild_permissions.administrator
+
+    if not can_delete:
+        await interaction.response.send_message("등록자 또는 관리자만 삭제할 수 있습니다.", ephemeral=True)
+        return
+
+    delete_playlist_track(interaction.guild.id, track_id)
+    await interaction.response.send_message(f"🗑 플레이리스트에서 **{track['title']}** 곡을 삭제했습니다.")
+
+
+@bot.tree.command(name="플리재생", description="서버 플레이리스트의 음악을 음성채널에서 재생합니다.")
+@app_commands.rename(track_id="곡번호")
+@app_commands.describe(track_id="비워두면 최근 플레이리스트 전체를 재생합니다.")
+async def playlist_play(interaction: discord.Interaction, track_id: int | None = None):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    if not interaction.user.voice or not interaction.user.voice.channel:
+        await interaction.response.send_message("먼저 재생할 음성채널에 들어가 주세요.", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+
+    if track_id is None:
+        rows = get_playlist_tracks(interaction.guild.id, 30)
+        tracks = [build_playlist_track_from_row(row) for row in reversed(rows)]
+    else:
+        track = get_playlist_track(interaction.guild.id, track_id)
+        tracks = [track] if track else []
+
+    if not tracks:
+        await interaction.followup.send("재생할 플레이리스트 곡이 없습니다.", ephemeral=True)
+        return
+
+    voice_channel = interaction.user.voice.channel
+    try:
+        voice_client = interaction.guild.voice_client
+        if voice_client is None:
+            voice_client = await voice_channel.connect()
+        elif voice_client.channel != voice_channel:
+            await voice_client.move_to(voice_channel)
+    except Exception as e:
+        await interaction.followup.send(f"음성채널에 연결하지 못했습니다: {e}", ephemeral=True)
+        return
+
+    playlist_text_channels[interaction.guild.id] = interaction.channel.id
+    queue = playlist_queues.setdefault(interaction.guild.id, [])
+    queue.extend(tracks)
+
+    if voice_client.is_playing() or voice_client.is_paused():
+        await interaction.followup.send(f"🎵 `{len(tracks)}곡`을 재생 대기열에 추가했습니다.")
+        return
+
+    await interaction.followup.send(f"🎵 `{len(tracks)}곡` 재생을 시작합니다.")
+    await start_next_playlist_track(interaction.guild)
+
+
+@bot.tree.command(name="플리스킵", description="현재 재생 중인 플레이리스트 곡을 넘깁니다.")
+async def playlist_skip(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    voice_client = interaction.guild.voice_client
+    if voice_client is None or not voice_client.is_connected():
+        await interaction.response.send_message("현재 재생 중인 플레이리스트가 없습니다.", ephemeral=True)
+        return
+
+    if voice_client.is_playing() or voice_client.is_paused():
+        voice_client.stop()
+        await interaction.response.send_message("⏭ 현재 곡을 넘겼습니다.")
+        return
+
+    await interaction.response.send_message("넘길 곡이 없습니다.", ephemeral=True)
+
+
+@bot.tree.command(name="플리정지", description="플레이리스트 재생을 정지하고 음성채널에서 나갑니다.")
+async def playlist_stop(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    playlist_queues.pop(interaction.guild.id, None)
+    playlist_now_playing.pop(interaction.guild.id, None)
+
+    voice_client = interaction.guild.voice_client
+    if voice_client is not None and voice_client.is_connected():
+        await voice_client.disconnect(force=True)
+        await interaction.response.send_message("⏹ 플레이리스트 재생을 정지했습니다.")
+        return
+
+    await interaction.response.send_message("현재 연결된 음성채널이 없습니다.", ephemeral=True)
+
+
 @bot.tree.command(name="몰빵참여", description="입력한 금액으로 오늘의 몰빵게임에 참여합니다.")
 async def join_all_in_game(interaction: discord.Interaction, amount: int):
     if not await ensure_not_blacklisted_for_gambling(interaction):
@@ -7640,14 +7967,16 @@ async def join_all_in_game(interaction: discord.Interaction, amount: int):
         await interaction.response.send_message(f"최소 참가 금액은 `{format_money(MIN_BET)}`입니다.", ephemeral=True)
         return
 
+    await interaction.response.defer(thinking=True)
+
     today = get_today_kst_date_str()
 
     if has_all_in_entry(today, interaction.guild.id, interaction.user.id):
-        await interaction.response.send_message("오늘은 이미 몰빵게임에 참여했습니다.", ephemeral=True)
+        await interaction.followup.send("오늘은 이미 몰빵게임에 참여했습니다.", ephemeral=True)
         return
 
     if not can_afford(interaction.user.id, amount):
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"몰빵게임 참가비 `{format_money(amount)}`이 부족합니다.",
             ephemeral=True,
         )
@@ -7659,7 +7988,7 @@ async def join_all_in_game(interaction: discord.Interaction, amount: int):
     entries = get_all_in_entries(today, interaction.guild.id)
     pool_amount = sum(amount for _, amount in entries)
 
-    await interaction.response.send_message(
+    await interaction.followup.send(
         f"{interaction.user.mention}님이 오늘의 몰빵게임에 참여했습니다.\n"
         f"참가비 `{format_money(amount)}`\n"
         f"현재 참가 인원: `{len(entries)}명`\n"
@@ -8522,7 +8851,8 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="👥 구인 / 팀 / 기타",
         value=(
             "`/구인`, `/종겜구인`, `/팀`, `/팀섞기로그`, `/음성로그`, `/끼리끼리조회`, `/시간설정패널`\n"
-            "`/등업패널`, `/규칙버튼`, `/닉네임패널생성`"
+            "`/등업패널`, `/규칙버튼`, `/닉네임패널생성`\n"
+            "`/플리등록`, `/플리목록`, `/플리삭제`, `/플리재생`, `/플리스킵`, `/플리정지`"
         ),
         inline=False,
     )
