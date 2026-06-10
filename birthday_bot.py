@@ -3,6 +3,7 @@ import math
 import random
 import sqlite3
 import asyncio
+import shutil
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -2345,6 +2346,19 @@ def build_playlist_track_from_row(row) -> dict:
     }
 
 
+def get_ffmpeg_executable_path() -> str:
+    system_ffmpeg = shutil.which("ffmpeg")
+    if system_ffmpeg:
+        return system_ffmpeg
+
+    try:
+        import imageio_ffmpeg
+    except ImportError:
+        raise RuntimeError("ffmpeg 실행파일을 찾지 못했습니다. `imageio-ffmpeg` 설치가 필요합니다.")
+
+    return imageio_ffmpeg.get_ffmpeg_exe()
+
+
 async def resolve_playlist_audio_url(url: str):
     try:
         import yt_dlp
@@ -2416,7 +2430,11 @@ async def start_next_playlist_track(guild: discord.Guild):
             "before_options": before_options,
             "options": "-vn",
         }
-        source = discord.FFmpegPCMAudio(audio_info["stream_url"], **ffmpeg_options)
+        source = discord.FFmpegPCMAudio(
+            audio_info["stream_url"],
+            executable=get_ffmpeg_executable_path(),
+            **ffmpeg_options,
+        )
 
         def after_play(error):
             if error:
