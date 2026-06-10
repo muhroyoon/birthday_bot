@@ -2351,12 +2351,9 @@ def get_ffmpeg_executable_path() -> str:
     if system_ffmpeg:
         return system_ffmpeg
 
-    try:
-        import imageio_ffmpeg
-    except ImportError:
-        raise RuntimeError("ffmpeg 실행파일을 찾지 못했습니다. `imageio-ffmpeg` 설치가 필요합니다.")
-
-    return imageio_ffmpeg.get_ffmpeg_exe()
+    raise RuntimeError(
+        "시스템 ffmpeg를 찾지 못했습니다. Railway 배포 루트에 `nixpacks.toml`이 적용됐는지 확인해주세요."
+    )
 
 
 async def resolve_playlist_audio_url(url: str):
@@ -2370,7 +2367,6 @@ async def resolve_playlist_audio_url(url: str):
         "quiet": True,
         "noplaylist": True,
         "default_search": "auto",
-        "js_runtimes": {"node": {"path": None}},
     }
 
     def extract():
