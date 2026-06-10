@@ -2356,7 +2356,7 @@ async def resolve_playlist_audio_url(url: str):
         "quiet": True,
         "noplaylist": True,
         "default_search": "auto",
-        "js_runtimes": ["node"],
+        "js_runtimes": {"node": {}},
     }
 
     def extract():
@@ -2366,10 +2366,14 @@ async def resolve_playlist_audio_url(url: str):
                 info = next((entry for entry in info["entries"] if entry), None)
             if not info:
                 raise RuntimeError("재생 정보를 가져오지 못했습니다.")
+            stream_url = info.get("url")
+            if not stream_url:
+                raise RuntimeError("재생 가능한 오디오 스트림을 찾지 못했습니다.")
             return {
                 "title": info.get("title") or "제목 없음",
-                "stream_url": info.get("url"),
+                "stream_url": stream_url,
                 "webpage_url": info.get("webpage_url") or url,
+                "http_headers": info.get("http_headers") or {},
             }
 
     return await asyncio.to_thread(extract)
@@ -2400,8 +2404,16 @@ async def start_next_playlist_track(guild: discord.Guild):
         return
 
     try:
+        header_text = "".join(
+            f"{key}: {str(value).replace(chr(34), '')}\r\n"
+            for key, value in audio_info.get("http_headers", {}).items()
+        )
+        before_options = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+        if header_text:
+            before_options += f' -headers "{header_text}"'
+
         ffmpeg_options = {
-            "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+            "before_options": before_options,
             "options": "-vn",
         }
         source = discord.FFmpegPCMAudio(audio_info["stream_url"], **ffmpeg_options)
