@@ -2463,14 +2463,6 @@ async def start_next_playlist_track(guild: discord.Guild):
         await start_next_playlist_track(guild)
         return
 
-    text_channel = guild.get_channel(playlist_text_channels.get(guild.id, 0))
-    if text_channel:
-        await text_channel.send(
-            f"🎶 지금 재생 중: **{track['title']}**\n"
-            f"등록 링크: {track['url']}"
-        )
-
-
 async def disconnect_playlist_if_alone(guild: discord.Guild):
     voice_client = guild.voice_client
     if voice_client is None or not voice_client.is_connected() or voice_client.channel is None:
@@ -2540,8 +2532,8 @@ async def start_playlist_player(
     if voice_client.is_playing() or voice_client.is_paused():
         voice_client.stop()
 
-    await interaction.followup.send(f"🎵 `{len(tracks)}곡` 재생을 시작합니다.")
     await start_next_playlist_track(interaction.guild)
+    await interaction.followup.send("재생을 시작했습니다.", ephemeral=True)
 
 
 class PlaylistPanelView(discord.ui.View):
