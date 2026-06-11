@@ -208,6 +208,7 @@ playlist_text_channels: dict[int, int] = {}
 playlist_previous_tracks: dict[int, dict] = {}
 playlist_library_cache: dict[int, list[dict]] = {}
 playlist_modes: dict[int, str] = {}
+playlist_panel_messages: dict[int, tuple[int, int]] = {}
 
 # ============================================================
 # 데이터베이스 초기화
@@ -2397,6 +2398,7 @@ async def start_next_playlist_track(guild: discord.Guild):
 
     if voice_client is None:
         playlist_now_playing.pop(guild.id, None)
+        await refresh_playlist_panel(guild)
         return
 
     mode = playlist_modes.get(guild.id, "order")
@@ -2408,6 +2410,7 @@ async def start_next_playlist_track(guild: discord.Guild):
 
     if not queue:
         playlist_now_playing.pop(guild.id, None)
+        await refresh_playlist_panel(guild)
         return
 
     current_track = playlist_now_playing.get(guild.id)
@@ -2418,6 +2421,7 @@ async def start_next_playlist_track(guild: discord.Guild):
         source_tracks = queue or library
         if not source_tracks:
             playlist_now_playing.pop(guild.id, None)
+            await refresh_playlist_panel(guild)
             return
         track = random.choice(source_tracks)
         if queue and track in queue:
@@ -2426,6 +2430,7 @@ async def start_next_playlist_track(guild: discord.Guild):
         track = queue.pop(0)
 
     playlist_now_playing[guild.id] = track
+    await refresh_playlist_panel(guild)
 
     try:
         audio_info = await resolve_playlist_audio_url(track["url"])
@@ -2463,6 +2468,24 @@ async def start_next_playlist_track(guild: discord.Guild):
         await start_next_playlist_track(guild)
         return
 
+
+async def refresh_playlist_panel(guild: discord.Guild):
+    panel_info = playlist_panel_messages.get(guild.id)
+    if not panel_info:
+        return
+
+    channel_id, message_id = panel_info
+    channel = guild.get_channel(channel_id)
+    if channel is None:
+        return
+
+    try:
+        message = await channel.fetch_message(message_id)
+        await message.edit(embed=build_playlist_panel_embed(guild))
+    except Exception:
+        pass
+
+
 async def disconnect_playlist_if_alone(guild: discord.Guild):
     voice_client = guild.voice_client
     if voice_client is None or not voice_client.is_connected() or voice_client.channel is None:
@@ -2478,7 +2501,39 @@ async def disconnect_playlist_if_alone(guild: discord.Guild):
     playlist_previous_tracks.pop(guild.id, None)
     playlist_library_cache.pop(guild.id, None)
     playlist_modes.pop(guild.id, None)
+    await disable_playlist_panel(guild)
     await voice_client.disconnect(force=True)
+
+
+async def disable_playlist_panel(guild: discord.Guild):
+    panel_info = playlist_panel_messages.pop(guild.id, None)
+    if not panel_info:
+        return
+
+    channel_id, message_id = panel_info
+    channel = guild.get_channel(channel_id)
+    if channel is None:
+        return
+
+    try:
+        message = await channel.fetch_message(message_id)
+    except Exception:
+        return
+
+    view = discord.ui.View()
+    for label, style in [
+        ("이전 곡", discord.ButtonStyle.secondary),
+        ("정지", discord.ButtonStyle.danger),
+        ("다음 곡", discord.ButtonStyle.primary),
+        ("랜덤재생", discord.ButtonStyle.success),
+        ("순서재생", discord.ButtonStyle.success),
+    ]:
+        view.add_item(discord.ui.Button(label=label, style=style, disabled=True))
+
+    try:
+        await message.edit(embed=build_playlist_panel_embed(guild), view=view)
+    except Exception:
+        pass
 
 
 async def start_playlist_player(
@@ -2500,7 +2555,7 @@ async def start_playlist_player(
         await interaction.response.send_message("먼저 재생할 음성채널에 들어가 주세요.", ephemeral=True)
         return
 
-    await interaction.response.defer(thinking=True)
+    await interaction.response.defer()
 
     voice_channel = interaction.user.voice.channel
     try:
@@ -2533,7 +2588,6 @@ async def start_playlist_player(
         voice_client.stop()
 
     await start_next_playlist_track(interaction.guild)
-    await interaction.followup.send("재생을 시작했습니다.", ephemeral=True)
 
 
 class PlaylistPanelView(discord.ui.View):
@@ -2572,7 +2626,7 @@ class PlaylistPanelView(discord.ui.View):
             voice_client.stop()
         else:
             await start_next_playlist_track(interaction.guild)
-        await interaction.response.send_message("⏮ 이전 곡을 재생합니다.", ephemeral=True)
+        await interaction.response.defer()
         await self.refresh_panel(interaction)
 
     @discord.ui.button(label="정지", style=discord.ButtonStyle.danger)
@@ -2590,9 +2644,9 @@ class PlaylistPanelView(discord.ui.View):
 
         voice_client = interaction.guild.voice_client
         if voice_client is not None and voice_client.is_connected():
+            await interaction.response.defer()
+            await disable_playlist_panel(interaction.guild)
             await voice_client.disconnect(force=True)
-            await interaction.response.send_message("⏹ 플레이리스트 재생을 정지했습니다.", ephemeral=True)
-            await self.refresh_panel(interaction)
             return
         await interaction.response.send_message("현재 연결된 음성채널이 없습니다.", ephemeral=True)
 
@@ -2604,11 +2658,11 @@ class PlaylistPanelView(discord.ui.View):
             return
         if voice_client.is_playing() or voice_client.is_paused():
             voice_client.stop()
-            await interaction.response.send_message("⏭ 다음 곡으로 넘깁니다.", ephemeral=True)
+            await interaction.response.defer()
             await self.refresh_panel(interaction)
             return
         await start_next_playlist_track(interaction.guild)
-        await interaction.response.send_message("⏭ 다음 곡을 재생합니다.", ephemeral=True)
+        await interaction.response.defer()
         await self.refresh_panel(interaction)
 
     @discord.ui.button(label="랜덤재생", style=discord.ButtonStyle.success)
@@ -8124,10 +8178,13 @@ async def playlist_play(interaction: discord.Interaction):
     playlist_library_cache[interaction.guild.id] = list(tracks)
     playlist_modes.setdefault(interaction.guild.id, "order")
 
+    await disable_playlist_panel(interaction.guild)
     await interaction.response.send_message(
         embed=build_playlist_panel_embed(interaction.guild),
         view=PlaylistPanelView(interaction.user.id, tracks),
     )
+    panel_message = await interaction.original_response()
+    playlist_panel_messages[interaction.guild.id] = (interaction.channel.id, panel_message.id)
 
 
 @bot.tree.command(name="플리스킵", description="현재 재생 중인 플레이리스트 곡을 넘깁니다.")
@@ -8161,6 +8218,7 @@ async def playlist_stop(interaction: discord.Interaction):
     playlist_library_cache.pop(interaction.guild.id, None)
     playlist_modes.pop(interaction.guild.id, None)
     playlist_text_channels.pop(interaction.guild.id, None)
+    await disable_playlist_panel(interaction.guild)
 
     voice_client = interaction.guild.voice_client
     if voice_client is not None and voice_client.is_connected():
