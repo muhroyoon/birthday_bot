@@ -205,6 +205,9 @@ active_recruits = {}
 playlist_queues: dict[int, list[dict]] = {}
 playlist_now_playing: dict[int, dict] = {}
 playlist_text_channels: dict[int, int] = {}
+playlist_previous_tracks: dict[int, dict] = {}
+playlist_library_cache: dict[int, list[dict]] = {}
+playlist_modes: dict[int, str] = {}
 
 # ============================================================
 # 데이터베이스 초기화
@@ -2390,18 +2393,38 @@ async def resolve_playlist_audio_url(url: str):
 
 
 async def start_next_playlist_track(guild: discord.Guild):
-    queue = playlist_queues.get(guild.id, [])
     voice_client = guild.voice_client
 
     if voice_client is None:
         playlist_now_playing.pop(guild.id, None)
         return
 
+    mode = playlist_modes.get(guild.id, "order")
+    queue = playlist_queues.setdefault(guild.id, [])
+    library = playlist_library_cache.get(guild.id, [])
+
+    if not queue and mode == "order" and library:
+        queue.extend(library)
+
     if not queue:
         playlist_now_playing.pop(guild.id, None)
         return
 
-    track = queue.pop(0)
+    current_track = playlist_now_playing.get(guild.id)
+    if current_track:
+        playlist_previous_tracks[guild.id] = current_track
+
+    if mode == "random":
+        source_tracks = queue or library
+        if not source_tracks:
+            playlist_now_playing.pop(guild.id, None)
+            return
+        track = random.choice(source_tracks)
+        if queue and track in queue:
+            queue.remove(track)
+    else:
+        track = queue.pop(0)
+
     playlist_now_playing[guild.id] = track
 
     try:
@@ -2460,7 +2483,192 @@ async def disconnect_playlist_if_alone(guild: discord.Guild):
     playlist_queues.pop(guild.id, None)
     playlist_now_playing.pop(guild.id, None)
     playlist_text_channels.pop(guild.id, None)
+    playlist_previous_tracks.pop(guild.id, None)
+    playlist_library_cache.pop(guild.id, None)
+    playlist_modes.pop(guild.id, None)
     await voice_client.disconnect(force=True)
+
+
+async def start_playlist_player(
+    interaction: discord.Interaction,
+    tracks: list[dict],
+    *,
+    mode: str = "order",
+    start_immediately: bool = True,
+):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    if not tracks:
+        await interaction.response.send_message("재생할 플레이리스트 곡이 없습니다.", ephemeral=True)
+        return
+
+    if not interaction.user.voice or not interaction.user.voice.channel:
+        await interaction.response.send_message("먼저 재생할 음성채널에 들어가 주세요.", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+
+    voice_channel = interaction.user.voice.channel
+    try:
+        voice_client = interaction.guild.voice_client
+        if voice_client is None:
+            voice_client = await voice_channel.connect(timeout=10, reconnect=False)
+        elif voice_client.channel != voice_channel:
+            await voice_client.move_to(voice_channel)
+    except Exception as e:
+        if getattr(e, "code", None) == 4017:
+            await interaction.followup.send(
+                "이 음성채널은 E2EE/DAVE 보안 음성 연결이 필요해서 봇이 접속하지 못했습니다.\n"
+                "일반 음성채널에서 다시 시도하거나, 해당 채널의 E2EE/DAVE 관련 설정을 꺼주세요.",
+                ephemeral=True,
+            )
+            return
+        await interaction.followup.send(f"음성채널에 연결하지 못했습니다: {e}", ephemeral=True)
+        return
+
+    playlist_text_channels[interaction.guild.id] = interaction.channel.id
+    playlist_library_cache[interaction.guild.id] = list(tracks)
+    playlist_modes[interaction.guild.id] = mode
+    playlist_queues[interaction.guild.id] = list(tracks)
+
+    if not start_immediately:
+        await interaction.followup.send("🎧 플레이리스트 패널을 열었습니다.")
+        return
+
+    if voice_client.is_playing() or voice_client.is_paused():
+        voice_client.stop()
+
+    await interaction.followup.send(f"🎵 `{len(tracks)}곡` 재생을 시작합니다.")
+    await start_next_playlist_track(interaction.guild)
+
+
+class PlaylistPanelView(discord.ui.View):
+    def __init__(self, requester_id: int, tracks: list[dict]):
+        super().__init__(timeout=180)
+        self.requester_id = requester_id
+        self.tracks = tracks
+
+    async def refresh_panel(self, interaction: discord.Interaction):
+        if interaction.message and interaction.guild:
+            try:
+                await interaction.message.edit(embed=build_playlist_panel_embed(interaction.guild), view=self)
+            except Exception:
+                pass
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("이 플레이리스트 패널은 명령어를 사용한 사람만 조작할 수 있습니다.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="이전 곡", style=discord.ButtonStyle.secondary)
+    async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild is None:
+            await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+            return
+
+        previous_track = playlist_previous_tracks.get(interaction.guild.id)
+        voice_client = interaction.guild.voice_client
+        if previous_track is None or voice_client is None or not voice_client.is_connected():
+            await interaction.response.send_message("이전 곡이 없습니다.", ephemeral=True)
+            return
+
+        playlist_queues.setdefault(interaction.guild.id, []).insert(0, previous_track)
+        if voice_client.is_playing() or voice_client.is_paused():
+            voice_client.stop()
+        else:
+            await start_next_playlist_track(interaction.guild)
+        await interaction.response.send_message("⏮ 이전 곡을 재생합니다.", ephemeral=True)
+        await self.refresh_panel(interaction)
+
+    @discord.ui.button(label="정지", style=discord.ButtonStyle.danger)
+    async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild is None:
+            await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+            return
+
+        playlist_queues.pop(interaction.guild.id, None)
+        playlist_now_playing.pop(interaction.guild.id, None)
+        playlist_previous_tracks.pop(interaction.guild.id, None)
+        playlist_library_cache.pop(interaction.guild.id, None)
+        playlist_modes.pop(interaction.guild.id, None)
+        playlist_text_channels.pop(interaction.guild.id, None)
+
+        voice_client = interaction.guild.voice_client
+        if voice_client is not None and voice_client.is_connected():
+            await voice_client.disconnect(force=True)
+            await interaction.response.send_message("⏹ 플레이리스트 재생을 정지했습니다.", ephemeral=True)
+            await self.refresh_panel(interaction)
+            return
+        await interaction.response.send_message("현재 연결된 음성채널이 없습니다.", ephemeral=True)
+
+    @discord.ui.button(label="다음 곡", style=discord.ButtonStyle.primary)
+    async def next_track(self, interaction: discord.Interaction, button: discord.ui.Button):
+        voice_client = interaction.guild.voice_client if interaction.guild else None
+        if voice_client is None or not voice_client.is_connected():
+            await interaction.response.send_message("현재 재생 중인 플레이리스트가 없습니다.", ephemeral=True)
+            return
+        if voice_client.is_playing() or voice_client.is_paused():
+            voice_client.stop()
+            await interaction.response.send_message("⏭ 다음 곡으로 넘깁니다.", ephemeral=True)
+            await self.refresh_panel(interaction)
+            return
+        await start_next_playlist_track(interaction.guild)
+        await interaction.response.send_message("⏭ 다음 곡을 재생합니다.", ephemeral=True)
+        await self.refresh_panel(interaction)
+
+    @discord.ui.button(label="랜덤재생", style=discord.ButtonStyle.success)
+    async def random_play(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild is None:
+            await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+            return
+
+        library = playlist_library_cache.get(interaction.guild.id) or self.tracks
+        await start_playlist_player(interaction, list(library), mode="random")
+        await self.refresh_panel(interaction)
+
+    @discord.ui.button(label="순서재생", style=discord.ButtonStyle.success)
+    async def order_play(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild is None:
+            await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+            return
+
+        library = playlist_library_cache.get(interaction.guild.id) or self.tracks
+        await start_playlist_player(interaction, list(library), mode="order")
+        await self.refresh_panel(interaction)
+
+
+def build_playlist_panel_embed(guild: discord.Guild):
+    embed = discord.Embed(
+        title="🎧 마리봇 플레이리스트",
+        description="현재 재생 중인 곡을 확인하고 재생 방식을 선택할 수 있습니다.",
+        color=0x1DB954,
+    )
+
+    now_playing = playlist_now_playing.get(guild.id)
+    if now_playing:
+        owner = guild.get_member(now_playing["owner_user_id"])
+        owner_name = owner.display_name if owner else f"알 수 없는 유저 ({now_playing['owner_user_id']})"
+        embed.add_field(
+            name="현재 재생 중",
+            value=(
+                f"**{now_playing['title']}**\n"
+                f"등록자: {owner_name}\n"
+                f"곡번호: `{now_playing['id']}`"
+            ),
+            inline=False,
+        )
+    else:
+        embed.add_field(name="현재 재생 중", value="재생 중인 곡이 없습니다.", inline=False)
+
+    mode = playlist_modes.get(guild.id, "order")
+    mode_text = "랜덤재생" if mode == "random" else "순서재생"
+    embed.add_field(name="재생 모드", value=f"`{mode_text}`", inline=True)
+    embed.add_field(name="대기열", value=f"`{len(playlist_queues.get(guild.id, []))}곡`", inline=True)
+    embed.set_footer(text="이전 곡 / 정지 / 다음 곡 / 랜덤재생 / 순서재생 버튼으로 조작합니다.")
+    return embed
 
 
 def get_active_saving(guild_id: int, user_id: int):
@@ -7876,7 +8084,7 @@ async def playlist_list(interaction: discord.Interaction):
 
     embed = discord.Embed(
         title="🎵 서버 플레이리스트",
-        description="`/플리재생 곡번호`로 특정 곡을 재생하거나, 곡번호 없이 전체 목록을 재생할 수 있습니다.",
+        description="`/플리재생`을 입력하면 플레이리스트 패널에서 음악을 선택해 재생할 수 있습니다.",
         color=0x1DB954,
     )
     embed.add_field(name="최근 등록곡", value=join_discord_field_lines(lines), inline=False)
@@ -7908,59 +8116,26 @@ async def playlist_delete(interaction: discord.Interaction, track_id: int):
     await interaction.response.send_message(f"🗑 플레이리스트에서 **{track['title']}** 곡을 삭제했습니다.")
 
 
-@bot.tree.command(name="플리재생", description="서버 플레이리스트의 음악을 음성채널에서 재생합니다.")
-@app_commands.rename(track_id="곡번호")
-@app_commands.describe(track_id="비워두면 최근 플레이리스트 전체를 재생합니다.")
-async def playlist_play(interaction: discord.Interaction, track_id: int | None = None):
+@bot.tree.command(name="플리재생", description="서버 플레이리스트 패널을 열어 음악을 재생합니다.")
+async def playlist_play(interaction: discord.Interaction):
     if interaction.guild is None:
         await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
         return
 
-    if not interaction.user.voice or not interaction.user.voice.channel:
-        await interaction.response.send_message("먼저 재생할 음성채널에 들어가 주세요.", ephemeral=True)
-        return
-
-    await interaction.response.defer(thinking=True)
-
-    if track_id is None:
-        rows = get_playlist_tracks(interaction.guild.id, 30)
-        tracks = [build_playlist_track_from_row(row) for row in reversed(rows)]
-    else:
-        track = get_playlist_track(interaction.guild.id, track_id)
-        tracks = [track] if track else []
+    rows = get_playlist_tracks(interaction.guild.id, 25)
+    tracks = [build_playlist_track_from_row(row) for row in rows]
 
     if not tracks:
-        await interaction.followup.send("재생할 플레이리스트 곡이 없습니다.", ephemeral=True)
+        await interaction.response.send_message("재생할 플레이리스트 곡이 없습니다.", ephemeral=True)
         return
 
-    voice_channel = interaction.user.voice.channel
-    try:
-        voice_client = interaction.guild.voice_client
-        if voice_client is None:
-            voice_client = await voice_channel.connect(timeout=10, reconnect=False)
-        elif voice_client.channel != voice_channel:
-            await voice_client.move_to(voice_channel)
-    except Exception as e:
-        if getattr(e, "code", None) == 4017:
-            await interaction.followup.send(
-                "이 음성채널은 E2EE/DAVE 보안 음성 연결이 필요해서 봇이 접속하지 못했습니다.\n"
-                "일반 음성채널에서 다시 시도하거나, 해당 채널의 E2EE/DAVE 관련 설정을 꺼주세요.",
-                ephemeral=True,
-            )
-            return
-        await interaction.followup.send(f"음성채널에 연결하지 못했습니다: {e}", ephemeral=True)
-        return
+    playlist_library_cache[interaction.guild.id] = list(tracks)
+    playlist_modes.setdefault(interaction.guild.id, "order")
 
-    playlist_text_channels[interaction.guild.id] = interaction.channel.id
-    queue = playlist_queues.setdefault(interaction.guild.id, [])
-    queue.extend(tracks)
-
-    if voice_client.is_playing() or voice_client.is_paused():
-        await interaction.followup.send(f"🎵 `{len(tracks)}곡`을 재생 대기열에 추가했습니다.")
-        return
-
-    await interaction.followup.send(f"🎵 `{len(tracks)}곡` 재생을 시작합니다.")
-    await start_next_playlist_track(interaction.guild)
+    await interaction.response.send_message(
+        embed=build_playlist_panel_embed(interaction.guild),
+        view=PlaylistPanelView(interaction.user.id, tracks),
+    )
 
 
 @bot.tree.command(name="플리스킵", description="현재 재생 중인 플레이리스트 곡을 넘깁니다.")
@@ -7990,6 +8165,10 @@ async def playlist_stop(interaction: discord.Interaction):
 
     playlist_queues.pop(interaction.guild.id, None)
     playlist_now_playing.pop(interaction.guild.id, None)
+    playlist_previous_tracks.pop(interaction.guild.id, None)
+    playlist_library_cache.pop(interaction.guild.id, None)
+    playlist_modes.pop(interaction.guild.id, None)
+    playlist_text_channels.pop(interaction.guild.id, None)
 
     voice_client = interaction.guild.voice_client
     if voice_client is not None and voice_client.is_connected():
