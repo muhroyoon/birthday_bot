@@ -2444,7 +2444,7 @@ async def start_next_playlist_track(guild: discord.Guild):
     try:
         ffmpeg_options = {
             "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-            "options": "-vn -loglevel warning -ac 2 -ar 48000 -b:a 128k",
+            "options": "-vn -loglevel error",
         }
         ffmpeg_path = get_ffmpeg_executable_path()
         source = discord.FFmpegOpusAudio(
