@@ -2402,6 +2402,11 @@ def get_ytdlp_cookie_file_path() -> str | None:
     if "\\n" in cookie_text and "\n" not in cookie_text:
         cookie_text = cookie_text.replace("\\n", "\n")
 
+    cookie_text = cookie_text.lstrip("\ufeff\r\n\t ")
+    header_index = cookie_text.find("# Netscape HTTP Cookie File")
+    if header_index > 0:
+        cookie_text = cookie_text[header_index:]
+
     if "# Netscape HTTP Cookie File" not in cookie_text:
         print("yt-dlp 쿠키 경고: Netscape cookies.txt 헤더를 찾지 못했습니다.")
 
