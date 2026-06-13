@@ -5,6 +5,7 @@ import sqlite3
 import asyncio
 import shutil
 import base64
+import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -2368,13 +2369,20 @@ def get_ytdlp_cookie_file_path() -> str | None:
         return cookie_file
 
     cookie_b64_parts = []
-    part_index = 1
-    while True:
-        part_value = os.getenv(f"YTDLP_COOKIES_B64_{part_index}")
-        if not part_value:
-            break
-        cookie_b64_parts.append(part_value.strip())
-        part_index += 1
+    numbered_cookie_vars = []
+    for key, value in os.environ.items():
+        match = re.fullmatch(r"YTDLP_COOKIES_B64_(\d+)", key)
+        if match and value:
+            numbered_cookie_vars.append((int(match.group(1)), value.strip()))
+
+    for part_index, part_value in sorted(numbered_cookie_vars):
+        prefix = f"YTDLP_COOKIES_B64_{part_index}="
+        if part_value.startswith(prefix):
+            part_value = part_value[len(prefix):].strip()
+        cookie_b64_parts.append(part_value)
+
+    if cookie_b64_parts:
+        print(f"yt-dlp 분할 쿠키 변수 인식: {len(cookie_b64_parts)}개")
 
     cookie_b64 = "".join(cookie_b64_parts) if cookie_b64_parts else os.getenv("YTDLP_COOKIES_B64")
     cookie_text = None
