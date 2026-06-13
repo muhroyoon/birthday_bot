@@ -2424,6 +2424,48 @@ def get_ytdlp_cookie_file_path() -> str | None:
     return cookie_path
 
 
+def get_cookie_names_from_text(cookie_text: str) -> set[str]:
+    cookie_names = set()
+    for line in cookie_text.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) >= 7:
+            cookie_names.add(parts[5])
+    return cookie_names
+
+
+def get_missing_youtube_login_cookie_names(cookie_text: str) -> list[str]:
+    cookie_names = get_cookie_names_from_text(cookie_text)
+    required_cookie_names = ["SID", "HSID", "SSID", "SAPISID", "__Secure-3PSID", "LOGIN_INFO"]
+    return [name for name in required_cookie_names if name not in cookie_names]
+
+
+def get_ytdlp_cookie_status_text() -> str:
+    if os.path.exists(YTDLP_PERSISTENT_COOKIE_FILE):
+        try:
+            with open(YTDLP_PERSISTENT_COOKIE_FILE, "r", encoding="utf-8-sig") as cookie_file_obj:
+                cookie_text = cookie_file_obj.read()
+            cookie_lines = [line for line in cookie_text.splitlines() if line and not line.startswith("#")]
+            has_header = "# Netscape HTTP Cookie File" in cookie_text
+            missing_cookie_names = get_missing_youtube_login_cookie_names(cookie_text)
+            return (
+                "등록 상태: `등록됨`\n"
+                f"저장 위치: `{YTDLP_PERSISTENT_COOKIE_FILE}`\n"
+                f"쿠키 라인: `{len(cookie_lines)}개`\n"
+                f"Netscape 형식: `{'정상' if has_header else '헤더 없음'}`\n"
+                f"로그인 핵심 쿠키: `{'정상' if not missing_cookie_names else '누락: ' + ', '.join(missing_cookie_names)}`"
+            )
+        except Exception as e:
+            return f"등록 상태: `읽기 실패`\n오류: `{type(e).__name__}: {e}`"
+
+    env_cookie_keys = [key for key in os.environ if key.startswith("YTDLP_COOKIES")]
+    if env_cookie_keys:
+        return "등록 상태: `/data` 파일 없음`\n환경변수 쿠키 설정은 존재합니다."
+
+    return "등록 상태: `없음`\n`/유튜브쿠키등록`으로 원본 cookies.txt를 업로드해주세요."
+
+
 async def resolve_playlist_audio_url(url: str):
     try:
         import yt_dlp
@@ -2441,6 +2483,9 @@ async def resolve_playlist_audio_url(url: str):
     cookie_file = get_ytdlp_cookie_file_path()
     if cookie_file:
         options["cookiefile"] = cookie_file
+        print(f"yt-dlp 옵션 cookiefile 적용: {cookie_file}")
+    else:
+        print("yt-dlp 옵션 cookiefile 미적용")
 
     def extract():
         with yt_dlp.YoutubeDL(options) as ydl:
@@ -2451,7 +2496,7 @@ async def resolve_playlist_audio_url(url: str):
                 if "Sign in to confirm" in error_text or "not a bot" in error_text:
                     raise RuntimeError(
                         "YouTube가 Railway 서버 요청을 봇으로 판단해 차단했습니다. "
-                        "Railway 환경변수 `YTDLP_COOKIES_B64` 또는 `YTDLP_COOKIES_TXT`에 새 YouTube cookies.txt를 등록해주세요."
+                        "`/유튜브쿠키확인`으로 쿠키 등록 상태를 확인하고, 필요하면 `/유튜브쿠키등록`으로 새 원본 cookies.txt를 등록해주세요."
                     )
                 raise
             if "entries" in info:
@@ -8225,6 +8270,16 @@ async def register_youtube_cookie(interaction: discord.Interaction, cookie_file:
         await interaction.followup.send("YouTube/Google 쿠키 라인을 찾지 못했습니다. YouTube에 로그인한 상태에서 다시 export해주세요.", ephemeral=True)
         return
 
+    missing_cookie_names = get_missing_youtube_login_cookie_names(cookie_text)
+    if missing_cookie_names:
+        await interaction.followup.send(
+            "로그인 인증에 필요한 핵심 쿠키가 누락됐습니다.\n"
+            f"누락된 쿠키: `{', '.join(missing_cookie_names)}`\n"
+            "YouTube에 로그인한 상태에서 youtube.com 페이지를 연 뒤 cookies.txt를 다시 export해주세요.",
+            ephemeral=True,
+        )
+        return
+
     with open(YTDLP_PERSISTENT_COOKIE_FILE, "w", encoding="utf-8") as cookie_file_obj:
         cookie_file_obj.write(cookie_text.strip() + "\n")
 
@@ -8232,6 +8287,19 @@ async def register_youtube_cookie(interaction: discord.Interaction, cookie_file:
         f"YouTube 쿠키를 등록했습니다.\n저장된 쿠키 라인: `{len(cookie_lines)}개`\n이제 `/플리재생`을 다시 테스트해주세요.",
         ephemeral=True,
     )
+
+
+@bot.tree.command(name="유튜브쿠키확인", description="서버 주인 전용: YouTube 쿠키 등록 상태를 확인합니다.")
+async def check_youtube_cookie(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    if interaction.guild.owner_id != interaction.user.id:
+        await interaction.response.send_message("이 명령어는 서버 주인만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    await interaction.response.send_message(get_ytdlp_cookie_status_text(), ephemeral=True)
 
 
 @bot.tree.command(name="플리목록", description="서버 플레이리스트 목록을 확인합니다.")
@@ -9192,7 +9260,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         value=(
             "`/돈주기`, `/돈주기내역`, `/돈삭제`, `/송금내역`, `/벌금부여`, `/벌금삭제`\n"
             "`/신용불량자등록`, `/신용불량자목록`, `/신용불량자삭제`, `/신용초기화`\n"
-            "`/노동가챠권지급`, `/유튜브쿠키등록`\n"
+            "`/노동가챠권지급`, `/유튜브쿠키등록`, `/유튜브쿠키확인`\n"
             "`/신용조회`, `/신용등급표`, `/일수`, `/대출상환`, `/중도상환`"
         ),
         inline=False,
