@@ -2437,7 +2437,7 @@ def get_cookie_names_from_text(cookie_text: str) -> set[str]:
 
 def get_missing_youtube_login_cookie_names(cookie_text: str) -> list[str]:
     cookie_names = get_cookie_names_from_text(cookie_text)
-    required_cookie_names = ["SID", "HSID", "SSID", "SAPISID", "__Secure-3PSID", "LOGIN_INFO"]
+    required_cookie_names = ["SID", "HSID", "SSID", "SAPISID", "__Secure-3PSID"]
     return [name for name in required_cookie_names if name not in cookie_names]
 
 
