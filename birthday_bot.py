@@ -4,6 +4,7 @@ import random
 import sqlite3
 import asyncio
 import shutil
+import base64
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -2360,6 +2361,42 @@ def get_ffmpeg_executable_path() -> str:
     )
 
 
+def get_ytdlp_cookie_file_path() -> str | None:
+    cookie_file = os.getenv("YTDLP_COOKIES_FILE")
+    if cookie_file and os.path.exists(cookie_file):
+        print(f"yt-dlp 쿠키 파일 사용: YTDLP_COOKIES_FILE ({cookie_file})")
+        return cookie_file
+
+    cookie_b64 = os.getenv("YTDLP_COOKIES_B64")
+    cookie_text = None
+    if cookie_b64:
+        try:
+            cookie_text = base64.b64decode(cookie_b64).decode("utf-8")
+        except Exception as e:
+            print(f"YTDLP_COOKIES_B64 디코딩 실패: {type(e).__name__}: {e}")
+
+    if cookie_text is None:
+        cookie_text = os.getenv("YTDLP_COOKIES_TXT")
+
+    if not cookie_text:
+        print("yt-dlp 쿠키 없음: YTDLP_COOKIES_B64 / YTDLP_COOKIES_TXT / YTDLP_COOKIES_FILE 미설정")
+        return None
+
+    if "\\n" in cookie_text and "\n" not in cookie_text:
+        cookie_text = cookie_text.replace("\\n", "\n")
+
+    if "# Netscape HTTP Cookie File" not in cookie_text:
+        print("yt-dlp 쿠키 경고: Netscape cookies.txt 헤더를 찾지 못했습니다.")
+
+    cookie_path = "/tmp/yt-dlp-cookies.txt"
+    with open(cookie_path, "w", encoding="utf-8") as cookie_file_obj:
+        cookie_file_obj.write(cookie_text.strip() + "\n")
+
+    cookie_lines = [line for line in cookie_text.splitlines() if line and not line.startswith("#")]
+    print(f"yt-dlp 쿠키 파일 생성 완료: {len(cookie_lines)}개 쿠키 라인")
+    return cookie_path
+
+
 async def resolve_playlist_audio_url(url: str):
     try:
         import yt_dlp
@@ -2369,13 +2406,27 @@ async def resolve_playlist_audio_url(url: str):
     options = {
         "format": "bestaudio/best",
         "quiet": True,
+        "no_warnings": True,
         "noplaylist": True,
         "default_search": "auto",
+        "js_runtimes": {"node": {}},
     }
+    cookie_file = get_ytdlp_cookie_file_path()
+    if cookie_file:
+        options["cookiefile"] = cookie_file
 
     def extract():
         with yt_dlp.YoutubeDL(options) as ydl:
-            info = ydl.extract_info(url, download=False)
+            try:
+                info = ydl.extract_info(url, download=False)
+            except yt_dlp.utils.DownloadError as e:
+                error_text = str(e)
+                if "Sign in to confirm" in error_text or "not a bot" in error_text:
+                    raise RuntimeError(
+                        "YouTube가 Railway 서버 요청을 봇으로 판단해 차단했습니다. "
+                        "Railway 환경변수 `YTDLP_COOKIES_B64` 또는 `YTDLP_COOKIES_TXT`에 새 YouTube cookies.txt를 등록해주세요."
+                    )
+                raise
             if "entries" in info:
                 info = next((entry for entry in info["entries"] if entry), None)
             if not info:
