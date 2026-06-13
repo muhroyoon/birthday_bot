@@ -2367,7 +2367,16 @@ def get_ytdlp_cookie_file_path() -> str | None:
         print(f"yt-dlp 쿠키 파일 사용: YTDLP_COOKIES_FILE ({cookie_file})")
         return cookie_file
 
-    cookie_b64 = os.getenv("YTDLP_COOKIES_B64")
+    cookie_b64_parts = []
+    part_index = 1
+    while True:
+        part_value = os.getenv(f"YTDLP_COOKIES_B64_{part_index}")
+        if not part_value:
+            break
+        cookie_b64_parts.append(part_value.strip())
+        part_index += 1
+
+    cookie_b64 = "".join(cookie_b64_parts) if cookie_b64_parts else os.getenv("YTDLP_COOKIES_B64")
     cookie_text = None
     if cookie_b64:
         try:
@@ -2379,7 +2388,7 @@ def get_ytdlp_cookie_file_path() -> str | None:
         cookie_text = os.getenv("YTDLP_COOKIES_TXT")
 
     if not cookie_text:
-        print("yt-dlp 쿠키 없음: YTDLP_COOKIES_B64 / YTDLP_COOKIES_TXT / YTDLP_COOKIES_FILE 미설정")
+        print("yt-dlp 쿠키 없음: YTDLP_COOKIES_B64(_1...) / YTDLP_COOKIES_TXT / YTDLP_COOKIES_FILE 미설정")
         return None
 
     if "\\n" in cookie_text and "\n" not in cookie_text:
