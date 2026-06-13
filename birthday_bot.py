@@ -196,6 +196,7 @@ DEFAULT_PROBATION_NOTICE_TEXT = (
     "출석과 활동량을 확인하시고 역할 유지 여부를 검토해주세요."
 )
 DEFAULT_PROBATION_DAYS = "7"
+YTDLP_PERSISTENT_COOKIE_FILE = "/data/youtube-cookies.txt"
 
 intents = discord.Intents.default()
 intents.members = True
@@ -2363,6 +2364,10 @@ def get_ffmpeg_executable_path() -> str:
 
 
 def get_ytdlp_cookie_file_path() -> str | None:
+    if os.path.exists(YTDLP_PERSISTENT_COOKIE_FILE):
+        print(f"yt-dlp 쿠키 파일 사용: {YTDLP_PERSISTENT_COOKIE_FILE}")
+        return YTDLP_PERSISTENT_COOKIE_FILE
+
     cookie_file = os.getenv("YTDLP_COOKIES_FILE")
     if cookie_file and os.path.exists(cookie_file):
         print(f"yt-dlp 쿠키 파일 사용: YTDLP_COOKIES_FILE ({cookie_file})")
@@ -8180,6 +8185,55 @@ async def playlist_add(interaction: discord.Interaction, title: str, url: str):
     )
 
 
+@bot.tree.command(name="유튜브쿠키등록", description="서버 주인 전용: YouTube cookies.txt 파일을 등록합니다.")
+@app_commands.rename(cookie_file="쿠키파일")
+@app_commands.describe(cookie_file="YouTube에서 내보낸 cookies.txt 파일")
+async def register_youtube_cookie(interaction: discord.Interaction, cookie_file: discord.Attachment):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    if interaction.guild.owner_id != interaction.user.id:
+        await interaction.response.send_message("이 명령어는 서버 주인만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    if not cookie_file.filename.lower().endswith(".txt"):
+        await interaction.response.send_message("cookies.txt 파일만 등록할 수 있습니다.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+
+    try:
+        raw_cookie_bytes = await cookie_file.read()
+        cookie_text = raw_cookie_bytes.decode("utf-8-sig")
+    except Exception as e:
+        await interaction.followup.send(f"쿠키 파일을 읽지 못했습니다: {type(e).__name__}", ephemeral=True)
+        return
+
+    cookie_text = cookie_text.lstrip("\ufeff\r\n\t ")
+    header_index = cookie_text.find("# Netscape HTTP Cookie File")
+    if header_index > 0:
+        cookie_text = cookie_text[header_index:]
+
+    if "# Netscape HTTP Cookie File" not in cookie_text:
+        await interaction.followup.send("Netscape cookies.txt 형식이 아닙니다. export한 원본 cookies.txt를 업로드해주세요.", ephemeral=True)
+        return
+
+    cookie_lines = [line for line in cookie_text.splitlines() if line and not line.startswith("#")]
+    youtube_cookie_lines = [line for line in cookie_lines if ".youtube.com" in line or ".google.com" in line]
+    if not youtube_cookie_lines:
+        await interaction.followup.send("YouTube/Google 쿠키 라인을 찾지 못했습니다. YouTube에 로그인한 상태에서 다시 export해주세요.", ephemeral=True)
+        return
+
+    with open(YTDLP_PERSISTENT_COOKIE_FILE, "w", encoding="utf-8") as cookie_file_obj:
+        cookie_file_obj.write(cookie_text.strip() + "\n")
+
+    await interaction.followup.send(
+        f"YouTube 쿠키를 등록했습니다.\n저장된 쿠키 라인: `{len(cookie_lines)}개`\n이제 `/플리재생`을 다시 테스트해주세요.",
+        ephemeral=True,
+    )
+
+
 @bot.tree.command(name="플리목록", description="서버 플레이리스트 목록을 확인합니다.")
 async def playlist_list(interaction: discord.Interaction):
     if interaction.guild is None:
@@ -9138,7 +9192,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         value=(
             "`/돈주기`, `/돈주기내역`, `/돈삭제`, `/송금내역`, `/벌금부여`, `/벌금삭제`\n"
             "`/신용불량자등록`, `/신용불량자목록`, `/신용불량자삭제`, `/신용초기화`\n"
-            "`/노동가챠권지급`\n"
+            "`/노동가챠권지급`, `/유튜브쿠키등록`\n"
             "`/신용조회`, `/신용등급표`, `/일수`, `/대출상환`, `/중도상환`"
         ),
         inline=False,
