@@ -197,6 +197,7 @@ DEFAULT_PROBATION_NOTICE_TEXT = (
 )
 DEFAULT_PROBATION_DAYS = "7"
 YTDLP_PERSISTENT_COOKIE_FILE = "/data/youtube-cookies.txt"
+PLAYLIST_PLAY_LIMIT = 500
 
 intents = discord.Intents.default()
 intents.members = True
@@ -2567,7 +2568,7 @@ async def start_next_playlist_track(guild: discord.Guild):
     try:
         ffmpeg_options = {
             "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-            "options": "-vn -loglevel error",
+            "options": "-vn -loglevel error -filter:a loudnorm=I=-16:LRA=11:TP=-1.5",
         }
         ffmpeg_path = get_ffmpeg_executable_path()
         source = discord.FFmpegOpusAudio(
@@ -2715,7 +2716,7 @@ async def start_playlist_player(
 
 class PlaylistPanelView(discord.ui.View):
     def __init__(self, requester_id: int, tracks: list[dict]):
-        super().__init__(timeout=180)
+        super().__init__(timeout=None)
         self.requester_id = requester_id
         self.tracks = tracks
 
@@ -8363,7 +8364,7 @@ async def playlist_play(interaction: discord.Interaction):
         await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
         return
 
-    rows = get_playlist_tracks(interaction.guild.id, 25)
+    rows = get_playlist_tracks(interaction.guild.id, PLAYLIST_PLAY_LIMIT)
     tracks = [build_playlist_track_from_row(row) for row in rows]
 
     if not tracks:
