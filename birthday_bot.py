@@ -198,8 +198,8 @@ DEFAULT_PROBATION_NOTICE_TEXT = (
 DEFAULT_PROBATION_DAYS = "7"
 YTDLP_PERSISTENT_COOKIE_FILE = "/data/youtube-cookies.txt"
 PLAYLIST_PLAY_LIMIT = 500
-PLAYLIST_MAX_CONSECUTIVE_FAILURES = 3
 PLAYLIST_FAILURE_RETRY_DELAY_SECONDS = 2
+PLAYLIST_FAILED_TRACK_LIMIT = 10
 
 intents = discord.Intents.default()
 intents.members = True
@@ -216,6 +216,7 @@ playlist_library_cache: dict[int, list[dict]] = {}
 playlist_modes: dict[int, str] = {}
 playlist_panel_messages: dict[int, tuple[int, int]] = {}
 playlist_failure_counts: dict[int, int] = {}
+playlist_failed_tracks: dict[int, list[dict]] = {}
 
 # ============================================================
 # 데이터베이스 초기화
@@ -2603,22 +2604,23 @@ async def resolve_playlist_audio_url(url: str):
 
 async def handle_playlist_track_failure(guild: discord.Guild, track: dict, stage: str, error: Exception):
     error_text = f"{type(error).__name__}: {error}" if str(error) else type(error).__name__
-    failure_count = playlist_failure_counts.get(guild.id, 0) + 1
-    playlist_failure_counts[guild.id] = failure_count
+    failed_tracks = playlist_failed_tracks.setdefault(guild.id, [])
+    failed_tracks.append(
+        {
+            "title": track.get("title", "제목 없음"),
+            "id": track.get("id"),
+            "reason": error_text,
+        }
+    )
+    if len(failed_tracks) > PLAYLIST_FAILED_TRACK_LIMIT:
+        del failed_tracks[:-PLAYLIST_FAILED_TRACK_LIMIT]
+    playlist_failure_counts[guild.id] = playlist_failure_counts.get(guild.id, 0) + 1
 
     text_channel = guild.get_channel(playlist_text_channels.get(guild.id, 0))
     if text_channel:
-        await text_channel.send(f"`{track['title']}` {stage} 오류가 발생했습니다: {error_text}")
+        await text_channel.send(f"`{track['title']}` {stage} 오류가 발생해 다음 곡으로 넘어갑니다.")
 
-    if failure_count >= PLAYLIST_MAX_CONSECUTIVE_FAILURES:
-        playlist_queues.pop(guild.id, None)
-        playlist_now_playing.pop(guild.id, None)
-        playlist_failure_counts.pop(guild.id, None)
-        await refresh_playlist_panel(guild)
-        if text_channel:
-            await text_channel.send("연속 재생 오류가 발생해 플레이리스트 재생을 중단했습니다.")
-        return
-
+    await refresh_playlist_panel(guild)
     await asyncio.sleep(PLAYLIST_FAILURE_RETRY_DELAY_SECONDS)
     await start_next_playlist_track(guild)
 
@@ -2737,6 +2739,7 @@ async def disconnect_playlist_if_alone(guild: discord.Guild):
     playlist_library_cache.pop(guild.id, None)
     playlist_modes.pop(guild.id, None)
     playlist_failure_counts.pop(guild.id, None)
+    playlist_failed_tracks.pop(guild.id, None)
     await disable_playlist_panel(guild)
     await voice_client.disconnect(force=True)
 
@@ -2815,6 +2818,8 @@ async def start_playlist_player(
     playlist_library_cache[interaction.guild.id] = list(tracks)
     playlist_modes[interaction.guild.id] = mode
     playlist_queues[interaction.guild.id] = list(tracks)
+    playlist_failure_counts.pop(interaction.guild.id, None)
+    playlist_failed_tracks.pop(interaction.guild.id, None)
 
     if not start_immediately:
         await interaction.followup.send("🎧 플레이리스트 패널을 열었습니다.")
@@ -2878,6 +2883,7 @@ class PlaylistPanelView(discord.ui.View):
         playlist_modes.pop(interaction.guild.id, None)
         playlist_text_channels.pop(interaction.guild.id, None)
         playlist_failure_counts.pop(interaction.guild.id, None)
+        playlist_failed_tracks.pop(interaction.guild.id, None)
 
         voice_client = interaction.guild.voice_client
         if voice_client is not None and voice_client.is_connected():
@@ -2963,6 +2969,20 @@ def build_playlist_panel_embed(guild: discord.Guild):
     mode_text = "랜덤재생" if mode == "random" else "순서재생"
     embed.add_field(name="재생 모드", value=f"`{mode_text}`", inline=True)
     embed.add_field(name="대기열", value=f"`{len(playlist_queues.get(guild.id, []))}곡`", inline=True)
+
+    failed_tracks = playlist_failed_tracks.get(guild.id, [])
+    if failed_tracks:
+        failed_lines = []
+        for failed_track in failed_tracks[-3:]:
+            track_id = failed_track.get("id")
+            title = failed_track.get("title", "제목 없음")
+            id_text = f"#{track_id} " if track_id is not None else ""
+            failed_lines.append(f"{id_text}{title}")
+        embed.add_field(
+            name="최근 재생 실패",
+            value="\n".join(failed_lines),
+            inline=False,
+        )
     embed.set_footer(text="이전 곡 / 정지 / 다음 곡 / 랜덤재생 / 순서재생 버튼으로 조작합니다.")
     return embed
 
@@ -8547,6 +8567,8 @@ async def playlist_play(interaction: discord.Interaction, track_id: int | None =
 
     playlist_library_cache[interaction.guild.id] = list(tracks)
     playlist_modes.setdefault(interaction.guild.id, "order")
+    playlist_failure_counts.pop(interaction.guild.id, None)
+    playlist_failed_tracks.pop(interaction.guild.id, None)
 
     await disable_playlist_panel(interaction.guild)
     await interaction.response.send_message(
@@ -8589,6 +8611,7 @@ async def playlist_stop(interaction: discord.Interaction):
     playlist_modes.pop(interaction.guild.id, None)
     playlist_text_channels.pop(interaction.guild.id, None)
     playlist_failure_counts.pop(interaction.guild.id, None)
+    playlist_failed_tracks.pop(interaction.guild.id, None)
     await disable_playlist_panel(interaction.guild)
 
     voice_client = interaction.guild.voice_client
