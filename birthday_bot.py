@@ -2501,12 +2501,24 @@ async def resolve_playlist_audio_url(url: str):
     except ImportError:
         raise RuntimeError("음악 재생을 위해 서버에 `yt-dlp` 설치가 필요합니다.")
 
+    class YtdlpQuietLogger:
+        def debug(self, message):
+            pass
+
+        def warning(self, message):
+            pass
+
+        def error(self, message):
+            pass
+
     base_options = {
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
         "default_search": "auto",
         "js_runtimes": {"node": {}},
+        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+        "logger": YtdlpQuietLogger(),
     }
     cookie_file = get_ytdlp_cookie_file_path()
     if cookie_file:
@@ -2556,8 +2568,16 @@ async def resolve_playlist_audio_url(url: str):
                             "쿠키 파일 형식이 정상이어도 로그인 유지 쿠키가 부족하거나 세션이 만료되면 차단될 수 있습니다. "
                             "`/유튜브쿠키확인`에서 로그인 유지 쿠키 상태를 확인하고, 필요하면 YouTube에 로그인한 브라우저에서 새 원본 cookies.txt를 다시 등록해주세요."
                         )
+                    if "not made this video available in your country" in error_text:
+                        raise RuntimeError(
+                            "이 영상은 Railway 서버가 접속 중인 국가에서는 재생할 수 없는 지역 제한 영상입니다. "
+                            "한국에서만 재생 가능한 영상이면 Railway 서버 위치 때문에 막힐 수 있습니다."
+                        )
                     if "Requested format is not available" in error_text:
-                        last_error = e
+                        last_error = RuntimeError(
+                            "YouTube가 이 영상의 재생 가능한 오디오 포맷을 제공하지 않았습니다. "
+                            "다른 영상으로 테스트하거나, 같은 곡의 다른 업로드 영상을 등록해주세요."
+                        )
                         continue
                     raise
             if "entries" in info:
