@@ -2462,6 +2462,12 @@ def get_missing_youtube_login_cookie_names(cookie_text: str) -> list[str]:
     return [name for name in required_cookie_names if name not in cookie_names]
 
 
+def get_missing_youtube_recommended_cookie_names(cookie_text: str) -> list[str]:
+    cookie_names = get_cookie_names_from_text(cookie_text)
+    recommended_cookie_names = ["LOGIN_INFO", "SIDCC", "__Secure-1PSID", "__Secure-3PSIDCC"]
+    return [name for name in recommended_cookie_names if name not in cookie_names]
+
+
 def get_ytdlp_cookie_status_text() -> str:
     if os.path.exists(YTDLP_PERSISTENT_COOKIE_FILE):
         try:
@@ -2470,12 +2476,14 @@ def get_ytdlp_cookie_status_text() -> str:
             cookie_lines = [line for line in cookie_text.splitlines() if line and not line.startswith("#")]
             has_header = "# Netscape HTTP Cookie File" in cookie_text
             missing_cookie_names = get_missing_youtube_login_cookie_names(cookie_text)
+            missing_recommended_cookie_names = get_missing_youtube_recommended_cookie_names(cookie_text)
             return (
                 "등록 상태: `등록됨`\n"
                 f"저장 위치: `{YTDLP_PERSISTENT_COOKIE_FILE}`\n"
                 f"쿠키 라인: `{len(cookie_lines)}개`\n"
                 f"Netscape 형식: `{'정상' if has_header else '헤더 없음'}`\n"
-                f"로그인 핵심 쿠키: `{'정상' if not missing_cookie_names else '누락: ' + ', '.join(missing_cookie_names)}`"
+                f"로그인 핵심 쿠키: `{'정상' if not missing_cookie_names else '누락: ' + ', '.join(missing_cookie_names)}`\n"
+                f"로그인 유지 쿠키: `{'정상' if not missing_recommended_cookie_names else '주의: ' + ', '.join(missing_recommended_cookie_names)}`"
             )
         except Exception as e:
             return f"등록 상태: `읽기 실패`\n오류: `{type(e).__name__}: {e}`"
@@ -2517,7 +2525,8 @@ async def resolve_playlist_audio_url(url: str):
                 if "Sign in to confirm" in error_text or "not a bot" in error_text:
                     raise RuntimeError(
                         "YouTube가 Railway 서버 요청을 봇으로 판단해 차단했습니다. "
-                        "`/유튜브쿠키확인`으로 쿠키 등록 상태를 확인하고, 필요하면 `/유튜브쿠키등록`으로 새 원본 cookies.txt를 등록해주세요."
+                        "쿠키 파일 형식이 정상이어도 로그인 유지 쿠키가 부족하거나 세션이 만료되면 차단될 수 있습니다. "
+                        "`/유튜브쿠키확인`에서 로그인 유지 쿠키 상태를 확인하고, 필요하면 YouTube에 로그인한 브라우저에서 새 원본 cookies.txt를 다시 등록해주세요."
                     )
                 raise
             if "entries" in info:
@@ -2609,7 +2618,15 @@ async def start_next_playlist_track(guild: discord.Guild):
 
     try:
         ffmpeg_options = {
-            "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+            "before_options": (
+                "-reconnect 1 "
+                "-reconnect_streamed 1 "
+                "-reconnect_at_eof 1 "
+                "-reconnect_on_network_error 1 "
+                "-reconnect_on_http_error 4xx,5xx "
+                "-reconnect_delay_max 5 "
+                "-reconnect_delay_total_max 30"
+            ),
             "options": "-vn -loglevel error -filter:a loudnorm=I=-16:LRA=11:TP=-1.5",
         }
         ffmpeg_path = get_ffmpeg_executable_path()
