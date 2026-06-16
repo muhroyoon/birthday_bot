@@ -2501,8 +2501,7 @@ async def resolve_playlist_audio_url(url: str):
     except ImportError:
         raise RuntimeError("음악 재생을 위해 서버에 `yt-dlp` 설치가 필요합니다.")
 
-    options = {
-        "format": "bestaudio/best",
+    base_options = {
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
@@ -2511,37 +2510,73 @@ async def resolve_playlist_audio_url(url: str):
     }
     cookie_file = get_ytdlp_cookie_file_path()
     if cookie_file:
-        options["cookiefile"] = cookie_file
+        base_options["cookiefile"] = cookie_file
         print(f"yt-dlp 옵션 cookiefile 적용: {cookie_file}")
     else:
         print("yt-dlp 옵션 cookiefile 미적용")
 
+    format_candidates = [
+        "bestaudio[acodec!=none]/bestaudio/best[acodec!=none]/best",
+        "ba[ext=m4a]/ba[ext=webm]/ba/best",
+        "best[acodec!=none]/best",
+        None,
+    ]
+
+    def find_audio_stream_url(info: dict) -> str | None:
+        stream_url = info.get("url")
+        if stream_url:
+            return stream_url
+
+        formats = info.get("formats") or []
+        audio_formats = [
+            item for item in formats
+            if item.get("url") and item.get("acodec") not in (None, "none")
+        ]
+        if not audio_formats:
+            return None
+
+        audio_formats.sort(key=lambda item: item.get("abr") or item.get("tbr") or 0, reverse=True)
+        return audio_formats[0].get("url")
+
     def extract():
-        with yt_dlp.YoutubeDL(options) as ydl:
-            try:
-                info = ydl.extract_info(url, download=False)
-            except yt_dlp.utils.DownloadError as e:
-                error_text = str(e)
-                if "Sign in to confirm" in error_text or "not a bot" in error_text:
-                    raise RuntimeError(
-                        "YouTube가 Railway 서버 요청을 봇으로 판단해 차단했습니다. "
-                        "쿠키 파일 형식이 정상이어도 로그인 유지 쿠키가 부족하거나 세션이 만료되면 차단될 수 있습니다. "
-                        "`/유튜브쿠키확인`에서 로그인 유지 쿠키 상태를 확인하고, 필요하면 YouTube에 로그인한 브라우저에서 새 원본 cookies.txt를 다시 등록해주세요."
-                    )
-                raise
+        last_error = None
+        for format_selector in format_candidates:
+            options = dict(base_options)
+            if format_selector:
+                options["format"] = format_selector
+
+            with yt_dlp.YoutubeDL(options) as ydl:
+                try:
+                    info = ydl.extract_info(url, download=False)
+                except yt_dlp.utils.DownloadError as e:
+                    error_text = str(e)
+                    if "Sign in to confirm" in error_text or "not a bot" in error_text:
+                        raise RuntimeError(
+                            "YouTube가 Railway 서버 요청을 봇으로 판단해 차단했습니다. "
+                            "쿠키 파일 형식이 정상이어도 로그인 유지 쿠키가 부족하거나 세션이 만료되면 차단될 수 있습니다. "
+                            "`/유튜브쿠키확인`에서 로그인 유지 쿠키 상태를 확인하고, 필요하면 YouTube에 로그인한 브라우저에서 새 원본 cookies.txt를 다시 등록해주세요."
+                        )
+                    if "Requested format is not available" in error_text:
+                        last_error = e
+                        continue
+                    raise
             if "entries" in info:
                 info = next((entry for entry in info["entries"] if entry), None)
             if not info:
                 raise RuntimeError("재생 정보를 가져오지 못했습니다.")
-            stream_url = info.get("url")
+            stream_url = find_audio_stream_url(info)
             if not stream_url:
-                raise RuntimeError("재생 가능한 오디오 스트림을 찾지 못했습니다.")
+                last_error = RuntimeError("재생 가능한 오디오 스트림을 찾지 못했습니다.")
+                continue
             return {
                 "title": info.get("title") or "제목 없음",
                 "stream_url": stream_url,
                 "webpage_url": info.get("webpage_url") or url,
                 "http_headers": info.get("http_headers") or {},
             }
+        if last_error:
+            raise last_error
+        raise RuntimeError("재생 가능한 오디오 포맷을 찾지 못했습니다.")
 
     return await asyncio.to_thread(extract)
 
