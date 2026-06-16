@@ -2857,12 +2857,12 @@ class PlaylistPanelView(discord.ui.View):
             await interaction.response.send_message("이전 곡이 없습니다.", ephemeral=True)
             return
 
+        await interaction.response.defer()
         playlist_queues.setdefault(interaction.guild.id, []).insert(0, previous_track)
         if voice_client.is_playing() or voice_client.is_paused():
             voice_client.stop()
         else:
             await start_next_playlist_track(interaction.guild)
-        await interaction.response.defer()
         await self.refresh_panel(interaction)
 
     @discord.ui.button(label="정지", style=discord.ButtonStyle.danger)
@@ -2893,13 +2893,13 @@ class PlaylistPanelView(discord.ui.View):
         if voice_client is None or not voice_client.is_connected():
             await interaction.response.send_message("현재 재생 중인 플레이리스트가 없습니다.", ephemeral=True)
             return
+
+        await interaction.response.defer()
         if voice_client.is_playing() or voice_client.is_paused():
             voice_client.stop()
-            await interaction.response.defer()
             await self.refresh_panel(interaction)
             return
         await start_next_playlist_track(interaction.guild)
-        await interaction.response.defer()
         await self.refresh_panel(interaction)
 
     @discord.ui.button(label="랜덤재생", style=discord.ButtonStyle.success)
@@ -6164,9 +6164,17 @@ class ScrimSignupView(discord.ui.View):
             await interaction.response.send_message("이미 참여 중인 상태입니다.", ephemeral=True)
             return
 
+        await interaction.response.defer(ephemeral=True)
         add_scrim_signup(interaction.message.id, interaction.user.id)
-        await self.update_embed(interaction.message)
-        await interaction.response.send_message("내전 참여가 등록되었습니다.", ephemeral=True)
+        try:
+            await self.update_embed(interaction.message)
+        except discord.Forbidden:
+            await interaction.followup.send("내전 공지 메시지를 수정할 권한이 없습니다.", ephemeral=True)
+            return
+        except discord.HTTPException:
+            await interaction.followup.send("내전 참여 목록을 갱신하지 못했습니다.", ephemeral=True)
+            return
+        await interaction.followup.send("내전 참여가 등록되었습니다.", ephemeral=True)
 
     @discord.ui.button(label="참여취소", style=discord.ButtonStyle.danger, custom_id="scrim_cancel_button")
     async def cancel_signup(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -6174,9 +6182,17 @@ class ScrimSignupView(discord.ui.View):
             await interaction.response.send_message("현재 참여 중인 상태가 아닙니다.", ephemeral=True)
             return
 
+        await interaction.response.defer(ephemeral=True)
         remove_scrim_signup(interaction.message.id, interaction.user.id)
-        await self.update_embed(interaction.message)
-        await interaction.response.send_message("내전 참여가 취소되었습니다.", ephemeral=True)
+        try:
+            await self.update_embed(interaction.message)
+        except discord.Forbidden:
+            await interaction.followup.send("내전 공지 메시지를 수정할 권한이 없습니다.", ephemeral=True)
+            return
+        except discord.HTTPException:
+            await interaction.followup.send("내전 참여 목록을 갱신하지 못했습니다.", ephemeral=True)
+            return
+        await interaction.followup.send("내전 참여가 취소되었습니다.", ephemeral=True)
 
 class ScrimNoticeModal(discord.ui.Modal, title="내전 공지 작성"):
     title_input = discord.ui.TextInput(
@@ -6194,6 +6210,21 @@ class ScrimNoticeModal(discord.ui.Modal, title="내전 공지 작성"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        if interaction.guild is None or interaction.channel is None:
+            await interaction.followup.send("서버 채널에서만 내전 공지를 등록할 수 있습니다.", ephemeral=True)
+            return
+
+        permissions = interaction.channel.permissions_for(interaction.guild.me)
+        if not permissions.view_channel or not permissions.send_messages or not permissions.embed_links:
+            await interaction.followup.send(
+                "이 채널에 내전 공지를 등록할 권한이 부족합니다.\n"
+                "봇에게 `채널 보기`, `메시지 보내기`, `임베드 링크` 권한을 부여한 뒤 다시 시도해주세요.",
+                ephemeral=True,
+            )
+            return
+
         embed = discord.Embed(
             title=str(self.title_input).strip(),
             description=str(self.body_input).strip(),
@@ -6201,8 +6232,19 @@ class ScrimNoticeModal(discord.ui.Modal, title="내전 공지 작성"):
         )
         embed.add_field(name="참여자 목록", value="아직 참여자가 없습니다.", inline=False)
 
-        await interaction.channel.send(embed=embed, view=ScrimSignupView())
-        await interaction.response.send_message("내전 공지를 등록했습니다.", ephemeral=True)
+        try:
+            await interaction.channel.send(embed=embed, view=ScrimSignupView())
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "이 채널에 접근하거나 메시지를 보낼 권한이 없어 내전 공지를 등록하지 못했습니다.",
+                ephemeral=True,
+            )
+            return
+        except discord.HTTPException as e:
+            await interaction.followup.send(f"내전 공지 등록 중 오류가 발생했습니다: `{type(e).__name__}`", ephemeral=True)
+            return
+
+        await interaction.followup.send("내전 공지를 등록했습니다.", ephemeral=True)
 
 
 
