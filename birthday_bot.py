@@ -203,6 +203,9 @@ PLAYLIST_FAILED_TRACK_LIMIT = 10
 PLAYLIST_TRACK_DELAY_MIN_SECONDS = 4
 PLAYLIST_TRACK_DELAY_MAX_SECONDS = 10
 PLAYLIST_YOUTUBE_REQUEST_INTERVAL_SECONDS = 12
+PLAYLIST_FAILURE_NOTICE_INTERVAL = 5
+PLAYLIST_FAILURE_BACKOFF_STEP_SECONDS = 15
+PLAYLIST_FAILURE_BACKOFF_MAX_SECONDS = 90
 
 intents = discord.Intents.default()
 intents.members = True
@@ -2635,12 +2638,20 @@ async def handle_playlist_track_failure(guild: discord.Guild, track: dict, stage
         del failed_tracks[:-PLAYLIST_FAILED_TRACK_LIMIT]
     playlist_failure_counts[guild.id] = playlist_failure_counts.get(guild.id, 0) + 1
 
+    failure_count = playlist_failure_counts[guild.id]
     text_channel = guild.get_channel(playlist_text_channels.get(guild.id, 0))
-    if text_channel:
-        await text_channel.send(f"`{track['title']}` {stage} 오류가 발생해 다음 곡으로 넘어갑니다.")
+    if text_channel and failure_count % PLAYLIST_FAILURE_NOTICE_INTERVAL == 1:
+        await text_channel.send(
+            f"일부 곡이 재생되지 않아 자동으로 건너뛰고 있습니다. "
+            f"최근 실패 곡은 플레이리스트 패널에서 확인해주세요. (`{failure_count}곡 실패`)"
+        )
 
+    backoff_seconds = min(
+        PLAYLIST_FAILURE_RETRY_DELAY_SECONDS + ((failure_count - 1) * PLAYLIST_FAILURE_BACKOFF_STEP_SECONDS),
+        PLAYLIST_FAILURE_BACKOFF_MAX_SECONDS,
+    )
     await refresh_playlist_panel(guild)
-    await asyncio.sleep(PLAYLIST_FAILURE_RETRY_DELAY_SECONDS)
+    await asyncio.sleep(backoff_seconds)
     await start_next_playlist_track(guild)
 
 
@@ -3016,6 +3027,13 @@ def build_playlist_panel_embed(guild: discord.Guild):
     mode_text = "랜덤재생" if mode == "random" else "순서재생"
     embed.add_field(name="재생 모드", value=f"`{mode_text}`", inline=True)
     embed.add_field(name="대기열", value=f"`{len(playlist_queues.get(guild.id, []))}곡`", inline=True)
+    failure_count = playlist_failure_counts.get(guild.id, 0)
+    if failure_count:
+        backoff_seconds = min(
+            PLAYLIST_FAILURE_RETRY_DELAY_SECONDS + ((failure_count - 1) * PLAYLIST_FAILURE_BACKOFF_STEP_SECONDS),
+            PLAYLIST_FAILURE_BACKOFF_MAX_SECONDS,
+        )
+        embed.add_field(name="재생 안정화", value=f"`연속 실패 {failure_count}회 / {backoff_seconds}초 후 다음 시도`", inline=False)
 
     failed_tracks = playlist_failed_tracks.get(guild.id, [])
     if failed_tracks:
