@@ -198,8 +198,11 @@ DEFAULT_PROBATION_NOTICE_TEXT = (
 DEFAULT_PROBATION_DAYS = "7"
 YTDLP_PERSISTENT_COOKIE_FILE = "/data/youtube-cookies.txt"
 PLAYLIST_PLAY_LIMIT = 500
-PLAYLIST_FAILURE_RETRY_DELAY_SECONDS = 2
+PLAYLIST_FAILURE_RETRY_DELAY_SECONDS = 8
 PLAYLIST_FAILED_TRACK_LIMIT = 10
+PLAYLIST_TRACK_DELAY_MIN_SECONDS = 4
+PLAYLIST_TRACK_DELAY_MAX_SECONDS = 10
+PLAYLIST_YOUTUBE_REQUEST_INTERVAL_SECONDS = 12
 
 intents = discord.Intents.default()
 intents.members = True
@@ -217,6 +220,7 @@ playlist_modes: dict[int, str] = {}
 playlist_panel_messages: dict[int, tuple[int, int]] = {}
 playlist_failure_counts: dict[int, int] = {}
 playlist_failed_tracks: dict[int, list[dict]] = {}
+playlist_last_youtube_request_at: dict[int, float] = {}
 
 # ============================================================
 # 데이터베이스 초기화
@@ -2602,6 +2606,20 @@ async def resolve_playlist_audio_url(url: str):
     return await asyncio.to_thread(extract)
 
 
+async def wait_for_playlist_youtube_safety_delay(guild_id: int):
+    await asyncio.sleep(random.uniform(PLAYLIST_TRACK_DELAY_MIN_SECONDS, PLAYLIST_TRACK_DELAY_MAX_SECONDS))
+
+    loop = asyncio.get_running_loop()
+    now = loop.time()
+    last_requested_at = playlist_last_youtube_request_at.get(guild_id)
+    if last_requested_at is not None:
+        elapsed = now - last_requested_at
+        if elapsed < PLAYLIST_YOUTUBE_REQUEST_INTERVAL_SECONDS:
+            await asyncio.sleep(PLAYLIST_YOUTUBE_REQUEST_INTERVAL_SECONDS - elapsed)
+
+    playlist_last_youtube_request_at[guild_id] = loop.time()
+
+
 async def handle_playlist_track_failure(guild: discord.Guild, track: dict, stage: str, error: Exception):
     error_text = f"{type(error).__name__}: {error}" if str(error) else type(error).__name__
     failed_tracks = playlist_failed_tracks.setdefault(guild.id, [])
@@ -2666,6 +2684,13 @@ async def start_next_playlist_track(guild: discord.Guild):
 
     playlist_now_playing[guild.id] = track
     await refresh_playlist_panel(guild)
+    await wait_for_playlist_youtube_safety_delay(guild.id)
+
+    voice_client = guild.voice_client
+    if voice_client is None or not voice_client.is_connected():
+        playlist_now_playing.pop(guild.id, None)
+        await refresh_playlist_panel(guild)
+        return
 
     try:
         audio_info = await resolve_playlist_audio_url(track["url"])
@@ -2740,6 +2765,7 @@ async def disconnect_playlist_if_alone(guild: discord.Guild):
     playlist_modes.pop(guild.id, None)
     playlist_failure_counts.pop(guild.id, None)
     playlist_failed_tracks.pop(guild.id, None)
+    playlist_last_youtube_request_at.pop(guild.id, None)
     await disable_playlist_panel(guild)
     await voice_client.disconnect(force=True)
 
@@ -2820,6 +2846,7 @@ async def start_playlist_player(
     playlist_queues[interaction.guild.id] = list(tracks)
     playlist_failure_counts.pop(interaction.guild.id, None)
     playlist_failed_tracks.pop(interaction.guild.id, None)
+    playlist_last_youtube_request_at.pop(interaction.guild.id, None)
 
     if not start_immediately:
         await interaction.followup.send("🎧 플레이리스트 패널을 열었습니다.")
@@ -2884,6 +2911,7 @@ class PlaylistPanelView(discord.ui.View):
         playlist_text_channels.pop(interaction.guild.id, None)
         playlist_failure_counts.pop(interaction.guild.id, None)
         playlist_failed_tracks.pop(interaction.guild.id, None)
+        playlist_last_youtube_request_at.pop(interaction.guild.id, None)
 
         voice_client = interaction.guild.voice_client
         if voice_client is not None and voice_client.is_connected():
@@ -8569,6 +8597,7 @@ async def playlist_play(interaction: discord.Interaction, track_id: int | None =
     playlist_modes.setdefault(interaction.guild.id, "order")
     playlist_failure_counts.pop(interaction.guild.id, None)
     playlist_failed_tracks.pop(interaction.guild.id, None)
+    playlist_last_youtube_request_at.pop(interaction.guild.id, None)
 
     await disable_playlist_panel(interaction.guild)
     await interaction.response.send_message(
@@ -8612,6 +8641,7 @@ async def playlist_stop(interaction: discord.Interaction):
     playlist_text_channels.pop(interaction.guild.id, None)
     playlist_failure_counts.pop(interaction.guild.id, None)
     playlist_failed_tracks.pop(interaction.guild.id, None)
+    playlist_last_youtube_request_at.pop(interaction.guild.id, None)
     await disable_playlist_panel(interaction.guild)
 
     voice_client = interaction.guild.voice_client
