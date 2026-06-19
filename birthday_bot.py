@@ -20,7 +20,7 @@ from discord.ext import commands, tasks
 # 3. 데이터베이스 초기화
 # 4. 서버 설정 / 템플릿 헬퍼
 # 5. 재화 / 지급 헬퍼
-# 6. 대기방 / 닉네임 패널 헬퍼
+# 6. 닉네임 패널 헬퍼
 # 7. 신용 / 대출 / 적금 / 노동 헬퍼
 # 8. UI 뷰 / 모달
 # 9. 슬래시 명령어
@@ -294,16 +294,6 @@ cursor.execute(
         channel_id TEXT NOT NULL,
         content TEXT NOT NULL,
         message_id TEXT,
-        PRIMARY KEY (guild_id, channel_id)
-    )
-    """
-)
-
-cursor.execute(
-    """
-    CREATE TABLE IF NOT EXISTS waiting_rooms(
-        guild_id TEXT NOT NULL,
-        channel_id TEXT NOT NULL,
         PRIMARY KEY (guild_id, channel_id)
     )
     """
@@ -909,46 +899,8 @@ def is_spectator_member(member: discord.Member, guild_id: int) -> bool:
 
 
 # ============================================================
-# 대기방 / 닉네임 패널 헬퍼
+# 닉네임 패널 헬퍼
 # ============================================================
-
-def add_waiting_room(guild_id: int, channel_id: int):
-    cursor.execute(
-        "INSERT OR IGNORE INTO waiting_rooms(guild_id, channel_id) VALUES (?, ?)",
-        (str(guild_id), str(channel_id)),
-    )
-    conn.commit()
-
-
-def remove_waiting_room(guild_id: int, channel_id: int):
-    cursor.execute(
-        "DELETE FROM waiting_rooms WHERE guild_id=? AND channel_id=?",
-        (str(guild_id), str(channel_id)),
-    )
-    conn.commit()
-
-
-def get_waiting_rooms(guild_id: int):
-    cursor.execute(
-        "SELECT channel_id FROM waiting_rooms WHERE guild_id=? ORDER BY channel_id ASC",
-        (str(guild_id),),
-    )
-    rows = cursor.fetchall()
-    result = []
-    for (channel_id,) in rows:
-        try:
-            result.append(int(channel_id))
-        except ValueError:
-            continue
-    return result
-
-
-def is_waiting_room(guild_id: int, channel_id: int) -> bool:
-    cursor.execute(
-        "SELECT 1 FROM waiting_rooms WHERE guild_id=? AND channel_id=?",
-        (str(guild_id), str(channel_id)),
-    )
-    return cursor.fetchone() is not None
 
 def save_nickname_panel(guild_id: int, channel_id: int, message_id: int, menu_name: str, prefixes: list[str]):
     cursor.execute(
@@ -3985,8 +3937,13 @@ class UpgradeTicketView(discord.ui.View):
 
         try:
             await self.user.send(content)
-        except Exception:
-            pass
+            return True, None
+        except discord.Forbidden:
+            return False, "상대방이 서버 DM 또는 봇 DM을 차단한 상태입니다."
+        except discord.HTTPException as e:
+            return False, f"Discord DM 전송 오류가 발생했습니다. ({type(e).__name__})"
+        except Exception as e:
+            return False, f"알 수 없는 DM 전송 오류가 발생했습니다. ({type(e).__name__})"
 
     @discord.ui.button(label="클랜원 등업", style=discord.ButtonStyle.primary, custom_id="upgrade_clan")
     async def clan(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -4001,11 +3958,15 @@ class UpgradeTicketView(discord.ui.View):
         if role:
             await self.user.add_roles(role)
 
-        await self.send_welcome_dm()
+        dm_sent, dm_error = await self.send_welcome_dm()
         await self.send_log(interaction, "클랜원 등업")
         await self.disable_buttons_except_delete(interaction.message)
         await interaction.channel.set_permissions(interaction.guild.default_role, send_messages=False)
-        await interaction.followup.send(f"{self.user.mention}님의 클랜원 등업이 완료되었습니다.", ephemeral=True)
+        dm_status = "환영 DM 전송 완료" if dm_sent else f"환영 DM 전송 실패: {dm_error}"
+        await interaction.followup.send(
+            f"{self.user.mention}님의 클랜원 등업이 완료되었습니다.\n{dm_status}",
+            ephemeral=True,
+        )
 
     @discord.ui.button(label="게스트 등업", style=discord.ButtonStyle.secondary, custom_id="upgrade_guest")
     async def guest(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -4020,11 +3981,15 @@ class UpgradeTicketView(discord.ui.View):
         if role:
             await self.user.add_roles(role)
 
-        await self.send_welcome_dm()
+        dm_sent, dm_error = await self.send_welcome_dm()
         await self.send_log(interaction, "게스트 등업")
         await self.disable_buttons_except_delete(interaction.message)
         await interaction.channel.set_permissions(interaction.guild.default_role, send_messages=False)
-        await interaction.followup.send(f"{self.user.mention}님의 게스트 등업이 완료되었습니다.", ephemeral=True)
+        dm_status = "환영 DM 전송 완료" if dm_sent else f"환영 DM 전송 실패: {dm_error}"
+        await interaction.followup.send(
+            f"{self.user.mention}님의 게스트 등업이 완료되었습니다.\n{dm_status}",
+            ephemeral=True,
+        )
 
     @discord.ui.button(label="티켓 삭제", style=discord.ButtonStyle.danger, custom_id="ticket_delete")
     async def delete(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -7750,39 +7715,6 @@ async def minesweeper(interaction: discord.Interaction, amount: int):
     await interaction.response.send_message(embed=view.build_embed(), view=view)
 
 
-@bot.tree.command(name="세팅대기방추가", description="대기방 음성채널을 등록합니다.")
-@app_commands.checks.has_permissions(administrator=True)
-async def add_waiting_room_command(interaction: discord.Interaction, channel: discord.VoiceChannel):
-    add_waiting_room(interaction.guild.id, channel.id)
-    await interaction.response.send_message(
-        f"{channel.mention} 채널을 대기방으로 등록했습니다.",
-        ephemeral=True,
-    )
-
-
-@bot.tree.command(name="세팅대기방삭제", description="등록된 대기방을 제거합니다.")
-@app_commands.checks.has_permissions(administrator=True)
-async def remove_waiting_room_command(interaction: discord.Interaction, channel: discord.VoiceChannel):
-    remove_waiting_room(interaction.guild.id, channel.id)
-    await interaction.response.send_message(
-        f"{channel.mention} 채널을 대기방에서 제거했습니다.",
-        ephemeral=True,
-    )
-
-
-@bot.tree.command(name="대기방목록", description="현재 등록된 대기방 목록을 확인합니다.")
-@app_commands.checks.has_permissions(administrator=True)
-async def list_waiting_rooms(interaction: discord.Interaction):
-    room_ids = get_waiting_rooms(interaction.guild.id)
-    if not room_ids:
-        await interaction.response.send_message("등록된 대기방이 없습니다.", ephemeral=True)
-        return
-
-    lines = [f"<#{room_id}>" for room_id in room_ids]
-    embed = discord.Embed(title="등록된 대기방 목록", description="\n".join(lines), color=0x3498DB)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-
 @bot.tree.command(name="팀", description="랜덤 팀을 생성합니다.")
 async def team(interaction: discord.Interaction):
     embed = discord.Embed(title="👥 팀 생성", description="팀 인원을 선택해주세요.", color=0x3498DB)
@@ -9548,10 +9480,9 @@ async def admin_commands_guide(interaction: discord.Interaction):
         inline=False,
     )
     admin_embed.add_field(
-        name="🎉 환영 / 문의 / 대기방 관리",
+        name="🎉 환영 / 문의 관리",
         value=(
             "`/환영메시지`, `/환영메시지삭제`, `/환영메시지목록`\n"
-            "`/세팅대기방추가`, `/세팅대기방삭제`, `/대기방목록`\n"
             "`/팀섞기규칙설정`, `/팀섞기규칙확인`, `/닉네임패널생성`"
         ),
         inline=False,
@@ -9856,17 +9787,6 @@ async def on_voice_state_update(member, before, after):
             start_voice_session(guild_id, member.id, after.channel.id)
 
     channels = []
-
-    if after.channel and (before.channel is None or before.channel.id != after.channel.id):
-        if is_waiting_room(member.guild.id, after.channel.id):
-            recruit_channel_id = get_guild_setting_channel_id(member.guild.id, "recruit_channel_id")
-            if recruit_channel_id is not None:
-                recruit_channel = member.guild.get_channel(recruit_channel_id)
-                if recruit_channel is not None:
-                    await recruit_channel.send(
-                        content=f"@here {member.mention}님이 대기방 {after.channel.mention}에 들어왔습니다."
-                    )
-
 
     if before.channel:
         channels.append(before.channel)
