@@ -601,6 +601,7 @@ cursor.execute(
         guild_id TEXT NOT NULL,
         user_id TEXT NOT NULL,
         channel_id TEXT NOT NULL,
+        channel_name TEXT,
         started_at TEXT NOT NULL,
         PRIMARY KEY (guild_id, user_id)
     )
@@ -614,9 +615,32 @@ cursor.execute(
         guild_id TEXT NOT NULL,
         user_id TEXT NOT NULL,
         channel_id TEXT NOT NULL,
+        channel_name TEXT,
         started_at TEXT NOT NULL,
         ended_at TEXT NOT NULL,
         duration_seconds INTEGER NOT NULL
+    )
+    """
+)
+
+cursor.execute("PRAGMA table_info(voice_channel_sessions)")
+voice_session_columns = [row[1] for row in cursor.fetchall()]
+if "channel_name" not in voice_session_columns:
+    cursor.execute("ALTER TABLE voice_channel_sessions ADD COLUMN channel_name TEXT")
+    conn.commit()
+
+cursor.execute("PRAGMA table_info(voice_channel_logs)")
+voice_log_columns = [row[1] for row in cursor.fetchall()]
+if "channel_name" not in voice_log_columns:
+    cursor.execute("ALTER TABLE voice_channel_logs ADD COLUMN channel_name TEXT")
+    conn.commit()
+
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS temporary_voice_channels(
+        guild_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL PRIMARY KEY,
+        created_at TEXT NOT NULL
     )
     """
 )
@@ -656,6 +680,14 @@ def get_guild_setting(guild_id: int, key: str):
     )
     row = cursor.fetchone()
     return row[0] if row else None
+
+
+def delete_guild_setting(guild_id: int, key: str):
+    cursor.execute(
+        "DELETE FROM guild_settings WHERE guild_id=? AND key=?",
+        (str(guild_id), key),
+    )
+    conn.commit()
 
 
 def get_guild_setting_channel_id(guild_id: int, key: str):
@@ -710,6 +742,123 @@ def get_savings_days(guild_id: int) -> int:
 
 def get_savings_interest_rate(guild_id: int) -> int:
     return int(get_setting_with_default(guild_id, "savings_interest_rate", DEFAULT_SAVINGS_INTEREST_RATE))
+
+
+def add_temporary_voice_channel(guild_id: int, channel_id: int):
+    cursor.execute(
+        """
+        INSERT OR REPLACE INTO temporary_voice_channels(guild_id, channel_id, created_at)
+        VALUES (?, ?, ?)
+        """,
+        (str(guild_id), str(channel_id), dt_to_db(get_kst_now())),
+    )
+    conn.commit()
+
+
+def remove_temporary_voice_channel(guild_id: int, channel_id: int):
+    cursor.execute(
+        "DELETE FROM temporary_voice_channels WHERE guild_id=? AND channel_id=?",
+        (str(guild_id), str(channel_id)),
+    )
+    conn.commit()
+
+
+def get_temporary_voice_channel_ids(guild_id: int) -> list[int]:
+    cursor.execute(
+        "SELECT channel_id FROM temporary_voice_channels WHERE guild_id=? ORDER BY created_at ASC",
+        (str(guild_id),),
+    )
+    channel_ids = []
+    for (channel_id,) in cursor.fetchall():
+        try:
+            channel_ids.append(int(channel_id))
+        except ValueError:
+            continue
+    return channel_ids
+
+
+def is_temporary_voice_channel(guild_id: int, channel_id: int) -> bool:
+    cursor.execute(
+        "SELECT 1 FROM temporary_voice_channels WHERE guild_id=? AND channel_id=?",
+        (str(guild_id), str(channel_id)),
+    )
+    return cursor.fetchone() is not None
+
+
+def get_next_team_voice_channel_name(guild: discord.Guild) -> str:
+    used_numbers = set()
+    for channel_id in get_temporary_voice_channel_ids(guild.id):
+        channel = guild.get_channel(channel_id)
+        if channel is None:
+            remove_temporary_voice_channel(guild.id, channel_id)
+            continue
+
+        match = re.fullmatch(r"(\d+)팀", channel.name.strip())
+        if match:
+            used_numbers.add(int(match.group(1)))
+
+    team_number = 1
+    while team_number in used_numbers:
+        team_number += 1
+    return f"{team_number}팀"
+
+
+async def delete_temporary_voice_channel_if_empty(channel: discord.abc.GuildChannel | None):
+    if not isinstance(channel, discord.VoiceChannel):
+        return
+
+    if not is_temporary_voice_channel(channel.guild.id, channel.id):
+        return
+
+    if channel.members:
+        return
+
+    remove_temporary_voice_channel(channel.guild.id, channel.id)
+    try:
+        await channel.delete(reason="임시 팀 음성채널이 비어 자동 삭제")
+    except discord.NotFound:
+        pass
+    except discord.Forbidden:
+        pass
+    except discord.HTTPException:
+        pass
+
+
+async def create_team_voice_channel_for_member(member: discord.Member, trigger_channel: discord.VoiceChannel):
+    guild = member.guild
+    me = guild.me
+    if me is None:
+        return
+
+    permissions = trigger_channel.permissions_for(me)
+    if not permissions.manage_channels or not permissions.move_members or not permissions.connect:
+        return
+
+    channel_name = get_next_team_voice_channel_name(guild)
+    try:
+        if trigger_channel.category is not None:
+            created_channel = await trigger_channel.category.create_voice_channel(
+                name=channel_name,
+                reason=f"{member.display_name}님이 음성채널 생성 채널에 입장",
+            )
+        else:
+            created_channel = await guild.create_voice_channel(
+                name=channel_name,
+                reason=f"{member.display_name}님이 음성채널 생성 채널에 입장",
+            )
+    except (discord.Forbidden, discord.HTTPException):
+        return
+
+    add_temporary_voice_channel(guild.id, created_channel.id)
+
+    try:
+        await member.move_to(created_channel, reason="임시 팀 음성채널 자동 이동")
+    except (discord.Forbidden, discord.HTTPException):
+        remove_temporary_voice_channel(guild.id, created_channel.id)
+        try:
+            await created_channel.delete(reason="임시 팀 음성채널 이동 실패로 삭제")
+        except Exception:
+            pass
 
 
 def set_time_role(guild_id: int, slot_name: str, role_id: int):
@@ -2007,13 +2156,13 @@ def get_team_mix_count_between(guild_id: int, user_id: int, start_dt: datetime, 
     return int(row[0] or 0) if row else 0
 
 
-def start_voice_session(guild_id: int, user_id: int, channel_id: int):
+def start_voice_session(guild_id: int, user_id: int, channel_id: int, channel_name: str | None = None):
     cursor.execute(
         """
-        INSERT OR REPLACE INTO voice_channel_sessions(guild_id, user_id, channel_id, started_at)
-        VALUES (?, ?, ?, ?)
+        INSERT OR REPLACE INTO voice_channel_sessions(guild_id, user_id, channel_id, channel_name, started_at)
+        VALUES (?, ?, ?, ?, ?)
         """,
-        (str(guild_id), str(user_id), str(channel_id), dt_to_db(get_kst_now())),
+        (str(guild_id), str(user_id), str(channel_id), channel_name or str(channel_id), dt_to_db(get_kst_now())),
     )
     conn.commit()
 
@@ -2021,7 +2170,7 @@ def start_voice_session(guild_id: int, user_id: int, channel_id: int):
 def get_active_voice_session(guild_id: int, user_id: int):
     cursor.execute(
         """
-        SELECT channel_id, started_at
+        SELECT channel_id, channel_name, started_at
         FROM voice_channel_sessions
         WHERE guild_id=? AND user_id=?
         """,
@@ -2032,7 +2181,8 @@ def get_active_voice_session(guild_id: int, user_id: int):
         return None
     return {
         "channel_id": int(row[0]),
-        "started_at": row[1],
+        "channel_name": row[1] or str(row[0]),
+        "started_at": row[2],
     }
 
 
@@ -2047,13 +2197,14 @@ def end_voice_session(guild_id: int, user_id: int):
 
     cursor.execute(
         """
-        INSERT INTO voice_channel_logs(guild_id, user_id, channel_id, started_at, ended_at, duration_seconds)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO voice_channel_logs(guild_id, user_id, channel_id, channel_name, started_at, ended_at, duration_seconds)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
         (
             str(guild_id),
             str(user_id),
             str(session["channel_id"]),
+            session.get("channel_name") or str(session["channel_id"]),
             dt_to_db(started_at),
             dt_to_db(ended_at),
             duration_seconds,
@@ -2083,7 +2234,7 @@ def get_voice_channel_log_summary(guild_id: int, user_id: int, since: datetime):
 def get_voice_channel_intervals(guild_id: int, user_id: int, since: datetime):
     cursor.execute(
         """
-        SELECT channel_id, started_at, ended_at
+        SELECT channel_id, channel_name, started_at, ended_at
         FROM voice_channel_logs
         WHERE guild_id=? AND user_id=? AND ended_at>=?
         ORDER BY started_at ASC
@@ -2092,7 +2243,7 @@ def get_voice_channel_intervals(guild_id: int, user_id: int, since: datetime):
     )
     rows = cursor.fetchall()
     intervals = []
-    for channel_id, started_at, ended_at in rows:
+    for channel_id, channel_name, started_at, ended_at in rows:
         try:
             start_dt = max(dt_from_db(started_at), since)
             end_dt = dt_from_db(ended_at)
@@ -2103,6 +2254,7 @@ def get_voice_channel_intervals(guild_id: int, user_id: int, since: datetime):
         intervals.append(
             {
                 "channel_id": int(channel_id),
+                "channel_name": channel_name,
                 "start": start_dt,
                 "end": end_dt,
                 "active": False,
@@ -2120,6 +2272,7 @@ def get_voice_channel_intervals(guild_id: int, user_id: int, since: datetime):
             intervals.append(
                 {
                     "channel_id": active_session["channel_id"],
+                    "channel_name": active_session.get("channel_name"),
                     "start": start_dt,
                     "end": end_dt,
                     "active": True,
@@ -2139,6 +2292,7 @@ def get_voice_channel_intervals_between(guild_id: int, user_id: int, start_dt: d
         intervals.append(
             {
                 "channel_id": item["channel_id"],
+                "channel_name": item.get("channel_name"),
                 "start": clamped_start,
                 "end": clamped_end,
                 "active": item.get("active", False),
@@ -2189,12 +2343,12 @@ async def sync_active_voice_sessions():
                 seen_user_ids.add(member.id)
                 session = get_active_voice_session(guild.id, member.id)
                 if session is None:
-                    start_voice_session(guild.id, member.id, voice_channel.id)
+                    start_voice_session(guild.id, member.id, voice_channel.id, voice_channel.name)
                     continue
 
                 if session["channel_id"] != voice_channel.id:
                     clear_active_voice_session(guild.id, member.id)
-                    start_voice_session(guild.id, member.id, voice_channel.id)
+                    start_voice_session(guild.id, member.id, voice_channel.id, voice_channel.name)
 
         cursor.execute(
             "SELECT user_id FROM voice_channel_sessions WHERE guild_id=?",
@@ -6739,6 +6893,27 @@ async def set_recruit_channel(interaction: discord.Interaction):
     set_guild_setting(interaction.guild.id, "recruit_channel_id", str(interaction.channel.id))
     await interaction.response.send_message(f"구인 채널을 {interaction.channel.mention} 으로 설정했습니다.", ephemeral=True)
 
+
+@bot.tree.command(name="세팅음성생성채널", description="입장 시 1팀, 2팀 음성채널을 자동 생성할 트리거 채널을 설정합니다.")
+@app_commands.rename(channel="채널")
+@app_commands.describe(channel="유저가 입장하면 팀 음성채널을 만들 음성채널")
+@app_commands.checks.has_permissions(administrator=True)
+async def set_team_voice_create_channel(interaction: discord.Interaction, channel: discord.VoiceChannel):
+    set_guild_setting(interaction.guild.id, "team_voice_create_channel_id", str(channel.id))
+    await interaction.response.send_message(
+        f"{channel.mention} 채널을 음성채널 생성 트리거로 설정했습니다.\n"
+        "유저가 이 채널에 입장하면 같은 카테고리에 `1팀`, `2팀` 순서로 공개 음성채널이 생성됩니다.",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="음성생성채널해제", description="자동 팀 음성채널 생성 트리거 설정을 해제합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def clear_team_voice_create_channel(interaction: discord.Interaction):
+    delete_guild_setting(interaction.guild.id, "team_voice_create_channel_id")
+    await interaction.response.send_message("음성채널 생성 트리거 설정을 해제했습니다.", ephemeral=True)
+
+
 @bot.tree.command(name="세팅몰빵결과채널", description="현재 채널을 몰빵게임 결과 채널로 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_all_in_result_channel(interaction: discord.Interaction):
@@ -7776,9 +7951,11 @@ def build_voice_log_embed(guild: discord.Guild, member: discord.Member, since: d
         seconds = max(0, int((item["end"] - item["start"]).total_seconds()))
         if seconds <= 0:
             continue
+        channel = guild.get_channel(int(item["channel_id"]))
+        channel_name = item.get("channel_name") or (channel.name if channel else f"알 수 없는 채널 ({item['channel_id']})")
         channel_entry = summary_map.setdefault(
-            item["channel_id"],
-            {"total_seconds": 0, "session_count": 0, "last_ended_at": None},
+            channel_name,
+            {"total_seconds": 0, "session_count": 0, "last_ended_at": None, "channel_name": channel_name},
         )
         channel_entry["total_seconds"] += seconds
         channel_entry["session_count"] += 1
@@ -7801,9 +7978,7 @@ def build_voice_log_embed(guild: discord.Guild, member: discord.Member, since: d
         return None, "해당 기간 기준 집계 가능한 음성채널 기록이 없습니다."
 
     lines = []
-    top_channel_id, top_channel_item = sorted_rows[0]
-    top_channel = guild.get_channel(int(top_channel_id))
-    top_channel_name = top_channel.name if top_channel else f"알 수 없는 채널 ({top_channel_id})"
+    top_channel_name, top_channel_item = sorted_rows[0]
     team_mix_count = get_team_mix_count_between(guild.id, member.id, since, until)
     companion_rows = []
 
@@ -7832,10 +8007,8 @@ def build_voice_log_embed(guild: discord.Guild, member: discord.Member, since: d
             f"전체 체류 대비: `{percentage:.1f}%`"
         )
 
-    for idx, (channel_id, item) in enumerate(sorted_rows[:10], start=1):
+    for idx, (channel_name, item) in enumerate(sorted_rows[:10], start=1):
         percentage = (item["total_seconds"] / total_seconds) * 100
-        channel = guild.get_channel(int(channel_id))
-        channel_name = channel.name if channel else f"알 수 없는 채널 ({channel_id})"
         lines.append(
             f"{idx}. {channel_name}\n"
             f"체류 시간: `{format_duration_korean(item['total_seconds'])}`\n"
@@ -9456,7 +9629,8 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="📌 채널 / 역할 설정",
         value=(
             "`/세팅등업로그`, `/세팅퇴장로그`, `/세팅규칙로그`\n"
-            "`/세팅구인채널`, `/세팅몰빵결과채널`, `/세팅가이드안내`, `/세팅환영메시지채널`\n"
+            "`/세팅구인채널`, `/세팅음성생성채널`, `/음성생성채널해제`\n"
+            "`/세팅몰빵결과채널`, `/세팅가이드안내`, `/세팅환영메시지채널`\n"
             "`/세팅규칙역할`, `/세팅신입역할`, `/신용불량자역할`\n"
             "`/세팅클랜등업역할`, `/세팅게스트등업역할`, `/세팅시간대역할`"
         ),
@@ -9777,14 +9951,21 @@ async def on_voice_state_update(member, before, after):
     guild_id = member.guild.id
     current_is_spectator = is_spectator_member(member, guild_id)
     active_session = get_active_voice_session(guild_id, member.id)
+    trigger_channel_id = get_guild_setting_channel_id(guild_id, "team_voice_create_channel_id")
+    moved_to_trigger_channel = (
+        trigger_channel_id is not None
+        and after.channel is not None
+        and after.channel.id == trigger_channel_id
+        and (before.channel is None or before.channel.id != after.channel.id)
+    )
 
     if before.channel is not None and (after.channel is None or before.channel.id != after.channel.id):
         if active_session is not None:
             end_voice_session(guild_id, member.id)
 
     if after.channel is not None and (before.channel is None or before.channel.id != after.channel.id):
-        if not current_is_spectator:
-            start_voice_session(guild_id, member.id, after.channel.id)
+        if not current_is_spectator and not moved_to_trigger_channel:
+            start_voice_session(guild_id, member.id, after.channel.id, after.channel.name)
 
     channels = []
 
@@ -9822,6 +10003,13 @@ async def on_voice_state_update(member, before, after):
             continue
 
         await view.update_embed()
+
+    await delete_temporary_voice_channel_if_empty(before.channel)
+
+    if moved_to_trigger_channel and isinstance(after.channel, discord.VoiceChannel):
+        await create_team_voice_channel_for_member(member, after.channel)
+        await disconnect_playlist_if_alone(member.guild)
+        return
 
     await disconnect_playlist_if_alone(member.guild)
 
