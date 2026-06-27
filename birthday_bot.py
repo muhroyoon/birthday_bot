@@ -647,6 +647,17 @@ cursor.execute(
 
 cursor.execute(
     """
+    CREATE TABLE IF NOT EXISTS team_voice_create_channels(
+        guild_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (guild_id, channel_id)
+    )
+    """
+)
+
+cursor.execute(
+    """
     CREATE TABLE IF NOT EXISTS playlist_tracks(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         guild_id TEXT NOT NULL,
@@ -744,6 +755,50 @@ def get_savings_interest_rate(guild_id: int) -> int:
     return int(get_setting_with_default(guild_id, "savings_interest_rate", DEFAULT_SAVINGS_INTEREST_RATE))
 
 
+def add_team_voice_create_channel(guild_id: int, channel_id: int):
+    cursor.execute(
+        """
+        INSERT OR REPLACE INTO team_voice_create_channels(guild_id, channel_id, created_at)
+        VALUES (?, ?, ?)
+        """,
+        (str(guild_id), str(channel_id), dt_to_db(get_kst_now())),
+    )
+    conn.commit()
+
+
+def remove_team_voice_create_channel(guild_id: int, channel_id: int):
+    cursor.execute(
+        "DELETE FROM team_voice_create_channels WHERE guild_id=? AND channel_id=?",
+        (str(guild_id), str(channel_id)),
+    )
+    conn.commit()
+
+
+def get_team_voice_create_channel_ids(guild_id: int) -> list[int]:
+    cursor.execute(
+        "SELECT channel_id FROM team_voice_create_channels WHERE guild_id=? ORDER BY created_at ASC",
+        (str(guild_id),),
+    )
+    channel_ids = []
+    for (channel_id,) in cursor.fetchall():
+        try:
+            channel_ids.append(int(channel_id))
+        except ValueError:
+            continue
+
+    legacy_channel_id = get_guild_setting_channel_id(guild_id, "team_voice_create_channel_id")
+    if legacy_channel_id is not None and legacy_channel_id not in channel_ids:
+        add_team_voice_create_channel(guild_id, legacy_channel_id)
+        delete_guild_setting(guild_id, "team_voice_create_channel_id")
+        channel_ids.append(legacy_channel_id)
+
+    return channel_ids
+
+
+def is_team_voice_create_channel(guild_id: int, channel_id: int) -> bool:
+    return channel_id in get_team_voice_create_channel_ids(guild_id)
+
+
 def add_temporary_voice_channel(guild_id: int, channel_id: int):
     cursor.execute(
         """
@@ -785,12 +840,17 @@ def is_temporary_voice_channel(guild_id: int, channel_id: int) -> bool:
     return cursor.fetchone() is not None
 
 
-def get_next_team_voice_channel_name(guild: discord.Guild) -> str:
+def get_next_team_voice_channel_name(guild: discord.Guild, category: discord.CategoryChannel | None = None) -> str:
     used_numbers = set()
     for channel_id in get_temporary_voice_channel_ids(guild.id):
         channel = guild.get_channel(channel_id)
         if channel is None:
             remove_temporary_voice_channel(guild.id, channel_id)
+            continue
+
+        if category is not None and channel.category_id != category.id:
+            continue
+        if category is None and channel.category_id is not None:
             continue
 
         match = re.fullmatch(r"(\d+)팀", channel.name.strip())
@@ -834,7 +894,7 @@ async def create_team_voice_channel_for_member(member: discord.Member, trigger_c
     if not permissions.manage_channels or not permissions.move_members or not permissions.connect:
         return
 
-    channel_name = get_next_team_voice_channel_name(guild)
+    channel_name = get_next_team_voice_channel_name(guild, trigger_channel.category)
     try:
         if trigger_channel.category is not None:
             created_channel = await trigger_channel.category.create_voice_channel(
@@ -6896,24 +6956,60 @@ async def set_recruit_channel(interaction: discord.Interaction):
     await interaction.response.send_message(f"구인 채널을 {interaction.channel.mention} 으로 설정했습니다.", ephemeral=True)
 
 
-@bot.tree.command(name="세팅음성생성채널", description="입장 시 1팀, 2팀 음성채널을 자동 생성할 트리거 채널을 설정합니다.")
+@bot.tree.command(name="세팅음성생성채널", description="입장 시 1팀, 2팀 음성채널을 자동 생성할 트리거 채널을 추가합니다.")
 @app_commands.rename(channel="채널")
 @app_commands.describe(channel="유저가 입장하면 팀 음성채널을 만들 음성채널")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_team_voice_create_channel(interaction: discord.Interaction, channel: discord.VoiceChannel):
-    set_guild_setting(interaction.guild.id, "team_voice_create_channel_id", str(channel.id))
+    add_team_voice_create_channel(interaction.guild.id, channel.id)
     await interaction.response.send_message(
-        f"{channel.mention} 채널을 음성채널 생성 트리거로 설정했습니다.\n"
+        f"{channel.mention} 채널을 음성채널 생성 트리거로 추가했습니다.\n"
         "유저가 이 채널에 입장하면 같은 카테고리에 `1팀`, `2팀` 순서로 공개 음성채널이 생성됩니다.",
         ephemeral=True,
     )
 
 
-@bot.tree.command(name="음성생성채널해제", description="자동 팀 음성채널 생성 트리거 설정을 해제합니다.")
+@bot.tree.command(name="음성생성채널해제", description="자동 팀 음성채널 생성 트리거를 제거합니다.")
+@app_commands.rename(channel="채널")
+@app_commands.describe(channel="제거할 트리거 음성채널. 비워두면 모든 트리거를 제거합니다.")
 @app_commands.checks.has_permissions(administrator=True)
-async def clear_team_voice_create_channel(interaction: discord.Interaction):
+async def clear_team_voice_create_channel(interaction: discord.Interaction, channel: discord.VoiceChannel | None = None):
+    if channel is not None:
+        remove_team_voice_create_channel(interaction.guild.id, channel.id)
+        if get_guild_setting_channel_id(interaction.guild.id, "team_voice_create_channel_id") == channel.id:
+            delete_guild_setting(interaction.guild.id, "team_voice_create_channel_id")
+        await interaction.response.send_message(f"{channel.mention} 트리거 채널을 제거했습니다.", ephemeral=True)
+        return
+
+    for channel_id in get_team_voice_create_channel_ids(interaction.guild.id):
+        remove_team_voice_create_channel(interaction.guild.id, channel_id)
     delete_guild_setting(interaction.guild.id, "team_voice_create_channel_id")
-    await interaction.response.send_message("음성채널 생성 트리거 설정을 해제했습니다.", ephemeral=True)
+    await interaction.response.send_message("모든 음성채널 생성 트리거 설정을 해제했습니다.", ephemeral=True)
+
+
+@bot.tree.command(name="음성생성채널목록", description="자동 팀 음성채널 생성 트리거 목록을 확인합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def list_team_voice_create_channels(interaction: discord.Interaction):
+    channel_ids = get_team_voice_create_channel_ids(interaction.guild.id)
+    if not channel_ids:
+        await interaction.response.send_message("등록된 음성채널 생성 트리거가 없습니다.", ephemeral=True)
+        return
+
+    lines = []
+    for channel_id in channel_ids:
+        channel = interaction.guild.get_channel(channel_id)
+        if channel is None:
+            lines.append(f"`{channel_id}` - 삭제된 채널")
+        else:
+            category_name = channel.category.name if channel.category else "카테고리 없음"
+            lines.append(f"{channel.mention} / `{category_name}`")
+
+    embed = discord.Embed(
+        title="🎙 음성채널 생성 트리거 목록",
+        description="\n".join(lines),
+        color=0x3498DB,
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(name="세팅몰빵결과채널", description="현재 채널을 몰빵게임 결과 채널로 설정합니다.")
@@ -9631,7 +9727,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="📌 채널 / 역할 설정",
         value=(
             "`/세팅등업로그`, `/세팅퇴장로그`, `/세팅규칙로그`\n"
-            "`/세팅구인채널`, `/세팅음성생성채널`, `/음성생성채널해제`\n"
+            "`/세팅구인채널`, `/세팅음성생성채널`, `/음성생성채널목록`, `/음성생성채널해제`\n"
             "`/세팅몰빵결과채널`, `/세팅가이드안내`, `/세팅환영메시지채널`\n"
             "`/세팅규칙역할`, `/세팅신입역할`, `/신용불량자역할`\n"
             "`/세팅클랜등업역할`, `/세팅게스트등업역할`, `/세팅시간대역할`"
@@ -9953,11 +10049,9 @@ async def on_voice_state_update(member, before, after):
     guild_id = member.guild.id
     current_is_spectator = is_spectator_member(member, guild_id)
     active_session = get_active_voice_session(guild_id, member.id)
-    trigger_channel_id = get_guild_setting_channel_id(guild_id, "team_voice_create_channel_id")
     moved_to_trigger_channel = (
-        trigger_channel_id is not None
-        and after.channel is not None
-        and after.channel.id == trigger_channel_id
+        after.channel is not None
+        and is_team_voice_create_channel(guild_id, after.channel.id)
         and (before.channel is None or before.channel.id != after.channel.id)
     )
 
