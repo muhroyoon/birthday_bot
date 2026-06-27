@@ -853,6 +853,8 @@ async def create_team_voice_channel_for_member(member: discord.Member, trigger_c
 
     try:
         await member.move_to(created_channel, reason="임시 팀 음성채널 자동 이동")
+        clear_active_voice_session(guild.id, member.id)
+        start_voice_session(guild.id, member.id, created_channel.id, created_channel.name)
     except (discord.Forbidden, discord.HTTPException):
         remove_temporary_voice_channel(guild.id, created_channel.id)
         try:
