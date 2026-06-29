@@ -100,17 +100,23 @@ DEFAULT_LABOR_DEBT_AMOUNT = 100_000
 LOAN_GRADE_DECAY_DAYS = 2
 
 LABOR_GACHA_RESULTS = [
-    ("꽝", 0, 1800),
-    ("-10%", 10, 1199),
-    ("-20%", 20, 600),
-    ("-30%", 30, 250),
-    ("-40%", 40, 100),
-    ("-50%", 50, 30),
-    ("-60%", 60, 12),
-    ("-70%", 70, 5),
-    ("-80%", 80, 2),
-    ("-90%", 90, 1),
-    ("-100%", 100, 1),
+    ("꽝", 0, 5000),
+    ("-10%", 10, 3000),
+    ("-20%", 20, 1200),
+    ("-30%", 30, 500),
+    ("-40%", 40, 180),
+    ("-50%", 50, 70),
+    ("-60%", 60, 30),
+    ("-70%", 70, 10),
+    ("-80%", 80, 5),
+    ("-90%", 90, 3),
+    ("-100%", 100, 2),
+]
+
+BACCARAT_OUTCOMES = [
+    {"name": "플레이어", "weight": 4462, "multiplier": 2.24},
+    {"name": "뱅커", "weight": 4586, "multiplier": 2.18},
+    {"name": "타이", "weight": 952, "multiplier": 10.50},
 ]
 
 LOAN_GRADE_LIMITS = {
@@ -4344,6 +4350,84 @@ class CoinFlipView(discord.ui.View):
         await self.finish(interaction, "뒤")
 
 
+class BaccaratView(discord.ui.View):
+    def __init__(self, guild_id: int, user_id: int, bet_amount: int):
+        super().__init__(timeout=60)
+        self.guild_id = guild_id
+        self.user_id = user_id
+        self.bet_amount = bet_amount
+        self.resolved = False
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("이 버튼은 명령어를 사용한 본인만 누를 수 있습니다.", ephemeral=True)
+            return False
+        return True
+
+    async def finish(self, interaction: discord.Interaction, choice: str):
+        if self.resolved:
+            await interaction.response.send_message("이미 결과가 확정되었습니다.", ephemeral=True)
+            return
+
+        self.resolved = True
+        outcome = random.choices(
+            BACCARAT_OUTCOMES,
+            weights=[item["weight"] for item in BACCARAT_OUTCOMES],
+            k=1,
+        )[0]
+        result = outcome["name"]
+        win = choice == result
+
+        for item in self.children:
+            item.disabled = True
+
+        if win:
+            payout = int(self.bet_amount * outcome["multiplier"])
+            add_balance(self.user_id, payout)
+            color = 0x2ECC71
+            result_text = (
+                f"선택: **{choice}**\n"
+                f"결과: **{result}**\n"
+                f"배당 `{outcome['multiplier']}배`로 `{format_money(payout)}`을 획득했습니다."
+            )
+        else:
+            color = 0xE74C3C
+            result_text = (
+                f"선택: **{choice}**\n"
+                f"결과: **{result}**\n"
+                f"아쉽네요... `{format_money(self.bet_amount)}`을 잃었습니다."
+            )
+
+        embed = discord.Embed(title="🃏 바카라 결과", description=result_text, color=color)
+        embed.add_field(name="현재 잔액", value=format_money(get_balance(self.user_id)), inline=False)
+        add_game_history(
+            self.guild_id,
+            "바카라",
+            f"{interaction.user.display_name} - 선택:{choice} / 결과:{result} / {'승리' if win else '패배'}",
+        )
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def on_timeout(self):
+        if self.resolved:
+            return
+        self.resolved = True
+        add_balance(self.user_id, self.bet_amount)
+        for item in self.children:
+            item.disabled = True
+
+    @discord.ui.button(label="플레이어", style=discord.ButtonStyle.primary)
+    async def player(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.finish(interaction, "플레이어")
+
+    @discord.ui.button(label="뱅커", style=discord.ButtonStyle.success)
+    async def banker(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.finish(interaction, "뱅커")
+
+    @discord.ui.button(label="타이", style=discord.ButtonStyle.secondary)
+    async def tie(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.finish(interaction, "타이")
+
+
 def draw_blackjack_card() -> str:
     return random.choice(BLACKJACK_CARD_VALUES)
 
@@ -6126,6 +6210,10 @@ class HistoryGameSelectView(discord.ui.View):
     async def blackjack_history(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.show_history(interaction, "블랙잭")
 
+    @discord.ui.button(label="바카라", style=discord.ButtonStyle.success)
+    async def baccarat_history(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.show_history(interaction, "바카라")
+
     @discord.ui.button(label="경마", style=discord.ButtonStyle.success)
     async def horse_race_history(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.show_history(interaction, "경마")
@@ -7839,6 +7927,39 @@ async def coin(interaction: discord.Interaction, amount: int):
     await interaction.response.send_message(embed=embed, view=CoinFlipView(interaction.user.id, amount))
 
 
+@bot.tree.command(name="바카라", description="플레이어, 뱅커, 타이 중 하나를 골라 베팅합니다.")
+async def baccarat(interaction: discord.Interaction, amount: int):
+    if not await ensure_not_blacklisted_for_gambling(interaction):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+    if amount < MIN_BET:
+        await interaction.response.send_message(f"최소 베팅 금액은 `{format_money(MIN_BET)}`입니다.", ephemeral=True)
+        return
+    if not can_afford(interaction.user.id, amount):
+        await interaction.response.send_message("잔액이 부족합니다.", ephemeral=True)
+        return
+
+    add_balance(interaction.user.id, -amount)
+    embed = discord.Embed(
+        title="🃏 바카라",
+        description=(
+            f"베팅 금액: `{format_money(amount)}`\n\n"
+            "플레이어, 뱅커, 타이 중 하나를 선택해주세요.\n"
+            "각 선택지는 확률에 맞춘 공정 배당으로 지급됩니다."
+        ),
+        color=0x9B59B6,
+    )
+    embed.add_field(name="플레이어", value="44.62% / 2.24배", inline=True)
+    embed.add_field(name="뱅커", value="45.86% / 2.18배", inline=True)
+    embed.add_field(name="타이", value="9.52% / 10.5배", inline=True)
+    await interaction.response.send_message(
+        embed=embed,
+        view=BaccaratView(interaction.guild.id, interaction.user.id, amount),
+    )
+
+
 @bot.tree.command(name="블랙잭", description="입력한 금액으로 딜러와 블랙잭을 합니다.")
 async def blackjack(interaction: discord.Interaction, amount: int):
     if not await ensure_not_blacklisted_for_gambling(interaction):
@@ -8543,6 +8664,17 @@ async def probability_table(interaction: discord.Interaction):
     )
 
     embed.add_field(
+        name="바카라",
+        value=(
+            "플레이어 44.62% / 2.24배\n"
+            "뱅커 45.86% / 2.18배\n"
+            "타이 9.52% / 10.5배\n"
+            "확률에 맞춘 공정 배당으로 기대값 약 1"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
         name="보급",
         value=(
             "빈 상자 34% / 0배\n"
@@ -8663,269 +8795,6 @@ async def game_history_command(interaction: discord.Interaction):
         view=HistoryGameSelectView(interaction.guild.id),
         ephemeral=True,
     )
-
-
-@bot.tree.command(name="플리등록", description="서버 플레이리스트에 음악 링크를 등록합니다.")
-@app_commands.rename(title="제목", url="링크")
-@app_commands.describe(title="목록에 표시할 음악 제목", url="유튜브 등 재생할 음악 링크")
-async def playlist_add(interaction: discord.Interaction, title: str, url: str):
-    if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
-        return
-
-    title = title.strip()
-    url = url.strip()
-    if not title or not url:
-        await interaction.response.send_message("제목과 링크를 모두 입력해주세요.", ephemeral=True)
-        return
-
-    track_id = add_playlist_track(interaction.guild.id, interaction.user.id, title, url)
-    await interaction.response.send_message(
-        f"🎵 플레이리스트에 등록했습니다.\n"
-        f"곡번호: `{track_id}`\n"
-        f"제목: **{title}**"
-    )
-
-
-@bot.tree.command(name="유튜브쿠키등록", description="서버 주인 전용: YouTube cookies.txt 파일을 등록합니다.")
-@app_commands.rename(cookie_file="쿠키파일")
-@app_commands.describe(cookie_file="YouTube에서 내보낸 cookies.txt 파일")
-async def register_youtube_cookie(interaction: discord.Interaction, cookie_file: discord.Attachment):
-    if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
-        return
-
-    if interaction.guild.owner_id != interaction.user.id:
-        await interaction.response.send_message("이 명령어는 서버 주인만 사용할 수 있습니다.", ephemeral=True)
-        return
-
-    if not cookie_file.filename.lower().endswith(".txt"):
-        await interaction.response.send_message("cookies.txt 파일만 등록할 수 있습니다.", ephemeral=True)
-        return
-
-    await interaction.response.defer(ephemeral=True, thinking=True)
-
-    try:
-        raw_cookie_bytes = await cookie_file.read()
-        cookie_text = raw_cookie_bytes.decode("utf-8-sig")
-    except Exception as e:
-        await interaction.followup.send(f"쿠키 파일을 읽지 못했습니다: {type(e).__name__}", ephemeral=True)
-        return
-
-    cookie_text = cookie_text.lstrip("\ufeff\r\n\t ")
-    header_index = cookie_text.find("# Netscape HTTP Cookie File")
-    if header_index > 0:
-        cookie_text = cookie_text[header_index:]
-
-    if "# Netscape HTTP Cookie File" not in cookie_text:
-        await interaction.followup.send("Netscape cookies.txt 형식이 아닙니다. export한 원본 cookies.txt를 업로드해주세요.", ephemeral=True)
-        return
-
-    cookie_lines = [line for line in cookie_text.splitlines() if line and not line.startswith("#")]
-    youtube_cookie_lines = [line for line in cookie_lines if ".youtube.com" in line or ".google.com" in line]
-    if not youtube_cookie_lines:
-        await interaction.followup.send("YouTube/Google 쿠키 라인을 찾지 못했습니다. YouTube에 로그인한 상태에서 다시 export해주세요.", ephemeral=True)
-        return
-
-    missing_cookie_names = get_missing_youtube_login_cookie_names(cookie_text)
-    if missing_cookie_names:
-        await interaction.followup.send(
-            "로그인 인증에 필요한 핵심 쿠키가 누락됐습니다.\n"
-            f"누락된 쿠키: `{', '.join(missing_cookie_names)}`\n"
-            "YouTube에 로그인한 상태에서 youtube.com 페이지를 연 뒤 cookies.txt를 다시 export해주세요.",
-            ephemeral=True,
-        )
-        return
-
-    with open(YTDLP_PERSISTENT_COOKIE_FILE, "w", encoding="utf-8") as cookie_file_obj:
-        cookie_file_obj.write(cookie_text.strip() + "\n")
-
-    await interaction.followup.send(
-        f"YouTube 쿠키를 등록했습니다.\n저장된 쿠키 라인: `{len(cookie_lines)}개`\n이제 `/플리재생`을 다시 테스트해주세요.",
-        ephemeral=True,
-    )
-
-
-@bot.tree.command(name="유튜브쿠키확인", description="서버 주인 전용: YouTube 쿠키 등록 상태를 확인합니다.")
-async def check_youtube_cookie(interaction: discord.Interaction):
-    if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
-        return
-
-    if interaction.guild.owner_id != interaction.user.id:
-        await interaction.response.send_message("이 명령어는 서버 주인만 사용할 수 있습니다.", ephemeral=True)
-        return
-
-    await interaction.response.send_message(get_ytdlp_cookie_status_text(), ephemeral=True)
-
-
-@bot.tree.command(name="플리목록", description="서버 플레이리스트 목록을 확인합니다.")
-async def playlist_list(interaction: discord.Interaction):
-    if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
-        return
-
-    rows = get_playlist_tracks(interaction.guild.id, 30)
-    if not rows:
-        await interaction.response.send_message("등록된 플레이리스트가 없습니다.", ephemeral=True)
-        return
-
-    lines = []
-    for track_id, owner_user_id, title, url, created_at in rows:
-        owner = interaction.guild.get_member(int(owner_user_id))
-        owner_name = owner.display_name if owner else f"알 수 없는 유저 ({owner_user_id})"
-        lines.append(
-            f"`{track_id}` **{title}**\n"
-            f"등록자: {owner_name}\n"
-            f"링크: {url}"
-        )
-
-    embed = discord.Embed(
-        title="🎵 서버 플레이리스트",
-        description="`/플리재생`을 입력하면 플레이리스트 패널에서 음악을 선택해 재생할 수 있습니다.",
-        color=0x1DB954,
-    )
-    embed.add_field(name="최근 등록곡", value=join_discord_field_lines(lines), inline=False)
-    await interaction.response.send_message(embed=embed)
-
-
-@bot.tree.command(name="플리삭제", description="서버 플레이리스트에서 곡을 삭제합니다.")
-@app_commands.rename(track_id="곡번호")
-@app_commands.describe(track_id="삭제할 곡번호")
-async def playlist_delete(interaction: discord.Interaction, track_id: int):
-    if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
-        return
-
-    track = get_playlist_track(interaction.guild.id, track_id)
-    if track is None:
-        await interaction.response.send_message("해당 곡번호의 음악을 찾을 수 없습니다.", ephemeral=True)
-        return
-
-    can_delete = track["owner_user_id"] == interaction.user.id
-    if isinstance(interaction.user, discord.Member):
-        can_delete = can_delete or interaction.user.guild_permissions.administrator
-
-    if not can_delete:
-        await interaction.response.send_message("등록자 또는 관리자만 삭제할 수 있습니다.", ephemeral=True)
-        return
-
-    delete_playlist_track(interaction.guild.id, track_id)
-    await interaction.response.send_message(f"🗑 플레이리스트에서 **{track['title']}** 곡을 삭제했습니다.")
-
-
-@bot.tree.command(name="플리재생", description="서버 플레이리스트 패널을 열어 음악을 재생합니다.")
-@app_commands.rename(track_id="곡번호")
-@app_commands.describe(track_id="입력하면 해당 곡번호부터 재생 목록을 시작합니다.")
-async def playlist_play(interaction: discord.Interaction, track_id: int | None = None):
-    if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
-        return
-
-    if track_id is not None and get_playlist_track(interaction.guild.id, track_id) is None:
-        await interaction.response.send_message("해당 곡번호의 음악을 찾을 수 없습니다.", ephemeral=True)
-        return
-
-    rows = get_playlist_tracks_from(interaction.guild.id, track_id, PLAYLIST_PLAY_LIMIT)
-    tracks = [build_playlist_track_from_row(row) for row in rows]
-
-    if not tracks:
-        await interaction.response.send_message("재생할 플레이리스트 곡이 없습니다.", ephemeral=True)
-        return
-
-    if not interaction.user.voice or not interaction.user.voice.channel:
-        await interaction.response.send_message("먼저 재생할 음성채널에 들어가 주세요.", ephemeral=True)
-        return
-
-    await interaction.response.defer()
-
-    voice_channel = interaction.user.voice.channel
-    try:
-        voice_client = interaction.guild.voice_client
-        if voice_client is None:
-            voice_client = await voice_channel.connect(timeout=10, reconnect=False)
-        elif voice_client.channel != voice_channel:
-            await voice_client.move_to(voice_channel)
-    except Exception as e:
-        if getattr(e, "code", None) == 4017:
-            await interaction.followup.send(
-                "이 음성채널은 E2EE/DAVE 보안 음성 연결이 필요해서 봇이 접속하지 못했습니다.\n"
-                "일반 음성채널에서 다시 시도하거나, 해당 채널의 E2EE/DAVE 관련 설정을 꺼주세요.",
-                ephemeral=True,
-            )
-            return
-        await interaction.followup.send(f"음성채널에 연결하지 못했습니다: {e}", ephemeral=True)
-        return
-
-    playlist_library_cache[interaction.guild.id] = list(tracks)
-    playlist_modes[interaction.guild.id] = "order"
-    playlist_panel_requesters[interaction.guild.id] = interaction.user.id
-    playlist_queues[interaction.guild.id] = list(tracks)
-    playlist_text_channels[interaction.guild.id] = interaction.channel.id
-    playlist_now_playing.pop(interaction.guild.id, None)
-    playlist_previous_tracks.pop(interaction.guild.id, None)
-    playlist_failure_counts.pop(interaction.guild.id, None)
-    playlist_failed_tracks.pop(interaction.guild.id, None)
-    playlist_last_youtube_request_at.pop(interaction.guild.id, None)
-
-    await disable_playlist_panel(interaction.guild)
-    panel_message = await interaction.followup.send(
-        embed=build_playlist_panel_embed(interaction.guild),
-        view=PlaylistPanelView(interaction.user.id, tracks),
-        wait=True,
-    )
-    playlist_panel_messages[interaction.guild.id] = (interaction.channel.id, panel_message.id)
-
-    if voice_client.is_playing() or voice_client.is_paused():
-        voice_client.stop()
-    else:
-        await start_next_playlist_track(interaction.guild)
-
-
-@bot.tree.command(name="플리스킵", description="현재 재생 중인 플레이리스트 곡을 넘깁니다.")
-async def playlist_skip(interaction: discord.Interaction):
-    if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
-        return
-
-    voice_client = interaction.guild.voice_client
-    if voice_client is None or not voice_client.is_connected():
-        await interaction.response.send_message("현재 재생 중인 플레이리스트가 없습니다.", ephemeral=True)
-        return
-
-    if voice_client.is_playing() or voice_client.is_paused():
-        voice_client.stop()
-        await interaction.response.send_message("⏭ 현재 곡을 넘겼습니다.")
-        return
-
-    await interaction.response.send_message("넘길 곡이 없습니다.", ephemeral=True)
-
-
-@bot.tree.command(name="플리정지", description="플레이리스트 재생을 정지하고 음성채널에서 나갑니다.")
-async def playlist_stop(interaction: discord.Interaction):
-    if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
-        return
-
-    playlist_queues.pop(interaction.guild.id, None)
-    playlist_now_playing.pop(interaction.guild.id, None)
-    playlist_previous_tracks.pop(interaction.guild.id, None)
-    playlist_library_cache.pop(interaction.guild.id, None)
-    playlist_modes.pop(interaction.guild.id, None)
-    playlist_panel_requesters.pop(interaction.guild.id, None)
-    playlist_text_channels.pop(interaction.guild.id, None)
-    playlist_failure_counts.pop(interaction.guild.id, None)
-    playlist_failed_tracks.pop(interaction.guild.id, None)
-    playlist_last_youtube_request_at.pop(interaction.guild.id, None)
-    await disable_playlist_panel(interaction.guild)
-
-    voice_client = interaction.guild.voice_client
-    if voice_client is not None and voice_client.is_connected():
-        await voice_client.disconnect(force=True)
-        await interaction.response.send_message("⏹ 플레이리스트 재생을 정지했습니다.")
-        return
-
-    await interaction.response.send_message("현재 연결된 음성채널이 없습니다.", ephemeral=True)
 
 
 @bot.tree.command(name="몰빵참여", description="입력한 금액으로 오늘의 몰빵게임에 참여합니다.")
@@ -9687,6 +9556,7 @@ async def gambling_commands(interaction: discord.Interaction):
         value=(
             "`/슬롯 [금액]` - 슬롯머신\n"
             "`/동전 [금액]` - 동전 앞뒤 맞추기\n"
+            "`/바카라 [금액]` - 플레이어, 뱅커, 타이 중 선택\n"
             "`/보급 [금액]` - 보급 상자 게임\n"
             "`/덕몽 [금액]` - 오리를 찾아라\n"
             "`/블랙잭 [금액]` - 딜러와 21 대결\n"
@@ -9764,7 +9634,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         value=(
             "`/돈주기`, `/돈주기내역`, `/돈삭제`, `/송금내역`, `/벌금부여`, `/벌금삭제`\n"
             "`/신용불량자등록`, `/신용불량자목록`, `/신용불량자삭제`, `/신용초기화`\n"
-            "`/노동가챠권지급`, `/유튜브쿠키등록`, `/유튜브쿠키확인`\n"
+            "`/노동가챠권지급`\n"
             "`/신용조회`, `/신용등급표`, `/일수`, `/대출상환`, `/중도상환`"
         ),
         inline=False,
@@ -9808,7 +9678,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
     general_embed.add_field(
         name="🎮 도박 / 게임",
         value=(
-            "`/슬롯`, `/동전`, `/보급`, `/덕몽`\n"
+            "`/슬롯`, `/동전`, `/바카라`, `/보급`, `/덕몽`\n"
             "`/블랙잭`, `/경마`, `/숫자야구`, `/야추`, `/지뢰찾기`\n"
             "`/섯다`, `/몰빵참여`"
         ),
@@ -9823,8 +9693,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="👥 구인 / 팀 / 기타",
         value=(
             "`/구인`, `/종겜구인`, `/팀`, `/팀섞기로그`, `/음성로그`, `/끼리끼리조회`, `/시간설정패널`\n"
-            "`/등업패널`, `/규칙버튼`, `/닉네임패널생성`\n"
-            "`/플리등록`, `/플리목록`, `/플리삭제`, `/플리재생`, `/플리스킵`, `/플리정지`"
+            "`/등업패널`, `/규칙버튼`, `/닉네임패널생성`"
         ),
         inline=False,
     )
@@ -10104,10 +9973,7 @@ async def on_voice_state_update(member, before, after):
 
     if moved_to_trigger_channel and isinstance(after.channel, discord.VoiceChannel):
         await create_team_voice_channel_for_member(member, after.channel)
-        await disconnect_playlist_if_alone(member.guild)
         return
-
-    await disconnect_playlist_if_alone(member.guild)
 
 
 @bot.event
