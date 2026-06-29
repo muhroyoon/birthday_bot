@@ -82,8 +82,9 @@ TOKEN = os.getenv("TOKEN")
 # 전역 설정
 # ============================================================
 
-DAILY_REWARD = 10000
+DAILY_REWARD = 500_000
 MIN_BET = 100
+ALL_IN_MIN_BET = 1_000_000
 COIN_FLIP_TIMEOUT = 60
 SEOTDA_TIMEOUT = 60
 MAX_PLAYERS = 4
@@ -7555,7 +7556,7 @@ async def time_panel(interaction: discord.Interaction):
 # 재화 / 적금 명령어
 # ----------------------------
 
-@bot.tree.command(name="기초생활수급비", description="하루에 한 번 기초생활수급비 10,000원을 받습니다.")
+@bot.tree.command(name="기초생활수급비", description="하루에 한 번 기초생활수급비 500,000원을 받습니다.")
 async def daily_money(interaction: discord.Interaction):
     today = get_kst_now().strftime("%Y-%m-%d")
     cursor.execute("SELECT last_claim_date FROM daily_claims WHERE user_id=?", (str(interaction.user.id),))
@@ -8896,7 +8897,7 @@ async def probability_table(interaction: discord.Interaction):
     embed.add_field(
         name="몰빵게임",
         value=(
-            f"참가비 `{format_money(MIN_BET)}` 이상 자유 입력\n"
+            f"참가비 `{format_money(ALL_IN_MIN_BET)}` 이상 자유 입력\n"
             "하루 동안 참가한 사람 중 1명을 무작위로 추첨\n"
             "그날 참가자들의 총 금액을 모두 1명이 가져갑니다."
         ),
@@ -8948,8 +8949,8 @@ async def join_all_in_game(interaction: discord.Interaction, amount: int):
     if interaction.guild is None:
         await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
         return
-    if amount < MIN_BET:
-        await interaction.response.send_message(f"최소 참가 금액은 `{format_money(MIN_BET)}`입니다.", ephemeral=True)
+    if amount < ALL_IN_MIN_BET:
+        await interaction.response.send_message(f"최소 참가 금액은 `{format_money(ALL_IN_MIN_BET)}`입니다.", ephemeral=True)
         return
 
     await interaction.response.defer(thinking=True)
