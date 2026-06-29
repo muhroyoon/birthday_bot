@@ -118,6 +118,7 @@ BACCARAT_OUTCOMES = [
     {"name": "뱅커", "weight": 4586, "multiplier": 2.18},
     {"name": "타이", "weight": 952, "multiplier": 10.50},
 ]
+BACCARAT_CARD_VALUES = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
 
 LOAN_GRADE_LIMITS = {
     1: 20_000_000,
@@ -4350,6 +4351,51 @@ class CoinFlipView(discord.ui.View):
         await self.finish(interaction, "뒤")
 
 
+def draw_baccarat_card() -> str:
+    return random.choice(BACCARAT_CARD_VALUES)
+
+
+def baccarat_card_value(card: str) -> int:
+    if card == "A":
+        return 1
+    if card in {"10", "J", "Q", "K"}:
+        return 0
+    return int(card)
+
+
+def baccarat_hand_value(cards: list[str]) -> int:
+    return sum(baccarat_card_value(card) for card in cards) % 10
+
+
+def format_baccarat_cards(cards: list[str]) -> str:
+    return " ".join(f"`{card}`" for card in cards)
+
+
+def draw_baccarat_showdown(target_result: str) -> tuple[list[str], list[str], int, int]:
+    for _ in range(1000):
+        player_cards = [draw_baccarat_card(), draw_baccarat_card()]
+        banker_cards = [draw_baccarat_card(), draw_baccarat_card()]
+        player_score = baccarat_hand_value(player_cards)
+        banker_score = baccarat_hand_value(banker_cards)
+
+        if player_score > banker_score:
+            result = "플레이어"
+        elif banker_score > player_score:
+            result = "뱅커"
+        else:
+            result = "타이"
+
+        if result == target_result:
+            return player_cards, banker_cards, player_score, banker_score
+
+    # 매우 드문 경우에도 결과 화면이 비지 않도록 안전한 기본 패를 사용합니다.
+    if target_result == "플레이어":
+        return ["9", "K"], ["7", "Q"], 9, 7
+    if target_result == "뱅커":
+        return ["7", "Q"], ["9", "K"], 7, 9
+    return ["8", "K"], ["8", "Q"], 8, 8
+
+
 class BaccaratView(discord.ui.View):
     def __init__(self, guild_id: int, user_id: int, bet_amount: int):
         super().__init__(timeout=60)
@@ -4377,6 +4423,7 @@ class BaccaratView(discord.ui.View):
         )[0]
         result = outcome["name"]
         win = choice == result
+        player_cards, banker_cards, player_score, banker_score = draw_baccarat_showdown(result)
 
         for item in self.children:
             item.disabled = True
@@ -4386,19 +4433,29 @@ class BaccaratView(discord.ui.View):
             add_balance(self.user_id, payout)
             color = 0x2ECC71
             result_text = (
-                f"선택: **{choice}**\n"
-                f"결과: **{result}**\n"
-                f"배당 `{outcome['multiplier']}배`로 `{format_money(payout)}`을 획득했습니다."
+                f"선택한 곳: **{choice}**\n"
+                f"최종 결과: **{result} 승리**\n"
+                f"배당 `{outcome['multiplier']}배`로 `{format_money(payout)}`을 지급받았습니다."
             )
         else:
             color = 0xE74C3C
             result_text = (
-                f"선택: **{choice}**\n"
-                f"결과: **{result}**\n"
+                f"선택한 곳: **{choice}**\n"
+                f"최종 결과: **{result} 승리**\n"
                 f"아쉽네요... `{format_money(self.bet_amount)}`을 잃었습니다."
             )
 
-        embed = discord.Embed(title="🃏 바카라 결과", description=result_text, color=color)
+        embed = discord.Embed(title="🃏 바카라 쇼다운", description=result_text, color=color)
+        embed.add_field(
+            name="플레이어 패",
+            value=f"{format_baccarat_cards(player_cards)}\n합계: **{player_score}**",
+            inline=True,
+        )
+        embed.add_field(
+            name="뱅커 패",
+            value=f"{format_baccarat_cards(banker_cards)}\n합계: **{banker_score}**",
+            inline=True,
+        )
         embed.add_field(name="현재 잔액", value=format_money(get_balance(self.user_id)), inline=False)
         add_game_history(
             self.guild_id,
@@ -7943,17 +8000,18 @@ async def baccarat(interaction: discord.Interaction, amount: int):
 
     add_balance(interaction.user.id, -amount)
     embed = discord.Embed(
-        title="🃏 바카라",
+        title="🃏 바카라 테이블 오픈",
         description=(
             f"베팅 금액: `{format_money(amount)}`\n\n"
-            "플레이어, 뱅커, 타이 중 하나를 선택해주세요.\n"
-            "각 선택지는 확률에 맞춘 공정 배당으로 지급됩니다."
+            "아래 버튼에서 베팅할 곳을 선택해주세요.\n"
+            "선택 후 플레이어와 뱅커의 카드가 공개됩니다."
         ),
         color=0x9B59B6,
     )
-    embed.add_field(name="플레이어", value="44.62% / 2.24배", inline=True)
-    embed.add_field(name="뱅커", value="45.86% / 2.18배", inline=True)
-    embed.add_field(name="타이", value="9.52% / 10.5배", inline=True)
+    embed.add_field(name="플레이어", value="승률 44.62%\n배당 2.24배", inline=True)
+    embed.add_field(name="뱅커", value="승률 45.86%\n배당 2.18배", inline=True)
+    embed.add_field(name="타이", value="확률 9.52%\n배당 10.5배", inline=True)
+    embed.set_footer(text="60초 안에 선택하지 않으면 베팅금이 반환됩니다.")
     await interaction.response.send_message(
         embed=embed,
         view=BaccaratView(interaction.guild.id, interaction.user.id, amount),
