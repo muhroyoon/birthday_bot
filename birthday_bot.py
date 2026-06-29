@@ -9015,7 +9015,7 @@ async def money_grant_history(interaction: discord.Interaction, member: discord.
 # 신용 / 대출 명령어
 # ----------------------------
 
-@bot.tree.command(name="일수", description="현재 신용레벨 기준으로 대출을 받습니다.")
+@bot.tree.command(name="신용대출", description="현재 신용레벨 기준으로 대출을 받습니다.")
 @app_commands.rename(amount="금액")
 async def loan_money(interaction: discord.Interaction, amount: int):
     if interaction.guild is None:
@@ -9677,7 +9677,7 @@ async def gambling_commands(interaction: discord.Interaction):
     embed.add_field(
         name="대출 / 신용",
         value=(
-            "`/일수 [금액]` - 남은 대출 한도 내에서 추가 대출\n"
+            "`/신용대출 [금액]` - 남은 대출 한도 내에서 추가 대출\n"
             "`/대출상환 [대출번호] [금액]` - 특정 대출 부분 상환\n"
             "`/중도상환` - 현재 진행 중인 대출 전체 상환\n"
             "`/내신용` - 내 신용레벨, 대출, 노동 현황 확인\n"
@@ -9778,7 +9778,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
             "`/돈주기`, `/돈주기내역`, `/돈삭제`, `/송금내역`, `/벌금부여`, `/벌금삭제`\n"
             "`/신용불량자등록`, `/신용불량자목록`, `/신용불량자삭제`, `/신용초기화`\n"
             "`/노동가챠권지급`\n"
-            "`/신용조회`, `/신용레벨표`, `/일수`, `/대출상환`, `/중도상환`"
+            "`/신용조회`, `/신용레벨표`, `/신용대출`, `/대출상환`, `/중도상환`"
         ),
         inline=False,
     )
@@ -9813,7 +9813,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="🏦 적금 / 대출 / 신용",
         value=(
             "`/적금`, `/내적금`, `/적금수령`, `/적금중도해지`\n"
-            "`/일수`, `/대출상환`, `/중도상환`, `/내신용`, `/신용조회`, `/신용레벨표`, `/노동`, `/노동가챠`, `/노동현황`\n"
+            "`/신용대출`, `/대출상환`, `/중도상환`, `/내신용`, `/신용조회`, `/신용레벨표`, `/노동`, `/노동가챠`, `/노동현황`\n"
             "`/차용증`, `/차용증목록`, `/차용증삭제`"
         ),
         inline=False,
