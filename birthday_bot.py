@@ -121,8 +121,8 @@ LABOR_GACHA_RESULTS = [
 ]
 
 BACCARAT_OUTCOMES = [
-    {"name": "플레이어", "weight": 4462, "multiplier": 2.24},
-    {"name": "뱅커", "weight": 4586, "multiplier": 2.18},
+    {"name": "플레이어", "weight": 4462, "multiplier": 2.03},
+    {"name": "뱅커", "weight": 4586, "multiplier": 1.97},
     {"name": "타이", "weight": 952, "multiplier": 10.50},
 ]
 BACCARAT_CARD_VALUES = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
@@ -8093,8 +8093,8 @@ async def baccarat(interaction: discord.Interaction, amount: int):
         ),
         color=0x9B59B6,
     )
-    embed.add_field(name="플레이어", value="승률 44.62%\n배당 2.24배", inline=True)
-    embed.add_field(name="뱅커", value="승률 45.86%\n배당 2.18배", inline=True)
+    embed.add_field(name="플레이어", value="승률 44.62%\n배당 2.03배", inline=True)
+    embed.add_field(name="뱅커", value="승률 45.86%\n배당 1.97배", inline=True)
     embed.add_field(name="타이", value="확률 9.52%\n배당 10.5배", inline=True)
     embed.set_footer(text="60초 안에 선택하지 않으면 베팅금이 반환됩니다.")
     await interaction.response.send_message(
@@ -8809,10 +8809,10 @@ async def probability_table(interaction: discord.Interaction):
     embed.add_field(
         name="바카라",
         value=(
-            "플레이어 44.62% / 2.24배\n"
-            "뱅커 45.86% / 2.18배\n"
+            "플레이어 44.62% / 2.03배\n"
+            "뱅커 45.86% / 1.97배\n"
             "타이 9.52% / 10.5배\n"
-            "확률에 맞춘 공정 배당으로 기대값 약 1"
+            "플레이어/뱅커 베팅 중 타이가 나오면 원금 반환"
         ),
         inline=False,
     )
