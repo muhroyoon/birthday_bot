@@ -89,15 +89,22 @@ SEOTDA_TIMEOUT = 60
 MAX_PLAYERS = 4
 ALL_IN_GAME_NAME = "몰빵게임"
 GAME_HISTORY_LIMIT = 10
-MIN_CREDIT_GRADE = 1
-MAX_CREDIT_GRADE = 10
-INITIAL_CREDIT_GRADE = 10
+MIN_CREDIT_LEVEL = 1
+MAX_CREDIT_LEVEL = 20
+INITIAL_CREDIT_LEVEL = 1
+LEGACY_MAX_CREDIT_GRADE = 10
 LOAN_REPAYMENT_DAYS = 2
 LOAN_LIMIT_RECOVERY_DELAY_MINUTES = 15
 DEFAULT_SAVINGS_DAYS = "3"
 DEFAULT_SAVINGS_INTEREST_RATE = "10"
 DEFAULT_LABOR_DEBT_AMOUNT = 100_000
 LOAN_GRADE_DECAY_DAYS = 2
+CREDIT_LEVEL_LIMIT_STEP = 5_000_000
+CREDIT_LEVEL_INTEREST_RATE = 10
+
+MIN_CREDIT_GRADE = MIN_CREDIT_LEVEL
+MAX_CREDIT_GRADE = MAX_CREDIT_LEVEL
+INITIAL_CREDIT_GRADE = INITIAL_CREDIT_LEVEL
 
 LABOR_GACHA_RESULTS = [
     ("꽝", 0, 5000),
@@ -121,29 +128,13 @@ BACCARAT_OUTCOMES = [
 BACCARAT_CARD_VALUES = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
 
 LOAN_GRADE_LIMITS = {
-    1: 20_000_000,
-    2: 15_000_000,
-    3: 10_000_000,
-    4: 6_000_000,
-    5: 4_000_000,
-    6: 2_500_000,
-    7: 1_500_000,
-    8: 1_000_000,
-    9: 500_000,
-    10: 300_000,
+    level: level * CREDIT_LEVEL_LIMIT_STEP
+    for level in range(MIN_CREDIT_LEVEL, MAX_CREDIT_LEVEL + 1)
 }
 
 LOAN_GRADE_INTEREST = {
-    1: 3,
-    2: 5,
-    3: 7,
-    4: 9,
-    5: 11,
-    6: 13,
-    7: 15,
-    8: 17,
-    9: 19,
-    10: 20,
+    level: CREDIT_LEVEL_INTEREST_RATE
+    for level in range(MIN_CREDIT_LEVEL, MAX_CREDIT_LEVEL + 1)
 }
 
 labor_click_locks: set[tuple[int, int]] = set()
@@ -386,7 +377,7 @@ cursor.execute(
     """
     CREATE TABLE IF NOT EXISTS credit_profiles(
         user_id TEXT PRIMARY KEY,
-        grade INTEGER NOT NULL DEFAULT 10,
+        grade INTEGER NOT NULL DEFAULT 1,
         is_blacklisted INTEGER NOT NULL DEFAULT 0,
         blacklisted_at TEXT,
         last_loan_used_at TEXT,
@@ -394,6 +385,33 @@ cursor.execute(
     )
     """
 )
+
+cursor.execute(
+    "SELECT value FROM guild_settings WHERE guild_id=? AND key=?",
+    ("__global__", "credit_level_migration_v2"),
+)
+if cursor.fetchone() is None:
+    cursor.execute(
+        """
+        UPDATE credit_profiles
+        SET grade = ?
+        WHERE grade < ? OR grade > ?
+        """,
+        (INITIAL_CREDIT_LEVEL, MIN_CREDIT_LEVEL, MAX_CREDIT_LEVEL),
+    )
+    cursor.execute(
+        """
+        UPDATE credit_profiles
+        SET grade = ? + ? - grade
+        WHERE grade BETWEEN ? AND ?
+        """,
+        (MIN_CREDIT_LEVEL, LEGACY_MAX_CREDIT_GRADE, MIN_CREDIT_LEVEL, LEGACY_MAX_CREDIT_GRADE),
+    )
+    cursor.execute(
+        "INSERT OR REPLACE INTO guild_settings(guild_id, key, value) VALUES (?, ?, ?)",
+        ("__global__", "credit_level_migration_v2", dt_to_db(get_kst_now())),
+    )
+    conn.commit()
 
 cursor.execute(
     """
@@ -562,6 +580,14 @@ if "remaining_total_repayment" not in loan_columns:
         WHERE remaining_total_repayment=0
         """
     )
+    conn.commit()
+
+if "day_reminder_sent" not in loan_columns:
+    cursor.execute("ALTER TABLE loans ADD COLUMN day_reminder_sent INTEGER NOT NULL DEFAULT 0")
+    conn.commit()
+
+if "hour_reminder_sent" not in loan_columns:
+    cursor.execute("ALTER TABLE loans ADD COLUMN hour_reminder_sent INTEGER NOT NULL DEFAULT 0")
     conn.commit()
 
 cursor.execute("PRAGMA table_info(money_grant_logs)")
@@ -1576,20 +1602,20 @@ def upgrade_credit_grade(user_id: int):
         reset_loan_progress_amount(user_id)
         return
 
-    set_credit_grade(user_id, profile["grade"] - 1)
+    set_credit_grade(user_id, profile["grade"] + 1)
     reset_loan_progress_amount(user_id)
 
 
 def downgrade_credit_grade(user_id: int):
     profile = get_credit_profile(user_id)
 
-    if profile["grade"] >= MAX_CREDIT_GRADE:
-        set_credit_grade(user_id, MAX_CREDIT_GRADE)
+    if profile["grade"] <= MIN_CREDIT_GRADE:
+        set_credit_grade(user_id, MIN_CREDIT_GRADE)
         set_credit_blacklisted(user_id, True)
         reset_loan_progress_amount(user_id)
         return
 
-    set_credit_grade(user_id, profile["grade"] + 1)
+    set_credit_grade(user_id, profile["grade"] - 1)
     reset_loan_progress_amount(user_id)
 
 
@@ -1598,10 +1624,10 @@ def downgrade_credit_grade_for_inactivity(user_id: int) -> bool:
     if profile["is_blacklisted"]:
         return False
 
-    if profile["grade"] >= MAX_CREDIT_GRADE:
+    if profile["grade"] <= MIN_CREDIT_GRADE:
         return False
 
-    set_credit_grade(user_id, profile["grade"] + 1)
+    set_credit_grade(user_id, profile["grade"] - 1)
     reset_loan_progress_amount(user_id)
     return True
 
@@ -1610,7 +1636,7 @@ def get_credit_grade_text(user_id: int) -> str:
     profile = get_credit_profile(user_id)
     if profile["is_blacklisted"]:
         return "신용불량자"
-    return f"{profile['grade']}등급"
+    return f"{profile['grade']}레벨"
 
 
 def get_loan_limit_by_grade(grade: int) -> int:
@@ -1991,6 +2017,43 @@ def get_due_loans(now: datetime):
     return cursor.fetchall()
 
 
+def get_loan_reminders_to_send(now: datetime):
+    cursor.execute(
+        """
+        SELECT id, guild_id, user_id, remaining_total_repayment, borrowed_at, due_at, 'day'
+        FROM loans
+        WHERE status='active'
+          AND day_reminder_sent=0
+          AND borrowed_at<=?
+          AND due_at>?
+        UNION ALL
+        SELECT id, guild_id, user_id, remaining_total_repayment, borrowed_at, due_at, 'hour'
+        FROM loans
+        WHERE status='active'
+          AND hour_reminder_sent=0
+          AND due_at>?
+          AND due_at<=?
+        ORDER BY id ASC
+        """,
+        (
+            dt_to_db(now - timedelta(days=1)),
+            dt_to_db(now + timedelta(hours=1)),
+            dt_to_db(now),
+            dt_to_db(now + timedelta(hours=1)),
+        ),
+    )
+    return cursor.fetchall()
+
+
+def mark_loan_reminder_sent(loan_id: int, reminder_type: str):
+    column_name = "day_reminder_sent" if reminder_type == "day" else "hour_reminder_sent"
+    cursor.execute(
+        f"UPDATE loans SET {column_name}=1 WHERE id=?",
+        (loan_id,),
+    )
+    conn.commit()
+
+
 def refresh_active_labor_penalty_debt(guild_id: int, user_id: int):
     penalty = get_active_labor_penalty(guild_id, user_id)
     total_debt_amount = get_total_credit_obligation(guild_id, user_id) or DEFAULT_LABOR_DEBT_AMOUNT
@@ -2046,7 +2109,7 @@ def build_credit_embed(member: discord.abc.User, guild_id: int | None = None) ->
         interest_text = "대출 불가"
         remaining_limit_text = "대출 불가"
     else:
-        grade_text = f"{profile['grade']}등급"
+        grade_text = f"{profile['grade']}레벨"
         max_amount_text = format_money(get_loan_limit_by_grade(profile["grade"]))
         interest_text = f"{get_loan_interest_by_grade(profile['grade'])}%"
         remaining_limit_text = format_money(get_remaining_loan_limit(member.id))
@@ -2055,7 +2118,7 @@ def build_credit_embed(member: discord.abc.User, guild_id: int | None = None) ->
     next_limit_release_at = get_next_loan_limit_release_at(member.id)
 
     embed = discord.Embed(title=f"📋 {member.display_name}님의 신용 정보", color=0x5865F2)
-    embed.add_field(name="현재 신용등급", value=grade_text, inline=False)
+    embed.add_field(name="현재 신용레벨", value=grade_text, inline=False)
     embed.add_field(name="최대 대출 가능 금액", value=max_amount_text, inline=True)
     embed.add_field(name="현재 대출 이자율", value=interest_text, inline=True)
     embed.add_field(name="남은 대출 한도", value=remaining_limit_text, inline=True)
@@ -2073,10 +2136,10 @@ def build_credit_embed(member: discord.abc.User, guild_id: int | None = None) ->
             inline=False,
         )
     if profile["is_blacklisted"]:
-        embed.add_field(name="등급 상승 누적 실적", value="신용불량자 상태에서는 집계되지 않습니다.", inline=False)
+        embed.add_field(name="레벨 상승 누적 실적", value="신용불량자 상태에서는 집계되지 않습니다.", inline=False)
     else:
         embed.add_field(
-            name="등급 상승 누적 실적",
+            name="레벨 상승 누적 실적",
             value=f"{format_money(profile['loan_progress_amount'])} / {progress_target_text}",
             inline=False,
         )
@@ -4428,6 +4491,8 @@ class BaccaratView(discord.ui.View):
         for item in self.children:
             item.disabled = True
 
+        push = result == "타이" and choice != "타이"
+
         if win:
             payout = int(self.bet_amount * outcome["multiplier"])
             add_balance(self.user_id, payout)
@@ -4436,6 +4501,14 @@ class BaccaratView(discord.ui.View):
                 f"선택한 곳: **{choice}**\n"
                 f"최종 결과: **{result} 승리**\n"
                 f"배당 `{outcome['multiplier']}배`로 `{format_money(payout)}`을 지급받았습니다."
+            )
+        elif push:
+            add_balance(self.user_id, self.bet_amount)
+            color = 0x3498DB
+            result_text = (
+                f"선택한 곳: **{choice}**\n"
+                f"최종 결과: **타이**\n"
+                f"타이에 직접 베팅하지 않았으므로 원금 `{format_money(self.bet_amount)}`이 반환되었습니다."
             )
         else:
             color = 0xE74C3C
@@ -4460,7 +4533,7 @@ class BaccaratView(discord.ui.View):
         add_game_history(
             self.guild_id,
             "바카라",
-            f"{interaction.user.display_name} - 선택:{choice} / 결과:{result} / {'승리' if win else '패배'}",
+            f"{interaction.user.display_name} - 선택:{choice} / 결과:{result} / {'승리' if win else '원금 반환' if push else '패배'}",
         )
         await interaction.response.edit_message(embed=embed, view=self)
 
@@ -6702,7 +6775,7 @@ class LaborWorkView(discord.ui.View):
             embed.color = 0x2ECC71
             embed.add_field(
                 name="결과",
-                value=f"필요 노동 횟수를 모두 채워 신용불량자 상태가 해제되고 `{INITIAL_CREDIT_GRADE}등급`으로 초기화되었습니다.",
+                value=f"필요 노동 횟수를 모두 채워 신용불량자 상태가 해제되고 `{INITIAL_CREDIT_LEVEL}레벨`로 초기화되었습니다.",
                 inline=False,
             )
             await sync_blacklist_role(interaction.user, False)
@@ -6992,7 +7065,7 @@ class LoanConfirmView(discord.ui.View):
             item.disabled = True
 
         embed = discord.Embed(title="💳 대출 실행 완료", color=0x3498DB)
-        embed.add_field(name="현재 신용등급", value=f"{grade}등급", inline=False)
+        embed.add_field(name="현재 신용레벨", value=f"{grade}레벨", inline=False)
         embed.add_field(name="대출 금액", value=format_money(self.amount), inline=False)
         embed.add_field(name="이자율", value=f"{interest_rate}%", inline=False)
         embed.add_field(name="총 상환 금액", value=format_money(total_repayment), inline=False)
@@ -7001,7 +7074,7 @@ class LoanConfirmView(discord.ui.View):
         embed.add_field(name="남은 대출 한도", value=format_money(get_remaining_loan_limit(self.user_id)), inline=False)
         current_profile = get_credit_profile(self.user_id)
         embed.add_field(
-            name="등급 상승 누적 실적",
+            name="레벨 상승 누적 실적",
             value=(
                 f"{format_money(current_profile['loan_progress_amount'])} / "
                 f"{format_money(get_loan_limit_by_grade(current_profile['grade']))}"
@@ -7099,6 +7172,17 @@ async def set_rule_log_channel(interaction: discord.Interaction):
 async def set_recruit_channel(interaction: discord.Interaction):
     set_guild_setting(interaction.guild.id, "recruit_channel_id", str(interaction.channel.id))
     await interaction.response.send_message(f"구인 채널을 {interaction.channel.mention} 으로 설정했습니다.", ephemeral=True)
+
+
+@bot.tree.command(name="세팅대출알림채널", description="현재 채널을 대출 상환 알림 채널로 설정합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def set_loan_reminder_channel(interaction: discord.Interaction):
+    set_guild_setting(interaction.guild.id, "loan_reminder_channel_id", str(interaction.channel.id))
+    await interaction.response.send_message(
+        f"대출 상환 알림 채널을 {interaction.channel.mention} 으로 설정했습니다.\n"
+        "대출 후 1일 경과 시점과 상환 1시간 전에 알림이 전송됩니다.",
+        ephemeral=True,
+    )
 
 
 @bot.tree.command(name="세팅음성생성채널", description="입장 시 1팀, 2팀 음성채널을 자동 생성할 트리거 채널을 추가합니다.")
@@ -7295,6 +7379,7 @@ async def show_settings(interaction: discord.Interaction):
         ("퇴장 로그", "leave_log_channel_id"),
         ("규칙 로그", "rule_log_channel_id"),
         ("구인 채널", "recruit_channel_id"),
+        ("대출 알림", "loan_reminder_channel_id"),
         ("가이드 안내", "welcome_guide_channel_id"),
         ("환영메시지 채널", "welcome_message_channel_id"),
     ]
@@ -7793,7 +7878,7 @@ async def remove_money(interaction: discord.Interaction, member: discord.Member,
     )
 
 
-@bot.tree.command(name="벌금부여", description="신용등급에는 영향 없이 노동/신용 화면에 반영되는 관리자 부채를 부여합니다.")
+@bot.tree.command(name="벌금부여", description="신용레벨에는 영향 없이 노동/신용 화면에 반영되는 관리자 부채를 부여합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 @app_commands.rename(member="인원", amount="금액", reason="사유")
 async def assign_manual_credit_debt(
@@ -7826,7 +7911,7 @@ async def assign_manual_credit_debt(
         f"{member.mention}님에게 관리자 부채 `{format_money(amount)}`을 부여했습니다.",
         f"부채 번호: `#{debt_id}`",
         f"현재 관리자 부채 합계: `{format_money(total_manual_debt)}`",
-        "이 금액은 대출 한도와 신용등급에는 영향을 주지 않지만, /내신용, /신용조회, 노동 횟수에는 반영됩니다.",
+        "이 금액은 대출 한도와 신용레벨에는 영향을 주지 않지만, /내신용, /신용조회, 노동 횟수에는 반영됩니다.",
     ]
     if note:
         lines.append(f"사유: {note}")
@@ -8930,7 +9015,7 @@ async def money_grant_history(interaction: discord.Interaction, member: discord.
 # 신용 / 대출 명령어
 # ----------------------------
 
-@bot.tree.command(name="일수", description="현재 신용등급 기준으로 대출을 받습니다.")
+@bot.tree.command(name="일수", description="현재 신용레벨 기준으로 대출을 받습니다.")
 @app_commands.rename(amount="금액")
 async def loan_money(interaction: discord.Interaction, amount: int):
     if interaction.guild is None:
@@ -8968,7 +9053,7 @@ async def loan_money(interaction: discord.Interaction, amount: int):
 
     if remaining_limit <= 0:
         await interaction.response.send_message(
-            f"현재 {grade}등급의 대출 한도를 모두 사용 중입니다. `/대출상환` 또는 `/중도상환` 후 다시 시도해주세요.",
+            f"현재 {grade}레벨의 대출 한도를 모두 사용 중입니다. `/대출상환` 또는 `/중도상환` 후 다시 시도해주세요.",
             ephemeral=True,
         )
         return
@@ -8976,7 +9061,7 @@ async def loan_money(interaction: discord.Interaction, amount: int):
     if amount > remaining_limit:
         await interaction.response.send_message(
             (
-                f"현재 {grade}등급의 최대 대출 가능 금액은 `{format_money(max_amount)}`이며,\n"
+                f"현재 {grade}레벨의 최대 대출 가능 금액은 `{format_money(max_amount)}`이며,\n"
                 f"이미 사용 중인 한도를 제외한 남은 대출 가능 금액은 `{format_money(remaining_limit)}`입니다."
             ),
             ephemeral=True,
@@ -9001,7 +9086,7 @@ async def loan_money(interaction: discord.Interaction, amount: int):
     total_repayment = calculate_total_repayment(amount, interest_rate)
 
     embed = discord.Embed(title="💳 대출 실행 확인", color=0xF1C40F)
-    embed.add_field(name="현재 신용등급", value=f"{grade}등급", inline=False)
+    embed.add_field(name="현재 신용레벨", value=f"{grade}레벨", inline=False)
     embed.add_field(name="대출 금액", value=format_money(amount), inline=False)
     embed.add_field(name="이자율", value=f"{interest_rate}%", inline=False)
     embed.add_field(name="총 상환 금액", value=format_money(total_repayment), inline=False)
@@ -9062,7 +9147,7 @@ async def repay_loan_command(interaction: discord.Interaction):
             refresh_active_labor_penalty_debt(interaction.guild.id, interaction.user.id)
     else:
         required_amount = get_loan_limit_by_grade(profile["grade"])
-        if loan_progress_amount >= required_amount:
+        if profile["grade"] < MAX_CREDIT_LEVEL and loan_progress_amount >= required_amount:
             upgrade_credit_grade(interaction.user.id)
             grade_up = True
 
@@ -9071,8 +9156,8 @@ async def repay_loan_command(interaction: discord.Interaction):
     embed = discord.Embed(title="✅ 대출 상환 완료", color=0x2ECC71)
     embed.add_field(name="상환한 대출 수", value=f"{len(active_loans)}건", inline=False)
     embed.add_field(name="상환 금액", value=format_money(repayment_amount), inline=False)
-    embed.add_field(name="상환 전 신용등급", value=previous_grade_text, inline=False)
-    embed.add_field(name="현재 신용등급", value=current_grade_text, inline=False)
+    embed.add_field(name="상환 전 신용레벨", value=previous_grade_text, inline=False)
+    embed.add_field(name="현재 신용레벨", value=current_grade_text, inline=False)
     embed.add_field(name="현재 잔액", value=format_money(get_balance(interaction.user.id)), inline=False)
     embed.add_field(
         name="한도 회복 안내",
@@ -9084,13 +9169,13 @@ async def repay_loan_command(interaction: discord.Interaction):
         manual_debt_total = get_total_active_manual_credit_debt(interaction.guild.id, interaction.user.id) if interaction.guild else 0
         if manual_debt_total <= 0:
             embed.add_field(
-                name="등급 변화",
-                value=f"기존 대출을 모두 상환하여 신용불량자 상태가 해제되고 {INITIAL_CREDIT_GRADE}등급으로 복귀했습니다.",
+                name="레벨 변화",
+                value=f"기존 대출을 모두 상환하여 신용불량자 상태가 해제되고 {INITIAL_CREDIT_LEVEL}레벨로 복귀했습니다.",
                 inline=False,
             )
         else:
             embed.add_field(
-                name="등급 변화",
+                name="레벨 변화",
                 value=(
                     "일반 대출은 모두 상환했지만 관리자 부채가 남아 있어 신용불량자 상태는 유지됩니다.\n"
                     f"남은 관리자 부채: `{format_money(manual_debt_total)}`"
@@ -9099,17 +9184,17 @@ async def repay_loan_command(interaction: discord.Interaction):
             )
     elif grade_up:
         embed.add_field(
-            name="등급 변화",
-            value="현재 등급의 최대 한도 이상 대출을 정상 상환하여 신용등급이 1단계 상승했습니다.",
+            name="레벨 변화",
+            value="현재 레벨의 최대 한도 이상 대출을 정상 상환하여 신용레벨이 1단계 상승했습니다.",
             inline=False,
         )
     else:
         required_amount = get_loan_limit_by_grade(profile["grade"])
         embed.add_field(
-            name="등급 변화",
+            name="레벨 변화",
             value=(
-                "대출은 정상 상환했지만 신용등급은 유지되었습니다.\n"
-                f"등급 상승을 위해서는 현재 등급 기준 최대 한도인 `{format_money(required_amount)}` 이상 대출 실적을 쌓아야 합니다.\n"
+                "대출은 정상 상환했지만 신용레벨은 유지되었습니다.\n"
+                f"레벨 상승을 위해서는 현재 레벨 기준 최대 한도인 `{format_money(required_amount)}` 이상 대출 실적을 쌓아야 합니다.\n"
                 f"현재 누적 실적: `{format_money(loan_progress_amount)}`"
             ),
             inline=False,
@@ -9118,46 +9203,46 @@ async def repay_loan_command(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="내신용", description="현재 신용등급과 대출 상태를 확인합니다.")
+@bot.tree.command(name="내신용", description="현재 신용레벨과 대출 상태를 확인합니다.")
 async def my_credit(interaction: discord.Interaction):
     embed = build_credit_embed(interaction.user, interaction.guild.id if interaction.guild else None)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="신용조회", description="특정 인원의 신용등급과 대출 상태를 조회합니다.")
+@bot.tree.command(name="신용조회", description="특정 인원의 신용레벨과 대출 상태를 조회합니다.")
 @app_commands.rename(member="인원")
 async def credit_lookup(interaction: discord.Interaction, member: discord.Member):
     embed = build_credit_embed(member, interaction.guild.id if interaction.guild else None)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="신용등급표", description="등급별 대출 한도와 이자율을 확인합니다.")
+@bot.tree.command(name="신용레벨표", description="레벨별 대출 한도와 이자율을 확인합니다.")
 async def credit_grade_table(interaction: discord.Interaction):
     lines = []
-    for grade in range(MAX_CREDIT_GRADE, MIN_CREDIT_GRADE - 1, -1):
+    for grade in range(MIN_CREDIT_GRADE, MAX_CREDIT_GRADE + 1):
         limit_text = format_money(get_loan_limit_by_grade(grade))
         interest_text = f"{get_loan_interest_by_grade(grade)}%"
-        lines.append(f"`{grade}등급`  대출 한도 {limit_text} / 이자율 {interest_text}")
+        lines.append(f"`Lv.{grade}`  대출 한도 {limit_text} / 이자율 {interest_text}")
 
     embed = discord.Embed(
-        title="📊 신용등급표",
+        title="📊 신용레벨표",
         description="\n".join(lines),
         color=0x3498DB,
     )
     embed.add_field(
         name="대출 조건",
         value=(
-            "대출은 현재 신용등급의 남은 한도 내에서만 가능합니다.\n"
+            "대출은 현재 신용레벨의 남은 한도 내에서만 가능합니다.\n"
             "또한 현재 잔액이 대출 금액의 25% 이상이어야 합니다.\n"
             f"상환 후 대출 한도는 {LOAN_LIMIT_RECOVERY_DELAY_MINUTES}분 뒤 회복됩니다."
         ),
         inline=False,
     )
     embed.add_field(
-        name="등급 변동 기준",
+        name="레벨 변동 기준",
         value=(
-            "현재 등급 최대 한도 이상 대출 실적을 쌓고 정상 상환하면 1단계 상승합니다.\n"
-            f"마지막 대출 사용 후 {LOAN_GRADE_DECAY_DAYS}일 동안 새 대출이 없으면 1단계 하락합니다."
+            "현재 레벨 최대 한도 이상 대출 실적을 쌓고 정상 상환하면 1레벨 상승합니다.\n"
+            f"마지막 대출 사용 후 {LOAN_GRADE_DECAY_DAYS}일 동안 새 대출이 없으면 1레벨 하락합니다."
         ),
         inline=False,
     )
@@ -9259,7 +9344,7 @@ async def labor_gacha(interaction: discord.Interaction):
         embed.color = 0x2ECC71
         embed.add_field(
             name="결과 안내",
-            value=f"노동이 모두 해제되어 신용불량자 상태가 종료되고 `{INITIAL_CREDIT_GRADE}등급`으로 복귀했습니다.",
+            value=f"노동이 모두 해제되어 신용불량자 상태가 종료되고 `{INITIAL_CREDIT_LEVEL}레벨`로 복귀했습니다.",
             inline=False,
         )
         await sync_blacklist_role(interaction.user, False)
@@ -9317,7 +9402,7 @@ async def repay_single_loan_command(interaction: discord.Interaction, loan_id: i
             refresh_active_labor_penalty_debt(interaction.guild.id, interaction.user.id)
     else:
         required_amount = get_loan_limit_by_grade(profile["grade"])
-        if loan_progress_amount >= required_amount and not get_active_loans(interaction.user.id):
+        if profile["grade"] < MAX_CREDIT_LEVEL and loan_progress_amount >= required_amount and not get_active_loans(interaction.user.id):
             upgrade_credit_grade(interaction.user.id)
             grade_up = True
 
@@ -9327,8 +9412,8 @@ async def repay_single_loan_command(interaction: discord.Interaction, loan_id: i
     embed.add_field(name="상환 금액", value=format_money(result["payment_amount"]), inline=False)
     embed.add_field(name="남은 상환 금액", value=format_money(result["remaining_total_repayment"]), inline=False)
     embed.add_field(name="회복 대기 한도", value=format_money(result["principal_recovered"]), inline=False)
-    embed.add_field(name="상환 전 신용등급", value=previous_grade_text, inline=False)
-    embed.add_field(name="현재 신용등급", value=current_grade_text, inline=False)
+    embed.add_field(name="상환 전 신용레벨", value=previous_grade_text, inline=False)
+    embed.add_field(name="현재 신용레벨", value=current_grade_text, inline=False)
     embed.add_field(name="현재 잔액", value=format_money(get_balance(interaction.user.id)), inline=False)
     embed.add_field(
         name="한도 회복 안내",
@@ -9340,7 +9425,7 @@ async def repay_single_loan_command(interaction: discord.Interaction, loan_id: i
     if profile["is_blacklisted"] and not grade_up and get_total_credit_obligation(interaction.guild.id, interaction.user.id) > 0:
         embed.add_field(name="신용 상태", value="남은 채무가 있어 신용불량자 상태는 유지됩니다.", inline=False)
     elif grade_up:
-        embed.add_field(name="등급 변화", value="상환 조건이 충족되어 신용 상태가 갱신되었습니다.", inline=False)
+        embed.add_field(name="레벨 변화", value="상환 조건이 충족되어 신용 상태가 갱신되었습니다.", inline=False)
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -9595,9 +9680,9 @@ async def gambling_commands(interaction: discord.Interaction):
             "`/일수 [금액]` - 남은 대출 한도 내에서 추가 대출\n"
             "`/대출상환 [대출번호] [금액]` - 특정 대출 부분 상환\n"
             "`/중도상환` - 현재 진행 중인 대출 전체 상환\n"
-            "`/내신용` - 내 신용등급, 대출, 노동 현황 확인\n"
+            "`/내신용` - 내 신용레벨, 대출, 노동 현황 확인\n"
             "`/신용조회 [인원]` - 특정 인원의 신용 정보 조회\n"
-            "`/신용등급표` - 등급별 대출 한도와 이자율 확인\n"
+            "`/신용레벨표` - 레벨별 대출 한도와 이자율 확인\n"
             "`/노동` - 아오지탄광에서 광맥을 골라 채굴 진행\n"
             "`/노동가챠` - 노동가챠권으로 남은 노동 횟수 감소 시도\n"
             "`/노동현황` - 노동 진행 상황 확인\n"
@@ -9655,7 +9740,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="📌 채널 / 역할 설정",
         value=(
             "`/세팅등업로그`, `/세팅퇴장로그`, `/세팅규칙로그`\n"
-            "`/세팅구인채널`, `/세팅음성생성채널`, `/음성생성채널목록`, `/음성생성채널해제`\n"
+            "`/세팅구인채널`, `/세팅대출알림채널`, `/세팅음성생성채널`, `/음성생성채널목록`, `/음성생성채널해제`\n"
             "`/세팅몰빵결과채널`, `/세팅가이드안내`, `/세팅환영메시지채널`\n"
             "`/세팅규칙역할`, `/세팅신입역할`, `/신용불량자역할`\n"
             "`/세팅클랜등업역할`, `/세팅게스트등업역할`, `/세팅시간대역할`"
@@ -9693,7 +9778,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
             "`/돈주기`, `/돈주기내역`, `/돈삭제`, `/송금내역`, `/벌금부여`, `/벌금삭제`\n"
             "`/신용불량자등록`, `/신용불량자목록`, `/신용불량자삭제`, `/신용초기화`\n"
             "`/노동가챠권지급`\n"
-            "`/신용조회`, `/신용등급표`, `/일수`, `/대출상환`, `/중도상환`"
+            "`/신용조회`, `/신용레벨표`, `/일수`, `/대출상환`, `/중도상환`"
         ),
         inline=False,
     )
@@ -9728,7 +9813,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="🏦 적금 / 대출 / 신용",
         value=(
             "`/적금`, `/내적금`, `/적금수령`, `/적금중도해지`\n"
-            "`/일수`, `/대출상환`, `/중도상환`, `/내신용`, `/신용조회`, `/신용등급표`, `/노동`, `/노동가챠`, `/노동현황`\n"
+            "`/일수`, `/대출상환`, `/중도상환`, `/내신용`, `/신용조회`, `/신용레벨표`, `/노동`, `/노동가챠`, `/노동현황`\n"
             "`/차용증`, `/차용증목록`, `/차용증삭제`"
         ),
         inline=False,
@@ -9760,7 +9845,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         value=(
             "`/적금 50000`  5만원 적금\n"
             "`/보급 10000`  1만원 보급 참여\n"
-            "`/내신용`  대출, 신용등급, 노동 현황 확인\n"
+            "`/내신용`  대출, 신용레벨, 노동 현황 확인\n"
             "`/차용증 @유저`  모달에서 원금, 이자, 상환일 입력\n"
             "`/섯다 10000 @유저`  유저와 섯다 대결 요청"
         ),
@@ -9783,7 +9868,7 @@ async def scrim_notice(interaction: discord.Interaction):
 @bot.tree.command(name="신용불량자등록", description="특정 인원을 신용불량자로 등록합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def blacklist_user(interaction: discord.Interaction, member: discord.Member):
-    set_credit_grade(member.id, MAX_CREDIT_GRADE)
+    set_credit_grade(member.id, MIN_CREDIT_LEVEL)
     set_credit_blacklisted(member.id, True)
     reset_loan_progress_amount(member.id)
     debt_amount = get_total_credit_obligation(interaction.guild.id, member.id) or DEFAULT_LABOR_DEBT_AMOUNT
@@ -9808,7 +9893,7 @@ async def grant_labor_gacha_ticket(interaction: discord.Interaction, member: dis
     current_count = get_labor_gacha_ticket_count(interaction.guild.id, member.id)
     await interaction.response.send_message(
         f"{member.mention}님에게 노동가챠권 `{amount}장`을 지급했습니다.\n현재 보유 수량: `{current_count}장`",
-        ephemeral=True,
+        ephemeral=False,
     )
 
 @bot.tree.command(name="신용불량자목록", description="현재 등록된 신용불량자 목록을 확인합니다.")
@@ -9836,7 +9921,7 @@ async def blacklist_list(interaction: discord.Interaction):
         lines.append(
             f"**{name}**\n"
             f"등록일: `{blacklisted_text}`\n"
-            f"신용등급: `{grade}등급 (신용불량자)`"
+            f"신용레벨: `{grade}레벨 (신용불량자)`"
         )
 
     embed = discord.Embed(
@@ -9856,17 +9941,18 @@ async def remove_blacklist(interaction: discord.Interaction, member: discord.Mem
     await sync_blacklist_role(member, False)
 
     await interaction.response.send_message(
-        f"{member.mention}님의 신용불량자 등록을 해제했습니다.\n신용등급은 변경하지 않습니다.",
+        f"{member.mention}님의 신용불량자 등록을 해제했습니다.\n신용레벨은 변경하지 않습니다.",
         ephemeral=True,
     )
 
 
-@bot.tree.command(name="신용초기화", description="특정 인원의 신용불량자 상태를 해제하고 원하는 등급으로 조정합니다.")
+@bot.tree.command(name="신용초기화", description="특정 인원의 신용불량자 상태를 해제하고 원하는 레벨로 조정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
+@app_commands.rename(grade="레벨")
 async def reset_credit(interaction: discord.Interaction, member: discord.Member, grade: int):
-    if grade < MIN_CREDIT_GRADE or grade > MAX_CREDIT_GRADE:
+    if grade < MIN_CREDIT_LEVEL or grade > MAX_CREDIT_LEVEL:
         await interaction.response.send_message(
-            f"등급은 {MIN_CREDIT_GRADE}등급부터 {MAX_CREDIT_GRADE}등급까지만 가능합니다.",
+            f"레벨은 {MIN_CREDIT_LEVEL}레벨부터 {MAX_CREDIT_LEVEL}레벨까지만 가능합니다.",
             ephemeral=True,
         )
         return
@@ -9878,7 +9964,7 @@ async def reset_credit(interaction: discord.Interaction, member: discord.Member,
     await sync_blacklist_role(member, False)
 
     await interaction.response.send_message(
-        f"{member.mention}님의 신용을 `{grade}등급`으로 초기화했습니다.",
+        f"{member.mention}님의 신용을 `{grade}레벨`로 초기화했습니다.",
         ephemeral=True,
     )
 
@@ -10224,9 +10310,57 @@ async def all_in_game_loop():
 
             clear_all_in_entries(target_date, guild.id)
 
+async def send_loan_repayment_reminders(now: datetime):
+    rows = get_loan_reminders_to_send(now)
+
+    for loan_id, guild_id, user_id, remaining_total_repayment, borrowed_at, due_at, reminder_type in rows:
+        guild = bot.get_guild(int(guild_id))
+        if guild is None:
+            continue
+
+        channel_id = get_guild_setting_channel_id(guild.id, "loan_reminder_channel_id")
+        if channel_id is None:
+            continue
+
+        channel = guild.get_channel(channel_id) or bot.get_channel(channel_id)
+        if channel is None or not hasattr(channel, "send"):
+            continue
+
+        member = guild.get_member(int(user_id))
+        user_text = member.mention if member else f"<@{user_id}>"
+
+        try:
+            due_dt = dt_from_db(due_at)
+            due_text = due_dt.strftime("%Y-%m-%d %H:%M:%S KST")
+        except Exception:
+            due_text = str(due_at)
+
+        if reminder_type == "day":
+            title = "⏰ 대출 상환 알림"
+            description = f"{user_text}님, 대출을 받은 지 1일이 지났습니다."
+            color = 0xF1C40F
+        else:
+            title = "🚨 대출 상환 1시간 전"
+            description = f"{user_text}님, 대출 상환 기한이 약 1시간 남았습니다."
+            color = 0xE67E22
+
+        embed = discord.Embed(title=title, description=description, color=color)
+        embed.add_field(name="대출번호", value=f"`{loan_id}`", inline=True)
+        embed.add_field(name="남은 상환 금액", value=format_money(int(remaining_total_repayment)), inline=True)
+        embed.add_field(name="상환 기한", value=f"`{due_text}`", inline=False)
+        embed.set_footer(text="상환하지 않으면 신용레벨 하락 또는 신용불량자 등록이 발생할 수 있습니다.")
+
+        try:
+            await channel.send(content=user_text, embed=embed)
+            mark_loan_reminder_sent(int(loan_id), str(reminder_type))
+        except (discord.Forbidden, discord.HTTPException):
+            continue
+
+
 @tasks.loop(minutes=1)
 async def loan_due_check_loop():
     now = get_kst_now()
+    await send_loan_repayment_reminders(now)
     rows = get_due_loans(now)
 
     for loan_id, guild_id, user_id, total_repayment, due_at in rows:
