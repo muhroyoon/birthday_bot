@@ -10015,6 +10015,27 @@ async def on_member_update(before: discord.Member, after: discord.Member):
             )
             conn.commit()
 
+    blacklist_role_id = get_guild_setting_role_id(guild_id, "blacklist_role_id")
+    if blacklist_role_id is not None:
+        removed_blacklist_role = blacklist_role_id in before_role_ids and blacklist_role_id not in after_role_ids
+        added_blacklist_role = blacklist_role_id not in before_role_ids and blacklist_role_id in after_role_ids
+
+        if removed_blacklist_role:
+            profile = get_credit_profile(after.id)
+            if profile["is_blacklisted"]:
+                set_credit_blacklisted(after.id, False)
+                reset_loan_progress_amount(after.id)
+                delete_labor_penalty(guild_id, after.id)
+
+        if added_blacklist_role:
+            profile = get_credit_profile(after.id)
+            if not profile["is_blacklisted"]:
+                set_credit_blacklisted(after.id, True)
+                debt_amount = get_total_credit_obligation(guild_id, after.id)
+                if debt_amount <= 0:
+                    debt_amount = DEFAULT_LABOR_DEBT_AMOUNT
+                create_or_replace_labor_penalty(guild_id, after.id, debt_amount)
+
     added_role_ids = after_role_ids - before_role_ids
     if added_role_ids:
         welcome_message_channel_id = get_guild_setting_channel_id(guild_id, "welcome_message_channel_id")
