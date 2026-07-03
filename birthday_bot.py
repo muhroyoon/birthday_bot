@@ -196,6 +196,10 @@ DEFAULT_PROBATION_NOTICE_TEXT = (
     "출석과 활동량을 확인하시고 역할 유지 여부를 검토해주세요."
 )
 DEFAULT_PROBATION_DAYS = "7"
+STORAGE_LOG_RETENTION_DAYS = 90
+MONEY_LOG_RETENTION_DAYS = 60
+GAME_HISTORY_KEEP_PER_GAME = 20
+STORAGE_CLEANUP_INTERVAL_HOURS = 24
 YTDLP_PERSISTENT_COOKIE_FILE = "/data/youtube-cookies.txt"
 PLAYLIST_PLAY_LIMIT = 500
 PLAYLIST_FAILURE_RETRY_DELAY_SECONDS = 8
@@ -687,19 +691,6 @@ cursor.execute(
         channel_id TEXT NOT NULL,
         created_at TEXT NOT NULL,
         PRIMARY KEY (guild_id, channel_id)
-    )
-    """
-)
-
-cursor.execute(
-    """
-    CREATE TABLE IF NOT EXISTS playlist_tracks(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        guild_id TEXT NOT NULL,
-        owner_user_id TEXT NOT NULL,
-        title TEXT NOT NULL,
-        url TEXT NOT NULL,
-        created_at TEXT NOT NULL
     )
     """
 )
@@ -1378,6 +1369,117 @@ def get_transfer_logs(guild_id: int, receiver_user_id: int, limit: int = 20):
         (str(guild_id), str(receiver_user_id), limit),
     )
     return cursor.fetchall()
+
+
+def table_exists(table_name: str) -> bool:
+    cursor.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table_name,),
+    )
+    return cursor.fetchone() is not None
+
+
+def count_rows_before(table_name: str, date_column: str, cutoff: datetime) -> int:
+    cursor.execute(
+        f"SELECT COUNT(*) FROM {table_name} WHERE {date_column}<?",
+        (dt_to_db(cutoff),),
+    )
+    row = cursor.fetchone()
+    return int(row[0] or 0)
+
+
+def delete_rows_before(table_name: str, date_column: str, cutoff: datetime) -> int:
+    if not table_exists(table_name):
+        return 0
+
+    deleted_count = count_rows_before(table_name, date_column, cutoff)
+    cursor.execute(
+        f"DELETE FROM {table_name} WHERE {date_column}<?",
+        (dt_to_db(cutoff),),
+    )
+    return deleted_count
+
+
+def count_all_rows(table_name: str) -> int:
+    if not table_exists(table_name):
+        return 0
+    cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+    row = cursor.fetchone()
+    return int(row[0] or 0)
+
+
+def prune_game_history(keep_per_game: int = GAME_HISTORY_KEEP_PER_GAME) -> int:
+    if not table_exists("game_history"):
+        return 0
+
+    cursor.execute(
+        """
+        SELECT COUNT(*)
+        FROM game_history
+        WHERE id NOT IN (
+            SELECT id
+            FROM (
+                SELECT id,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY guild_id, game_name
+                           ORDER BY id DESC
+                       ) AS rn
+                FROM game_history
+            )
+            WHERE rn <= ?
+        )
+        """,
+        (keep_per_game,),
+    )
+    row = cursor.fetchone()
+    deleted_count = int(row[0] or 0)
+
+    cursor.execute(
+        """
+        DELETE FROM game_history
+        WHERE id NOT IN (
+            SELECT id
+            FROM (
+                SELECT id,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY guild_id, game_name
+                           ORDER BY id DESC
+                       ) AS rn
+                FROM game_history
+            )
+            WHERE rn <= ?
+        )
+        """,
+        (keep_per_game,),
+    )
+    return deleted_count
+
+
+def cleanup_storage(days_to_keep: int = STORAGE_LOG_RETENTION_DAYS) -> dict[str, int | bool]:
+    days_to_keep = max(1, days_to_keep)
+    cutoff = get_kst_now() - timedelta(days=days_to_keep)
+    money_cutoff = get_kst_now() - timedelta(days=MONEY_LOG_RETENTION_DAYS)
+    result: dict[str, int | bool] = {}
+
+    result["playlist_tracks"] = count_all_rows("playlist_tracks")
+    cursor.execute("DROP TABLE IF EXISTS playlist_tracks")
+
+    result["game_history"] = prune_game_history(GAME_HISTORY_KEEP_PER_GAME)
+    result["money_grant_logs"] = delete_rows_before("money_grant_logs", "created_at", money_cutoff)
+    result["transfer_logs"] = delete_rows_before("transfer_logs", "created_at", money_cutoff)
+    result["team_mix_logs"] = delete_rows_before("team_mix_logs", "created_at", cutoff)
+    result["voice_channel_logs"] = delete_rows_before("voice_channel_logs", "ended_at", cutoff)
+
+    cookie_deleted = False
+    if os.path.exists(YTDLP_PERSISTENT_COOKIE_FILE):
+        os.remove(YTDLP_PERSISTENT_COOKIE_FILE)
+        cookie_deleted = True
+    result["youtube_cookie_deleted"] = cookie_deleted
+
+    conn.commit()
+    cursor.execute("VACUUM")
+    conn.commit()
+    return result
 
 
 def is_bot_guild_owner(user_id: int) -> bool:
@@ -10436,6 +10538,24 @@ async def savings_auto_claim_loop():
         claim_saving(int(saving_id))
 
 
+@tasks.loop(hours=STORAGE_CLEANUP_INTERVAL_HOURS)
+async def storage_cleanup_loop():
+    try:
+        result = cleanup_storage(STORAGE_LOG_RETENTION_DAYS)
+        print(
+            "저장공간 자동 정리 완료: "
+            f"보관기간 {STORAGE_LOG_RETENTION_DAYS}일 / "
+            f"게임기록 최근 {GAME_HISTORY_KEEP_PER_GAME}개 유지, {result.get('game_history', 0)}개 삭제 / "
+            f"음성로그 {result.get('voice_channel_logs', 0)}개 / "
+            f"팀섞기로그 {result.get('team_mix_logs', 0)}개 / "
+            f"송금로그 {MONEY_LOG_RETENTION_DAYS}일 초과 {result.get('transfer_logs', 0)}개 / "
+            f"지급로그 {MONEY_LOG_RETENTION_DAYS}일 초과 {result.get('money_grant_logs', 0)}개 / "
+            f"플레이리스트 {result.get('playlist_tracks', 0)}개"
+        )
+    except Exception as e:
+        print(f"저장공간 자동 정리 실패: {e}")
+
+
 
 # ============================================================
 # 봇 시작 설정
@@ -10474,6 +10594,9 @@ async def on_ready():
 
     if not savings_auto_claim_loop.is_running():
         savings_auto_claim_loop.start()
+
+    if not storage_cleanup_loop.is_running():
+        storage_cleanup_loop.start()
 
 
     print("메인 서버 봇 초기 실행 완료")
