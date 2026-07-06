@@ -4709,8 +4709,6 @@ class MontyHallView(discord.ui.View):
             description = result_text
 
         embed = discord.Embed(title="🚪 몬티홀 게임", description=description, color=color)
-        embed.add_field(name="유지", value="승률 33.33%\n승리 시 3배", inline=True)
-        embed.add_field(name="변경", value="승률 66.67%\n승리 시 1.5배", inline=True)
         embed.set_footer(text="60초 안에 선택하지 않으면 베팅금이 반환됩니다.")
         return embed
 
