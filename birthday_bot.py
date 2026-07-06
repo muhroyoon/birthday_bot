@@ -1743,6 +1743,19 @@ def get_credit_grade_text(user_id: int) -> str:
     return f"{profile['grade']}레벨"
 
 
+def get_credit_ranking_rows(limit: int = 50):
+    cursor.execute(
+        """
+        SELECT user_id, grade, is_blacklisted
+        FROM credit_profiles
+        ORDER BY grade DESC, is_blacklisted ASC, user_id ASC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+    return cursor.fetchall()
+
+
 def get_loan_limit_by_grade(grade: int) -> int:
     return LOAN_GRADE_LIMITS.get(grade, LOAN_GRADE_LIMITS[MAX_CREDIT_GRADE])
 
@@ -3930,7 +3943,7 @@ GAME_LABELS = {
     "블랙잭": "블랙잭",
     "경마": "경마",
     "숫자야구": "숫자야구",
-    "야추": "야추",
+    "몬티홀": "몬티홀",
     "지뢰찾기": "지뢰찾기",
     "섯다": "섯다",
     "몰빵게임": "몰빵게임",
@@ -3950,28 +3963,6 @@ HORSE_RACE_TABLE = [
     {"name": "하랑", "weight": 11, "payout": 9.1},
     {"name": "개쩌는머로", "weight": 9, "payout": 11.1},
 ]
-DICE_POKER_PAYOUTS = {
-    "야추": 20.0,
-    "포카드": 8.0,
-    "풀하우스": 4.0,
-    "라지 스트레이트": 3.0,
-    "스몰 스트레이트": 2.0,
-    "트리플": 2.2,
-    "투페어": 1.5,
-    "원페어": 1.1,
-    "노페어": 0.0,
-}
-DICE_POKER_RANKS = {
-    "노페어": 0,
-    "원페어": 1,
-    "투페어": 2,
-    "트리플": 3,
-    "스몰 스트레이트": 4,
-    "라지 스트레이트": 5,
-    "풀하우스": 6,
-    "포카드": 7,
-    "야추": 8,
-}
 MINESWEEPER_SIZE = 4
 MINESWEEPER_MINE_COUNT = 3
 MINESWEEPER_MULTIPLIERS = {
@@ -4660,6 +4651,157 @@ class BaccaratView(discord.ui.View):
     @discord.ui.button(label="타이", style=discord.ButtonStyle.secondary)
     async def tie(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.finish(interaction, "타이")
+
+
+class MontyHallView(discord.ui.View):
+    def __init__(self, guild_id: int, user_id: int, bet_amount: int):
+        super().__init__(timeout=60)
+        self.guild_id = guild_id
+        self.user_id = user_id
+        self.bet_amount = bet_amount
+        self.prize_door = random.randint(1, 3)
+        self.initial_choice: int | None = None
+        self.opened_door: int | None = None
+        self.resolved = False
+
+        self._set_choice_buttons_enabled(True)
+        self._set_decision_buttons_enabled(False)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("이 버튼은 명령어를 사용한 본인만 누를 수 있습니다.", ephemeral=True)
+            return False
+        return True
+
+    def _available_switch_door(self) -> int:
+        return next(
+            door
+            for door in (1, 2, 3)
+            if door != self.initial_choice and door != self.opened_door
+        )
+
+    def _set_choice_buttons_enabled(self, enabled: bool):
+        for item in self.children:
+            if isinstance(item, discord.ui.Button) and item.label in {"1번 문", "2번 문", "3번 문"}:
+                item.disabled = not enabled
+
+    def _set_decision_buttons_enabled(self, enabled: bool):
+        for item in self.children:
+            if isinstance(item, discord.ui.Button) and item.label in {"유지", "변경"}:
+                item.disabled = not enabled
+
+    def build_embed(self, result_text: str | None = None, color: int = 0xF1C40F) -> discord.Embed:
+        if self.initial_choice is None:
+            description = (
+                f"베팅 금액: `{format_money(self.bet_amount)}`\n\n"
+                "문 3개 중 하나 뒤에는 보상이 숨어 있습니다.\n"
+                "먼저 문 하나를 선택해주세요."
+            )
+        elif result_text is None:
+            switch_door = self._available_switch_door()
+            description = (
+                f"처음 선택한 문: **{self.initial_choice}번 문**\n"
+                f"사회자가 연 빈 문: **{self.opened_door}번 문**\n\n"
+                f"선택을 유지하면 **{self.initial_choice}번 문**으로 갑니다.\n"
+                f"선택을 바꾸면 **{switch_door}번 문**으로 갑니다."
+            )
+        else:
+            description = result_text
+
+        embed = discord.Embed(title="🚪 몬티홀 게임", description=description, color=color)
+        embed.add_field(name="유지", value="승률 33.33%\n승리 시 3배", inline=True)
+        embed.add_field(name="변경", value="승률 66.67%\n승리 시 1.5배", inline=True)
+        embed.set_footer(text="60초 안에 선택하지 않으면 베팅금이 반환됩니다.")
+        return embed
+
+    async def choose_door(self, interaction: discord.Interaction, door: int):
+        if self.resolved:
+            await interaction.response.send_message("이미 결과가 확정되었습니다.", ephemeral=True)
+            return
+        if self.initial_choice is not None:
+            await interaction.response.send_message("이미 첫 문을 선택했습니다.", ephemeral=True)
+            return
+
+        self.initial_choice = door
+        open_candidates = [candidate for candidate in (1, 2, 3) if candidate != door and candidate != self.prize_door]
+        self.opened_door = random.choice(open_candidates)
+
+        self._set_choice_buttons_enabled(False)
+        self._set_decision_buttons_enabled(True)
+
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def finish(self, interaction: discord.Interaction, mode: str):
+        if self.resolved:
+            await interaction.response.send_message("이미 결과가 확정되었습니다.", ephemeral=True)
+            return
+        if self.initial_choice is None or self.opened_door is None:
+            await interaction.response.send_message("먼저 문을 선택해주세요.", ephemeral=True)
+            return
+
+        self.resolved = True
+        final_choice = self.initial_choice if mode == "stay" else self._available_switch_door()
+        multiplier = 3.0 if mode == "stay" else 1.5
+        won = final_choice == self.prize_door
+
+        for item in self.children:
+            if isinstance(item, discord.ui.Button):
+                item.disabled = True
+
+        if won:
+            payout = int(self.bet_amount * multiplier)
+            add_balance(self.user_id, payout)
+            color = 0x2ECC71
+            result_text = (
+                f"최종 선택: **{final_choice}번 문**\n"
+                f"정답 문: **{self.prize_door}번 문**\n\n"
+                f"성공! `{format_money(payout)}`을 획득했습니다."
+            )
+        else:
+            color = 0xE74C3C
+            result_text = (
+                f"최종 선택: **{final_choice}번 문**\n"
+                f"정답 문: **{self.prize_door}번 문**\n\n"
+                f"아쉽네요... `{format_money(self.bet_amount)}`을 잃었습니다."
+            )
+
+        add_game_history(
+            self.guild_id,
+            "몬티홀",
+            f"{interaction.user.display_name} - {'유지' if mode == 'stay' else '변경'} / {'승리' if won else '패배'}",
+        )
+        embed = self.build_embed(result_text, color)
+        embed.add_field(name="현재 잔액", value=format_money(get_balance(self.user_id)), inline=False)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def on_timeout(self):
+        if self.resolved:
+            return
+        self.resolved = True
+        add_balance(self.user_id, self.bet_amount)
+        for item in self.children:
+            if isinstance(item, discord.ui.Button):
+                item.disabled = True
+
+    @discord.ui.button(label="1번 문", style=discord.ButtonStyle.primary)
+    async def door_one(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.choose_door(interaction, 1)
+
+    @discord.ui.button(label="2번 문", style=discord.ButtonStyle.primary)
+    async def door_two(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.choose_door(interaction, 2)
+
+    @discord.ui.button(label="3번 문", style=discord.ButtonStyle.primary)
+    async def door_three(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.choose_door(interaction, 3)
+
+    @discord.ui.button(label="유지", style=discord.ButtonStyle.success, row=1)
+    async def stay(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.finish(interaction, "stay")
+
+    @discord.ui.button(label="변경", style=discord.ButtonStyle.danger, row=1)
+    async def switch(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.finish(interaction, "switch")
 
 
 def draw_blackjack_card() -> str:
@@ -6456,13 +6598,13 @@ class HistoryGameSelectView(discord.ui.View):
     async def number_baseball_history(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.show_history(interaction, "숫자야구")
 
-    @discord.ui.button(label="야추", style=discord.ButtonStyle.success)
-    async def yahtzee_history(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.show_history(interaction, "야추")
-
     @discord.ui.button(label="지뢰찾기", style=discord.ButtonStyle.success)
     async def minesweeper_history(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.show_history(interaction, "지뢰찾기")
+
+    @discord.ui.button(label="몬티홀", style=discord.ButtonStyle.success)
+    async def monty_hall_history(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.show_history(interaction, "몬티홀")
 
     @discord.ui.button(label="섯다", style=discord.ButtonStyle.success)
     async def seotda_history(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -6471,6 +6613,91 @@ class HistoryGameSelectView(discord.ui.View):
     @discord.ui.button(label="몰빵게임", style=discord.ButtonStyle.secondary)
     async def all_in_history(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.show_history(interaction, "몰빵게임")
+
+
+class RankingView(discord.ui.View):
+    def __init__(self, guild: discord.Guild):
+        super().__init__(timeout=180)
+        self.guild_id = guild.id
+
+    def _get_guild(self, interaction: discord.Interaction) -> discord.Guild | None:
+        return interaction.guild if interaction.guild and interaction.guild.id == self.guild_id else None
+
+    def build_asset_embed(self, guild: discord.Guild) -> discord.Embed:
+        cursor.execute("SELECT user_id, balance FROM balances ORDER BY balance DESC, user_id ASC LIMIT 50")
+        rows = cursor.fetchall()
+        lines = []
+
+        for user_id, amount in rows:
+            member = guild.get_member(int(user_id))
+            if member is None or member.bot:
+                continue
+
+            rank = len(lines) + 1
+            medal = "👑 " if rank == 1 else ""
+            lines.append(f"**{rank}.** {medal}{member.display_name}\n자산: `{format_money(amount)}`")
+            if len(lines) >= 10:
+                break
+
+        embed = discord.Embed(
+            title="🏆 서버 랭킹",
+            description="아래 버튼으로 자산랭킹과 신용레벨랭킹을 전환할 수 있습니다.",
+            color=0xF1C40F,
+        )
+        embed.add_field(
+            name="💰 자산랭킹 TOP 10",
+            value="\n\n".join(lines) if lines else "아직 재산 데이터가 없습니다.",
+            inline=False,
+        )
+        embed.set_footer(text="현재 화면: 자산랭킹")
+        return embed
+
+    def build_credit_embed(self, guild: discord.Guild) -> discord.Embed:
+        rows = get_credit_ranking_rows(80)
+        lines = []
+
+        for user_id, grade, is_blacklisted in rows:
+            member = guild.get_member(int(user_id))
+            if member is None or member.bot:
+                continue
+
+            rank = len(lines) + 1
+            status_text = "신용불량자" if is_blacklisted else f"{int(grade)}레벨"
+            limit_text = format_money(get_loan_limit_by_grade(int(grade)))
+            medal = "👑 " if rank == 1 else ""
+            lines.append(f"**{rank}.** {medal}{member.display_name}\n신용: `{status_text}` / 한도: `{limit_text}`")
+            if len(lines) >= 10:
+                break
+
+        embed = discord.Embed(
+            title="🏆 서버 랭킹",
+            description="아래 버튼으로 자산랭킹과 신용레벨랭킹을 전환할 수 있습니다.",
+            color=0x3498DB,
+        )
+        embed.add_field(
+            name="📊 신용레벨랭킹 TOP 10",
+            value="\n\n".join(lines) if lines else "아직 신용레벨 데이터가 없습니다.",
+            inline=False,
+        )
+        embed.set_footer(text="현재 화면: 신용레벨랭킹")
+        return embed
+
+    @discord.ui.button(label="자산랭킹", style=discord.ButtonStyle.primary)
+    async def asset_ranking(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = self._get_guild(interaction)
+        if guild is None:
+            await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+            return
+        await interaction.response.edit_message(embed=self.build_asset_embed(guild), view=self)
+
+    @discord.ui.button(label="신용레벨랭킹", style=discord.ButtonStyle.success)
+    async def credit_ranking(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = self._get_guild(interaction)
+        if guild is None:
+            await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+            return
+        await interaction.response.edit_message(embed=self.build_credit_embed(guild), view=self)
+
 
 class DuckmongView(discord.ui.View):
     def __init__(self, user_id: int, bet_amount: int, fake_names: list[str], hidden_results: dict[str, str]):
@@ -7289,6 +7516,18 @@ async def set_loan_reminder_channel(interaction: discord.Interaction):
     )
 
 
+@bot.tree.command(name="세팅음성로그채널", description="현재 채널을 음성채널 입장/이동/퇴장 로그 채널로 설정합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def set_voice_activity_log_channel(interaction: discord.Interaction):
+    set_guild_setting(interaction.guild.id, "voice_activity_log_channel_id", str(interaction.channel.id))
+    await interaction.response.send_message(
+        f"음성채널 로그 채널을 {interaction.channel.mention} 으로 설정했습니다.\n"
+        "유저의 음성채널 입장, 이동, 퇴장 기록이 이 채널에 메시지로 전송됩니다.\n"
+        "이 알림은 DB에 따로 저장하지 않아 저장공간 부담을 늘리지 않습니다.",
+        ephemeral=True,
+    )
+
+
 @bot.tree.command(name="세팅음성생성채널", description="입장 시 1팀, 2팀 음성채널을 자동 생성할 트리거 채널을 추가합니다.")
 @app_commands.rename(channel="채널")
 @app_commands.describe(channel="유저가 입장하면 팀 음성채널을 만들 음성채널")
@@ -7484,6 +7723,7 @@ async def show_settings(interaction: discord.Interaction):
         ("규칙 로그", "rule_log_channel_id"),
         ("구인 채널", "recruit_channel_id"),
         ("대출 알림", "loan_reminder_channel_id"),
+        ("음성 로그", "voice_activity_log_channel_id"),
         ("가이드 안내", "welcome_guide_channel_id"),
         ("환영메시지 채널", "welcome_message_channel_id"),
     ]
@@ -7793,23 +8033,14 @@ async def savings_cancel(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="랭킹", description="서버 재산 상위 10명을 확인합니다.")
+@bot.tree.command(name="랭킹", description="서버 자산랭킹과 신용레벨랭킹을 확인합니다.")
 async def ranking(interaction: discord.Interaction):
-    cursor.execute("SELECT user_id, balance FROM balances ORDER BY balance DESC, user_id ASC LIMIT 10")
-    rows = cursor.fetchall()
-    if not rows:
-        await interaction.response.send_message("아직 재산 데이터가 없습니다.")
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
         return
 
-    lines = []
-    for index, (user_id, amount) in enumerate(rows, start=1):
-        member = interaction.guild.get_member(int(user_id))
-        name = member.display_name if member else f"알 수 없는 유저 ({user_id})"
-        medal = "👑 " if index == 1 else ""
-        lines.append(f"{index}. {medal}{name} - {format_money(amount)}")
-
-    embed = discord.Embed(title="🏆 재산 순위", description="\n".join(lines), color=0xF1C40F)
-    await interaction.response.send_message(embed=embed)
+    view = RankingView(interaction.guild)
+    await interaction.response.send_message(embed=view.build_asset_embed(interaction.guild), view=view)
 
 
 @bot.tree.command(name="송금", description="다른 유저에게 재화를 송금합니다.")
@@ -7958,10 +8189,16 @@ async def grant_money(interaction: discord.Interaction, targets: str, amount: in
 
 
 
-@bot.tree.command(name="돈삭제", description="서버 주인이 특정 유저의 재화를 차감합니다.")
+@bot.tree.command(name="돈삭제", description="관리자가 특정 유저의 재화를 차감합니다.")
 async def remove_money(interaction: discord.Interaction, member: discord.Member, amount: int):
-    if interaction.guild is None or interaction.user.id != interaction.guild.owner_id:
-        await interaction.response.send_message("이 명령어는 서버 주인만 사용할 수 있습니다.", ephemeral=True)
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    is_owner = interaction.user.id == interaction.guild.owner_id
+    is_admin = interaction.user.guild_permissions.administrator
+    if not (is_owner or is_admin):
+        await interaction.response.send_message("이 명령어는 서버 주인 또는 관리자만 사용할 수 있습니다.", ephemeral=True)
         return
 
     if member.bot:
@@ -8207,6 +8444,25 @@ async def baccarat(interaction: discord.Interaction, amount: int):
     )
 
 
+@bot.tree.command(name="몬티홀", description="문 3개 중 보상이 있는 문을 찾는 몬티홀 게임입니다.")
+async def monty_hall(interaction: discord.Interaction, amount: int):
+    if not await ensure_not_blacklisted_for_gambling(interaction):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+    if amount < MIN_BET:
+        await interaction.response.send_message(f"최소 베팅 금액은 `{format_money(MIN_BET)}`입니다.", ephemeral=True)
+        return
+    if not can_afford(interaction.user.id, amount):
+        await interaction.response.send_message("잔액이 부족합니다.", ephemeral=True)
+        return
+
+    add_balance(interaction.user.id, -amount)
+    view = MontyHallView(interaction.guild.id, interaction.user.id, amount)
+    await interaction.response.send_message(embed=view.build_embed(), view=view)
+
+
 @bot.tree.command(name="블랙잭", description="입력한 금액으로 딜러와 블랙잭을 합니다.")
 async def blackjack(interaction: discord.Interaction, amount: int):
     if not await ensure_not_blacklisted_for_gambling(interaction):
@@ -8278,63 +8534,6 @@ async def number_baseball(interaction: discord.Interaction):
     add_balance(interaction.user.id, -amount)
     view = NumberBaseballView(interaction.guild.id, interaction.user.id, amount)
     await interaction.response.send_message(embed=view.build_embed(), view=view)
-
-
-@bot.tree.command(name="야추", description="입력한 금액으로 봇 또는 유저와 야추 대결을 합니다.")
-@app_commands.rename(amount="금액", member="상대")
-@app_commands.describe(amount="베팅 금액", member="비워두면 봇과 대결합니다.")
-async def yahtzee(interaction: discord.Interaction, amount: int, member: discord.Member | None = None):
-    if not await ensure_not_blacklisted_for_gambling(interaction):
-        return
-    if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
-        return
-    if amount < MIN_BET:
-        await interaction.response.send_message(f"최소 베팅 금액은 `{format_money(MIN_BET)}`입니다.", ephemeral=True)
-        return
-    if not can_afford(interaction.user.id, amount):
-        await interaction.response.send_message("잔액이 부족합니다.", ephemeral=True)
-        return
-
-    if member is None:
-        add_balance(interaction.user.id, -amount)
-        match_view = YahtzeeMatchView(interaction.guild.id, interaction.user.id, None, amount)
-        embed = match_view.build_embed(interaction.guild, interaction.client.user)
-        embed.add_field(name="상대", value="봇", inline=False)
-        await interaction.response.send_message(embed=embed, view=match_view)
-        return
-
-    if member.bot:
-        await interaction.response.send_message("봇과 대결하려면 상대를 비워두고 `/야추`를 사용해주세요.", ephemeral=True)
-        return
-
-    if member.id == interaction.user.id:
-        await interaction.response.send_message("본인과는 대결할 수 없습니다.", ephemeral=True)
-        return
-
-    embed = discord.Embed(
-        title="🎲 야추 대결 요청",
-        description=f"{member.mention}님, {interaction.user.mention}님이 야추 대결을 신청했습니다.",
-        color=0xF1C40F,
-    )
-    embed.add_field(name="도전자", value=interaction.user.mention, inline=True)
-    embed.add_field(name="상대", value=member.mention, inline=True)
-    embed.add_field(name="베팅금", value=f"`{format_money(amount)}`", inline=False)
-    embed.add_field(
-        name="룰",
-        value=(
-            "수락 시 두 사람 모두 같은 금액을 먼저 겁니다.\n"
-            "각자 주사위 5개 중 3개를 먼저 공개합니다.\n"
-            "배팅 또는 다이를 선택하고, 둘 다 배팅해야 최종 주사위를 공개합니다."
-        ),
-        inline=False,
-    )
-    embed.set_footer(text="상대방만 수락 또는 거절할 수 있습니다.")
-    await interaction.response.send_message(
-        content=member.mention,
-        embed=embed,
-        view=YahtzeeChallengeView(interaction.user.id, member.id, amount),
-    )
 
 
 @bot.tree.command(name="지뢰찾기", description="입력한 금액으로 지뢰를 피해 보상을 쌓습니다.")
@@ -8973,13 +9172,12 @@ async def probability_table(interaction: discord.Interaction):
     )
 
     embed.add_field(
-        name="야추",
+        name="몬티홀",
         value=(
-            "첫 주사위 3개 공개 후 배팅/다이 진행\n"
-            "두 사람 모두 배팅해야 최종 주사위 공개\n"
-            "족보 순위:\n"
-            "야추 > 포카드 > 풀하우스 > 라지 스트레이트 > 스몰 스트레이트 > 트리플 > 투페어 > 원페어 > 노페어\n"
-            "승리 시 판돈 획득 / 무승부 시 베팅금 반환"
+            "문 3개 중 보상이 있는 문을 찾는 게임\n"
+            "첫 문 선택 후 사회자가 빈 문 하나를 공개\n"
+            "유지: 승률 33.33% / 3배\n"
+            "변경: 승률 66.67% / 1.5배"
         ),
         inline=False,
     )
@@ -9759,7 +9957,7 @@ async def gambling_commands(interaction: discord.Interaction):
         value=(
             "`/기초생활수급비` - 하루 1회 지원금 받기\n"
             "`/잔액` - 현재 잔액 확인\n"
-            "`/랭킹` - 서버 재산 순위 확인\n"
+            "`/랭킹` - 서버 자산/신용레벨 순위 확인\n"
             "`/송금` - 비고와 함께 다른 유저에게 돈 보내기\n"
             "`/송금내역 [인원]` - 특정 인원이 받은 송금 내역 확인\n"
             "`/차용증` - 개인 간 차용증 요청"
@@ -9807,9 +10005,9 @@ async def gambling_commands(interaction: discord.Interaction):
             "`/보급 [금액]` - 보급 상자 게임\n"
             "`/덕몽 [금액]` - 오리를 찾아라\n"
             "`/블랙잭 [금액]` - 딜러와 21 대결\n"
+            "`/몬티홀 [금액]` - 문 3개 중 보상이 있는 문 찾기\n"
             "`/경마 [금액]` - 원하는 말에 베팅\n"
             "`/숫자야구` - 10만원 고정 숫자 추리 게임\n"
-            "`/야추 [금액] [상대]` - 봇 또는 유저와 주사위 족보 대결\n"
             "`/지뢰찾기 [금액]` - 지뢰를 피해 수익 확정\n"
             "`/섯다 [금액] [상대]` - 봇 또는 유저와 섯다 대결\n"
             "`/몰빵참여 [금액]` - 원하는 금액으로 몰빵게임 참여"
@@ -9844,7 +10042,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="📌 채널 / 역할 설정",
         value=(
             "`/세팅등업로그`, `/세팅퇴장로그`, `/세팅규칙로그`\n"
-            "`/세팅구인채널`, `/세팅대출알림채널`, `/세팅음성생성채널`, `/음성생성채널목록`, `/음성생성채널해제`\n"
+            "`/세팅구인채널`, `/세팅대출알림채널`, `/세팅음성로그채널`, `/세팅음성생성채널`, `/음성생성채널목록`, `/음성생성채널해제`\n"
             "`/세팅몰빵결과채널`, `/세팅가이드안내`, `/세팅환영메시지채널`\n"
             "`/세팅규칙역할`, `/세팅신입역할`, `/신용불량자역할`\n"
             "`/세팅클랜등업역할`, `/세팅게스트등업역할`, `/세팅시간대역할`"
@@ -9926,7 +10124,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="🎮 도박 / 게임",
         value=(
             "`/슬롯`, `/동전`, `/바카라`, `/보급`, `/덕몽`\n"
-            "`/블랙잭`, `/경마`, `/숫자야구`, `/야추`, `/지뢰찾기`\n"
+            "`/블랙잭`, `/몬티홀`, `/경마`, `/숫자야구`, `/지뢰찾기`\n"
             "`/섯다`, `/몰빵참여`"
         ),
         inline=False,
@@ -10179,10 +10377,76 @@ async def on_member_remove(member: discord.Member):
     await channel.send(embed=embed)
 
 
+async def send_voice_activity_log(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+    if member.bot or member.guild is None or before.channel == after.channel:
+        return
+
+    channel_id = get_guild_setting_channel_id(member.guild.id, "voice_activity_log_channel_id")
+    if channel_id is None:
+        return
+
+    log_channel = member.guild.get_channel(channel_id) or bot.get_channel(channel_id)
+    if not isinstance(log_channel, discord.TextChannel):
+        return
+
+    now = get_kst_now()
+    active_session = get_active_voice_session(member.guild.id, member.id)
+    duration_text = None
+
+    if before.channel is not None and active_session is not None:
+        try:
+            started_at = dt_from_db(active_session["started_at"])
+            duration_seconds = max(0, int((now - started_at).total_seconds()))
+            duration_text = format_duration_korean(duration_seconds)
+        except Exception:
+            duration_text = None
+
+    if before.channel is None and after.channel is not None:
+        title = "🎙 입장"
+        color = 0x2ECC71
+        description = f"{member.mention} → {after.channel.mention}"
+        detail_lines = [
+            f"채널: {after.channel.mention}",
+            f"시간: `{now.strftime('%H:%M:%S')}`",
+        ]
+    elif before.channel is not None and after.channel is None:
+        title = "📤 퇴장"
+        color = 0xE74C3C
+        description = f"{member.mention} ← {before.channel.mention}"
+        detail_lines = [
+            f"채널: {before.channel.mention}",
+            f"체류: `{duration_text or '기록 없음'}`",
+            f"시간: `{now.strftime('%H:%M:%S')}`",
+        ]
+    elif before.channel is not None and after.channel is not None:
+        title = "🔁 이동"
+        color = 0x3498DB
+        description = f"{member.mention} / {before.channel.mention} → {after.channel.mention}"
+        detail_lines = [
+            f"이전: {before.channel.mention}",
+            f"현재: {after.channel.mention}",
+            f"이전 채널 체류: `{duration_text or '기록 없음'}`",
+            f"시간: `{now.strftime('%H:%M:%S')}`",
+        ]
+    else:
+        return
+
+    embed = discord.Embed(title=title, description=description, color=color, timestamp=now)
+    embed.add_field(name=member.display_name, value="\n".join(detail_lines), inline=False)
+    embed.set_footer(text="음성 로그 알림 / DB 저장 없음")
+
+    try:
+        await log_channel.send(embed=embed)
+    except (discord.Forbidden, discord.HTTPException):
+        pass
+
+
 @bot.event
 async def on_voice_state_update(member, before, after):
     if member.bot:
         return
+
+    await send_voice_activity_log(member, before, after)
 
     guild_id = member.guild.id
     current_is_spectator = is_spectator_member(member, guild_id)
