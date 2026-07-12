@@ -102,6 +102,8 @@ DEFAULT_LABOR_DEBT_AMOUNT = 100_000
 LOAN_GRADE_DECAY_DAYS = 2
 CREDIT_LEVEL_LIMIT_STEP = 5_000_000
 CREDIT_LEVEL_INTEREST_RATE = 10
+DEFAULT_VOICE_BONUS_HOURLY_AMOUNT = "250000"
+VOICE_BONUS_BLACKLIST_TICKETS_PER_HOUR = 5
 
 MIN_CREDIT_GRADE = MIN_CREDIT_LEVEL
 MAX_CREDIT_GRADE = MAX_CREDIT_LEVEL
@@ -662,6 +664,24 @@ cursor.execute(
     """
 )
 
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS voice_bonus_claims(
+        guild_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        claim_date TEXT NOT NULL,
+        claimed_for_date TEXT NOT NULL,
+        duration_seconds INTEGER NOT NULL,
+        paid_hours INTEGER NOT NULL,
+        amount INTEGER NOT NULL DEFAULT 0,
+        ticket_count INTEGER NOT NULL DEFAULT 0,
+        reward_type TEXT NOT NULL DEFAULT 'money',
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (guild_id, user_id, claimed_for_date)
+    )
+    """
+)
+
 cursor.execute("PRAGMA table_info(voice_channel_sessions)")
 voice_session_columns = [row[1] for row in cursor.fetchall()]
 if "channel_name" not in voice_session_columns:
@@ -672,6 +692,15 @@ cursor.execute("PRAGMA table_info(voice_channel_logs)")
 voice_log_columns = [row[1] for row in cursor.fetchall()]
 if "channel_name" not in voice_log_columns:
     cursor.execute("ALTER TABLE voice_channel_logs ADD COLUMN channel_name TEXT")
+    conn.commit()
+
+cursor.execute("PRAGMA table_info(voice_bonus_claims)")
+voice_bonus_claim_columns = [row[1] for row in cursor.fetchall()]
+if "ticket_count" not in voice_bonus_claim_columns:
+    cursor.execute("ALTER TABLE voice_bonus_claims ADD COLUMN ticket_count INTEGER NOT NULL DEFAULT 0")
+    conn.commit()
+if "reward_type" not in voice_bonus_claim_columns:
+    cursor.execute("ALTER TABLE voice_bonus_claims ADD COLUMN reward_type TEXT NOT NULL DEFAULT 'money'")
     conn.commit()
 
 cursor.execute(
@@ -2570,6 +2599,83 @@ def get_voice_log_user_ids_between(guild_id: int, start_dt: datetime, end_dt: da
         except (TypeError, ValueError):
             continue
     return user_ids
+
+
+def get_voice_bonus_hourly_amount(guild_id: int) -> int:
+    raw = get_setting_with_default(guild_id, "voice_bonus_hourly_amount", DEFAULT_VOICE_BONUS_HOURLY_AMOUNT)
+    try:
+        amount = int(raw)
+    except (TypeError, ValueError):
+        amount = int(DEFAULT_VOICE_BONUS_HOURLY_AMOUNT)
+    return max(0, amount)
+
+
+def get_yesterday_range_kst() -> tuple[str, datetime, datetime]:
+    target_date = get_kst_now().date() - timedelta(days=1)
+    start_dt = datetime.combine(target_date, datetime.min.time(), tzinfo=ZoneInfo("Asia/Seoul"))
+    end_dt = start_dt + timedelta(days=1)
+    return target_date.strftime("%Y-%m-%d"), start_dt, end_dt
+
+
+def get_voice_bonus_claim(guild_id: int, user_id: int, claimed_for_date: str):
+    cursor.execute(
+        """
+        SELECT duration_seconds, paid_hours, amount, ticket_count, reward_type, created_at
+        FROM voice_bonus_claims
+        WHERE guild_id=? AND user_id=? AND claimed_for_date=?
+        """,
+        (str(guild_id), str(user_id), claimed_for_date),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "duration_seconds": int(row[0] or 0),
+        "paid_hours": int(row[1] or 0),
+        "amount": int(row[2] or 0),
+        "ticket_count": int(row[3] or 0),
+        "reward_type": row[4] or "money",
+        "created_at": row[5],
+    }
+
+
+def create_voice_bonus_claim(
+    guild_id: int,
+    user_id: int,
+    claimed_for_date: str,
+    duration_seconds: int,
+    paid_hours: int,
+    amount: int,
+    ticket_count: int,
+    reward_type: str,
+):
+    cursor.execute(
+        """
+        INSERT INTO voice_bonus_claims(
+            guild_id, user_id, claim_date, claimed_for_date,
+            duration_seconds, paid_hours, amount, ticket_count, reward_type, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            str(guild_id),
+            str(user_id),
+            get_today_kst_date_str(),
+            claimed_for_date,
+            int(duration_seconds),
+            int(paid_hours),
+            int(amount),
+            int(ticket_count),
+            reward_type,
+            dt_to_db(get_kst_now()),
+        ),
+    )
+    conn.commit()
+
+
+def get_voice_bonus_duration_seconds(guild_id: int, user_id: int, start_dt: datetime, end_dt: datetime) -> int:
+    intervals = get_voice_channel_intervals_between(guild_id, user_id, start_dt, end_dt)
+    return sum(max(0, int((item["end"] - item["start"]).total_seconds())) for item in intervals)
 
 
 def clear_active_voice_session(guild_id: int, user_id: int):
@@ -6697,6 +6803,109 @@ class RankingView(discord.ui.View):
         await interaction.response.edit_message(embed=self.build_credit_embed(guild), view=self)
 
 
+class VoiceBonusPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="성과급 받기", style=discord.ButtonStyle.success, custom_id="voice_bonus_claim")
+    async def claim_bonus(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild is None:
+            await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+            return
+
+        claimed_for_date, start_dt, end_dt = get_yesterday_range_kst()
+        existing_claim = get_voice_bonus_claim(interaction.guild.id, interaction.user.id, claimed_for_date)
+        if existing_claim is not None:
+            if existing_claim["reward_type"] == "labor_gacha":
+                reward_text = f"노동가챠권 `{existing_claim['ticket_count']}장`"
+            else:
+                reward_text = f"`{format_money(existing_claim['amount'])}`"
+            await interaction.response.send_message(
+                f"`{claimed_for_date}` 음성 성과급은 이미 수령했습니다.\n"
+                f"수령 보상: {reward_text}",
+                ephemeral=True,
+            )
+            return
+
+        duration_seconds = get_voice_bonus_duration_seconds(
+            interaction.guild.id,
+            interaction.user.id,
+            start_dt,
+            end_dt,
+        )
+        paid_hours = duration_seconds // 3600
+
+        if paid_hours <= 0:
+            await interaction.response.send_message(
+                f"`{claimed_for_date}` 기준 지급 가능한 시간이 없습니다.\n"
+                f"어제 음성 체류 시간: `{format_duration_korean(duration_seconds)}`\n"
+                "성과급은 1시간 단위로 지급됩니다.",
+                ephemeral=True,
+            )
+            return
+
+        profile = get_credit_profile(interaction.user.id)
+        is_blacklisted = profile["is_blacklisted"]
+        hourly_amount = get_voice_bonus_hourly_amount(interaction.guild.id)
+
+        if is_blacklisted:
+            ticket_count = paid_hours * VOICE_BONUS_BLACKLIST_TICKETS_PER_HOUR
+            payout = 0
+            reward_type = "labor_gacha"
+            add_labor_gacha_tickets(interaction.guild.id, interaction.user.id, ticket_count)
+        else:
+            ticket_count = 0
+            payout = paid_hours * hourly_amount
+            reward_type = "money"
+            if payout <= 0:
+                await interaction.response.send_message(
+                    "현재 성과급 금액이 0원으로 설정되어 있어 수령할 금액이 없습니다.",
+                    ephemeral=True,
+                )
+                return
+            add_balance(interaction.user.id, payout)
+            add_money_grant_log(
+                interaction.guild.id,
+                interaction.user.id,
+                bot.user.id if bot.user else interaction.user.id,
+                payout,
+                f"음성 성과급 {claimed_for_date} / {paid_hours}시간",
+            )
+
+        create_voice_bonus_claim(
+            interaction.guild.id,
+            interaction.user.id,
+            claimed_for_date,
+            duration_seconds,
+            paid_hours,
+            payout,
+            ticket_count,
+            reward_type,
+        )
+
+        embed = discord.Embed(title="💼 성과급 수령 완료", color=0x2ECC71)
+        embed.add_field(name="정산 날짜", value=f"`{claimed_for_date}`", inline=True)
+        embed.add_field(name="체류 시간", value=f"`{format_duration_korean(duration_seconds)}`", inline=True)
+        embed.add_field(name="지급 시간", value=f"`{paid_hours}시간`", inline=True)
+
+        if is_blacklisted:
+            embed.add_field(name="지급 기준", value=f"`1시간당 노동가챠권 {VOICE_BONUS_BLACKLIST_TICKETS_PER_HOUR}장`", inline=False)
+            embed.add_field(name="수령 보상", value=f"`노동가챠권 {ticket_count}장`", inline=False)
+            embed.add_field(
+                name="현재 노동가챠권",
+                value=f"`{get_labor_gacha_ticket_count(interaction.guild.id, interaction.user.id)}장`",
+                inline=False,
+            )
+            embed.set_footer(text="신용불량자 상태에서는 성과급이 돈 대신 노동가챠권으로 지급됩니다.")
+        else:
+            embed.add_field(name="지급 기준", value=f"`1시간당 {format_money(hourly_amount)}`", inline=False)
+            embed.add_field(name="수령액", value=f"`{format_money(payout)}`", inline=True)
+            embed.add_field(name="현재 잔액", value=f"`{format_money(get_balance(interaction.user.id))}`", inline=True)
+            embed.set_footer(text="성과급은 어제 날짜 기준으로 하루 1회만 수령할 수 있습니다.")
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 class DuckmongView(discord.ui.View):
     def __init__(self, user_id: int, bet_amount: int, fake_names: list[str], hidden_results: dict[str, str]):
         super().__init__(timeout=60)
@@ -7526,6 +7735,27 @@ async def set_voice_activity_log_channel(interaction: discord.Interaction):
     )
 
 
+@bot.tree.command(name="세팅성과급금액", description="음성 성과급의 1시간당 지급 금액을 설정합니다.")
+@app_commands.rename(amount="금액")
+@app_commands.describe(amount="1시간당 지급할 서버 재화")
+@app_commands.checks.has_permissions(administrator=True)
+async def set_voice_bonus_amount(interaction: discord.Interaction, amount: int):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    if amount < 0:
+        await interaction.response.send_message("성과급 금액은 0원 이상이어야 합니다.", ephemeral=True)
+        return
+
+    set_guild_setting(interaction.guild.id, "voice_bonus_hourly_amount", str(amount))
+    await interaction.response.send_message(
+        f"음성 성과급을 `1시간당 {format_money(amount)}`으로 설정했습니다.\n"
+        f"신용불량자는 금액 설정과 관계없이 `1시간당 노동가챠권 {VOICE_BONUS_BLACKLIST_TICKETS_PER_HOUR}장`을 받습니다.",
+        ephemeral=True,
+    )
+
+
 @bot.tree.command(name="세팅음성생성채널", description="입장 시 1팀, 2팀 음성채널을 자동 생성할 트리거 채널을 추가합니다.")
 @app_commands.rename(channel="채널")
 @app_commands.describe(channel="유저가 입장하면 팀 음성채널을 만들 음성채널")
@@ -7890,6 +8120,31 @@ async def time_panel(interaction: discord.Interaction):
     )
     await interaction.channel.send(embed=embed, view=TimeRoleView())
     await interaction.response.send_message("시간 설정 패널 생성 완료", ephemeral=True)
+
+
+@bot.tree.command(name="성과급패널", description="음성 성과급 수령 버튼 패널을 생성합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def voice_bonus_panel(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    hourly_amount = get_voice_bonus_hourly_amount(interaction.guild.id)
+    embed = discord.Embed(
+        title="💼 음성 성과급 수령",
+        description=(
+            "아래 버튼을 누르면 어제 날짜의 음성채널 체류 기록을 기준으로 성과급을 수령합니다.\n\n"
+            f"일반 지급 기준: `1시간당 {format_money(hourly_amount)}`\n"
+            f"신용불량자 지급 기준: `1시간당 노동가챠권 {VOICE_BONUS_BLACKLIST_TICKETS_PER_HOUR}장`\n"
+            "정산 기준: `어제 00:00 ~ 23:59`\n"
+            "지급 방식: `1시간 단위 절사`\n\n"
+            "예: 2시간 40분 체류 시 2시간분만 지급됩니다."
+        ),
+        color=0x3498DB,
+    )
+    embed.set_footer(text="성과급은 하루 1회만 수령할 수 있습니다.")
+    await interaction.channel.send(embed=embed, view=VoiceBonusPanelView())
+    await interaction.response.send_message("성과급 패널을 생성했습니다.", ephemeral=True)
 
 
 # ----------------------------
@@ -10170,7 +10425,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="📝 문구 / 패널 설정",
         value=(
             "`/세팅환영dm`, `/세팅규칙안내문`, `/세팅등업패널문구`\n"
-            "`/세팅신입알림문구`, `/세팅신입경과일`, `/적금세팅`\n"
+            "`/세팅신입알림문구`, `/세팅신입경과일`, `/적금세팅`, `/세팅성과급금액`\n"
             "`/문구설정확인`, `/설정확인`, `/역할설정확인`"
         ),
         inline=False,
@@ -10179,7 +10434,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="🎛 메시지 / 패널 생성",
         value=(
             "`/규칙버튼`, `/등업패널`, `/시간설정패널`, `/문의패널`\n"
-            "`/고정메시지`, `/고정메시지해제`, `/고정메시지확인`, `/내전공지`"
+            "`/성과급패널`, `/고정메시지`, `/고정메시지해제`, `/고정메시지확인`, `/내전공지`"
         ),
         inline=False,
     )
@@ -10959,6 +11214,7 @@ async def on_ready():
     bot.add_view(TimeRoleView())
     bot.add_view(InquiryPanelView())
     bot.add_view(ScrimSignupView())
+    bot.add_view(VoiceBonusPanelView())
 
 
     await restore_nickname_panels()
