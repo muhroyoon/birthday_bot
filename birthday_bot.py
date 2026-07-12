@@ -8185,6 +8185,114 @@ async def grant_money(interaction: discord.Interaction, targets: str, amount: in
     await interaction.response.send_message("\n".join(lines))
 
 
+@bot.tree.command(name="치킨성과급", description="현재 채널의 치킨 인증글 멘션 인원에게 성과급을 지급합니다.")
+@app_commands.rename(amount="금액")
+@app_commands.describe(amount="인증 1회당 지급할 금액")
+async def chicken_bonus(interaction: discord.Interaction, amount: int):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    if not (
+        interaction.user.id == interaction.guild.owner_id
+        or interaction.user.guild_permissions.administrator
+        or interaction.user.guild_permissions.manage_guild
+    ):
+        await interaction.response.send_message("이 명령어는 서버 관리자 이상만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    if amount <= 0:
+        await interaction.response.send_message("지급 금액은 1원 이상이어야 합니다.", ephemeral=True)
+        return
+
+    if not isinstance(interaction.channel, discord.TextChannel):
+        await interaction.response.send_message("텍스트 채널에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+
+    bonus_counts = {}
+    scanned_message_count = 0
+    proof_message_count = 0
+
+    async for message in interaction.channel.history(limit=100):
+        if bot.user is not None and message.author.id == bot.user.id:
+            is_previous_bonus_result = any(
+                embed.title == "🍗 치킨 성과급 지급 완료"
+                for embed in message.embeds
+            )
+            if is_previous_bonus_result:
+                break
+            continue
+
+        scanned_message_count += 1
+
+        if not message.mentions:
+            continue
+
+        # 치킨 인증글은 보통 스크린샷이 함께 올라오므로 이미지/임베드가 있는 메시지만 집계합니다.
+        if not message.attachments and not message.embeds:
+            continue
+
+        proof_message_count += 1
+
+        for member in message.mentions:
+            if member.bot:
+                continue
+            bonus_counts[member.id] = bonus_counts.get(member.id, 0) + 1
+
+    if not bonus_counts:
+        await interaction.followup.send(
+            "지급할 치킨 인증 인원을 찾지 못했습니다.\n"
+            "이미지를 첨부한 인증 메시지에 유저 멘션이 포함되어 있는지 확인해주세요.",
+            ephemeral=True,
+        )
+        return
+
+    paid_lines = []
+    total_paid_amount = 0
+
+    for user_id, count in sorted(bonus_counts.items(), key=lambda item: (-item[1], item[0])):
+        member = interaction.guild.get_member(user_id)
+        if member is None or member.bot:
+            continue
+
+        payout = amount * count
+        add_balance(member.id, payout)
+        add_money_grant_log(
+            interaction.guild.id,
+            member.id,
+            interaction.user.id,
+            payout,
+            f"치킨 성과급 {count}회",
+        )
+        total_paid_amount += payout
+        paid_lines.append(f"{member.mention} - `{count}회` / `{format_money(payout)}`")
+
+    if not paid_lines:
+        await interaction.followup.send("지급 가능한 서버 멤버를 찾지 못했습니다.", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="🍗 치킨 성과급 지급 완료",
+        description=(
+            f"인증 1회당 `{format_money(amount)}`을 지급했습니다.\n"
+            f"총 지급액: `{format_money(total_paid_amount)}`"
+        ),
+        color=0xF1C40F,
+    )
+    embed.add_field(
+        name="지급 대상",
+        value=join_compact_discord_field_lines(paid_lines),
+        inline=False,
+    )
+    embed.set_footer(
+        text=f"인증글 {proof_message_count}개 집계 / 최근 메시지 {scanned_message_count}개 확인"
+    )
+
+    await interaction.followup.send(embed=embed)
+
+
 
 
 @bot.tree.command(name="돈삭제", description="관리자가 특정 유저의 재화를 차감합니다.")
@@ -10075,7 +10183,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
     admin_embed.add_field(
         name="💰 경제 / 신용 관리",
         value=(
-            "`/돈주기`, `/돈주기내역`, `/돈삭제`, `/송금내역`, `/벌금부여`, `/벌금삭제`\n"
+            "`/돈주기`, `/돈주기내역`, `/돈삭제`, `/치킨성과급`, `/송금내역`, `/벌금부여`, `/벌금삭제`\n"
             "`/신용불량자등록`, `/신용불량자목록`, `/신용불량자삭제`, `/신용초기화`\n"
             "`/노동가챠권지급`\n"
             "`/신용조회`, `/신용레벨표`, `/신용대출`, `/대출상환`, `/중도상환`"
