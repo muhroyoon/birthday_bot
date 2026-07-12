@@ -8186,9 +8186,9 @@ async def grant_money(interaction: discord.Interaction, targets: str, amount: in
 
 
 @bot.tree.command(name="치킨성과급", description="현재 채널의 치킨 인증글 멘션 인원에게 성과급을 지급합니다.")
-@app_commands.rename(amount="금액")
-@app_commands.describe(amount="인증 1회당 지급할 금액")
-async def chicken_bonus(interaction: discord.Interaction, amount: int):
+@app_commands.rename(amount="금액", proof_count="인증글개수")
+@app_commands.describe(amount="인증 1회당 지급할 금액", proof_count="최근 인증글 중 처리할 개수")
+async def chicken_bonus(interaction: discord.Interaction, amount: int, proof_count: int):
     if interaction.guild is None:
         await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
         return
@@ -8203,6 +8203,14 @@ async def chicken_bonus(interaction: discord.Interaction, amount: int):
 
     if amount <= 0:
         await interaction.response.send_message("지급 금액은 1원 이상이어야 합니다.", ephemeral=True)
+        return
+
+    if proof_count <= 0:
+        await interaction.response.send_message("인증글 개수는 1개 이상이어야 합니다.", ephemeral=True)
+        return
+
+    if proof_count > 20:
+        await interaction.response.send_message("한 번에 처리할 수 있는 인증글은 최대 20개입니다.", ephemeral=True)
         return
 
     if not isinstance(interaction.channel, discord.TextChannel):
@@ -8240,6 +8248,9 @@ async def chicken_bonus(interaction: discord.Interaction, amount: int):
             if member.bot:
                 continue
             bonus_counts[member.id] = bonus_counts.get(member.id, 0) + 1
+
+        if proof_message_count >= proof_count:
+            break
 
     if not bonus_counts:
         await interaction.followup.send(
@@ -8287,7 +8298,7 @@ async def chicken_bonus(interaction: discord.Interaction, amount: int):
         inline=False,
     )
     embed.set_footer(
-        text=f"인증글 {proof_message_count}개 집계 / 최근 메시지 {scanned_message_count}개 확인"
+        text=f"요청 인증글 {proof_count}개 중 {proof_message_count}개 집계 / 최근 메시지 {scanned_message_count}개 확인"
     )
 
     await interaction.followup.send(embed=embed)
@@ -10195,7 +10206,8 @@ async def admin_commands_guide(interaction: discord.Interaction):
         value=(
             "`/세팅등업패널문구`  여러 줄 패널 문구 설정\n"
             "`/신용불량자등록 @유저`  해당 유저 등록\n"
-            "`/돈주기 @유저 10000 이벤트 보상`  특정 유저에게 비고와 함께 재화 지급"
+            "`/돈주기 @유저 10000 이벤트 보상`  특정 유저에게 비고와 함께 재화 지급\n"
+            "`/치킨성과급 500000 2`  최근 치킨 인증글 2개에 성과급 지급"
         ),
         inline=False,
     )
