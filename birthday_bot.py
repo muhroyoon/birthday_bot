@@ -8087,6 +8087,97 @@ class RafflePurchaseView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=self)
 
 
+def build_raffle_status_embed(guild: discord.Guild, raffle: dict) -> discord.Embed:
+    rows, total_quantity, total_amount = get_raffle_summary(raffle["id"], guild.id)
+    lines = []
+    for index, (user_id, quantity, amount) in enumerate(rows[:20], start=1):
+        member = guild.get_member(int(user_id))
+        name = member.display_name if member else f"알 수 없는 유저 ({user_id})"
+        lines.append(f"**{index}. {name}** - `{int(quantity)}장` / `{format_money(int(amount or 0))}`")
+
+    embed = discord.Embed(title=f"🎟 추첨권 현황: {raffle['title']}", color=0xF1C40F)
+    embed.add_field(name="가격", value=f"`{format_money(raffle['price'])}`", inline=True)
+    embed.add_field(name="하루 제한", value=f"`{raffle['daily_limit']}장`", inline=True)
+    embed.add_field(name="총 판매량", value=f"`{total_quantity}장`", inline=True)
+    embed.add_field(name="총 차감 재화", value=f"`{format_money(total_amount)}`", inline=True)
+    embed.add_field(
+        name="구매자 현황",
+        value=join_compact_discord_field_lines(lines) if lines else "아직 구매자가 없습니다.",
+        inline=False,
+    )
+    if len(rows) > 20:
+        embed.set_footer(text="구매자 현황은 상위 20명까지만 표시됩니다.")
+    return embed
+
+
+class RaffleStatusSelect(discord.ui.Select):
+    def __init__(self, raffles):
+        options = []
+        for raffle_id, title, price, daily_limit, _created_at in raffles[:25]:
+            label = str(title)
+            if len(label) > 100:
+                label = label[:97] + "..."
+            description = f"1장 {format_money(int(price))} / 하루 {int(daily_limit)}장 제한"
+            if len(description) > 100:
+                description = description[:97] + "..."
+            options.append(
+                discord.SelectOption(
+                    label=label,
+                    description=description,
+                    value=str(int(raffle_id)),
+                )
+            )
+        super().__init__(
+            placeholder="현황을 확인할 추첨권을 선택해주세요.",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if not isinstance(view, RaffleStatusView):
+            await interaction.response.send_message("추첨권 현황 패널을 처리하지 못했습니다.", ephemeral=True)
+            return
+        await view.show_status(interaction, int(self.values[0]))
+
+
+class RaffleStatusView(discord.ui.View):
+    def __init__(self, user_id: int, raffles):
+        super().__init__(timeout=180)
+        self.user_id = user_id
+        self.add_item(RaffleStatusSelect(raffles))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("이 추첨권 현황 패널은 명령어를 사용한 본인만 사용할 수 있습니다.", ephemeral=True)
+            return False
+        return True
+
+    def disable_all_items(self):
+        for item in self.children:
+            item.disabled = True
+
+    async def show_status(self, interaction: discord.Interaction, raffle_id: int):
+        if interaction.guild is None:
+            await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+            return
+
+        raffle = get_active_raffle_by_id(interaction.guild.id, raffle_id)
+        if raffle is None:
+            self.disable_all_items()
+            embed = discord.Embed(
+                title="🎟 추첨권 현황 확인 불가",
+                description="선택한 추첨권이 삭제되었거나 더 이상 활성 상태가 아닙니다.",
+                color=0xE74C3C,
+            )
+            await interaction.response.edit_message(embed=embed, view=self)
+            return
+
+        self.disable_all_items()
+        await interaction.response.edit_message(embed=build_raffle_status_embed(interaction.guild, raffle), view=self)
+
+
 class DuckmongView(discord.ui.View):
     def __init__(self, user_id: int, bet_amount: int, fake_names: list[str], hidden_results: dict[str, str]):
         super().__init__(timeout=60)
@@ -9330,13 +9421,63 @@ async def sticky_check(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+async def send_panel_to_current_channel(
+    interaction: discord.Interaction,
+    *,
+    embed: discord.Embed,
+    view: discord.ui.View,
+    success_message: str,
+) -> bool:
+    if interaction.guild is None or interaction.channel is None:
+        await interaction.response.send_message("서버 채널에서만 사용할 수 있습니다.", ephemeral=True)
+        return False
+
+    bot_member = interaction.guild.me
+    permissions = interaction.channel.permissions_for(bot_member)
+    if not permissions.view_channel or not permissions.send_messages:
+        await interaction.response.send_message(
+            "이 채널에 패널을 생성할 수 없습니다.\n"
+            "마리봇에게 `채널 보기`와 `메시지 보내기` 권한을 부여한 뒤 다시 시도해주세요.",
+            ephemeral=True,
+        )
+        return False
+
+    if not permissions.embed_links:
+        await interaction.response.send_message(
+            "이 채널에 임베드 메시지를 보낼 수 없습니다.\n"
+            "마리봇에게 `링크 첨부` 권한을 부여한 뒤 다시 시도해주세요.",
+            ephemeral=True,
+        )
+        return False
+
+    try:
+        await interaction.channel.send(embed=embed, view=view)
+    except discord.Forbidden:
+        await interaction.response.send_message(
+            "디스코드 권한 문제로 패널 생성에 실패했습니다.\n"
+            "마리봇에게 `채널 보기`, `메시지 보내기`, `링크 첨부` 권한이 있는지 확인해주세요.",
+            ephemeral=True,
+        )
+        return False
+    except discord.HTTPException as e:
+        await interaction.response.send_message(f"패널 생성 중 오류가 발생했습니다: `{e}`", ephemeral=True)
+        return False
+
+    await interaction.response.send_message(success_message, ephemeral=True)
+    return True
+
+
 @bot.tree.command(name="규칙버튼", description="규칙 확인 버튼 메시지를 생성합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def rule_button(interaction: discord.Interaction):
     text = get_template_with_default(interaction.guild.id, "rule_button_text", DEFAULT_RULE_BUTTON_TEXT)
     embed = discord.Embed(description=text, color=0x2ECC71)
-    await interaction.channel.send(embed=embed, view=RuleConfirmView())
-    await interaction.response.send_message("규칙 버튼 생성 완료", ephemeral=True)
+    await send_panel_to_current_channel(
+        interaction,
+        embed=embed,
+        view=RuleConfirmView(),
+        success_message="규칙 버튼 생성 완료",
+    )
 
 
 @bot.tree.command(name="등업패널", description="등업 요청 패널을 생성합니다.")
@@ -9344,8 +9485,12 @@ async def rule_button(interaction: discord.Interaction):
 async def upgrade_panel(interaction: discord.Interaction):
     text = get_template_with_default(interaction.guild.id, "upgrade_panel_text", DEFAULT_UPGRADE_PANEL_TEXT)
     embed = discord.Embed(description=text, color=0x5865F2)
-    await interaction.channel.send(embed=embed, view=UpgradePanelView())
-    await interaction.response.send_message("등업 패널 생성 완료", ephemeral=True)
+    await send_panel_to_current_channel(
+        interaction,
+        embed=embed,
+        view=UpgradePanelView(),
+        success_message="등업 패널 생성 완료",
+    )
 
 
 @bot.tree.command(name="시간설정패널", description="시간대 역할 선택 패널을 생성합니다.")
@@ -9355,8 +9500,12 @@ async def time_panel(interaction: discord.Interaction):
         description="원하는 시간대를 선택해주세요.\n중복 선택 가능합니다.",
         color=0x5865F2,
     )
-    await interaction.channel.send(embed=embed, view=TimeRoleView())
-    await interaction.response.send_message("시간 설정 패널 생성 완료", ephemeral=True)
+    await send_panel_to_current_channel(
+        interaction,
+        embed=embed,
+        view=TimeRoleView(),
+        success_message="시간 설정 패널 생성 완료",
+    )
 
 
 @bot.tree.command(name="성과급패널", description="음성 성과급 수령 버튼 패널을 생성합니다.")
@@ -9380,8 +9529,12 @@ async def voice_bonus_panel(interaction: discord.Interaction):
         color=0x3498DB,
     )
     embed.set_footer(text="성과급은 하루 1회만 수령할 수 있습니다.")
-    await interaction.channel.send(embed=embed, view=VoiceBonusPanelView())
-    await interaction.response.send_message("성과급 패널을 생성했습니다.", ephemeral=True)
+    await send_panel_to_current_channel(
+        interaction,
+        embed=embed,
+        view=VoiceBonusPanelView(),
+        success_message="성과급 패널을 생성했습니다.",
+    )
 
 
 @bot.tree.command(name="활동보고서", description="서버 활동 보고서를 즉시 출력합니다.")
@@ -9920,8 +10073,12 @@ async def create_guest_refresh(interaction: discord.Interaction):
         description="GUEST 역할 보유 인원만 갱신하기 버튼을 누를 수 있습니다.\n주 1회 갱신이 필요합니다.",
         color=0x5865F2,
     )
-    await interaction.channel.send(embed=embed, view=GuestRefreshView())
-    await interaction.response.send_message("✅ GUEST 갱신 버튼 생성 완료", ephemeral=True)
+    await send_panel_to_current_channel(
+        interaction,
+        embed=embed,
+        view=GuestRefreshView(),
+        success_message="✅ GUEST 갱신 버튼 생성 완료",
+    )
 
 
 @bot.tree.command(name="갱신점검", description="GUEST 역할 인원의 갱신 현황 확인")
@@ -10131,32 +10288,32 @@ async def raffle_buy(interaction: discord.Interaction, quantity: int):
 
 
 @bot.tree.command(name="추첨권현황", description="선택한 추첨권의 구매 현황을 확인합니다.")
-@app_commands.rename(title="제목")
-@app_commands.describe(title="확인할 추첨권 제목")
-async def raffle_status(interaction: discord.Interaction, title: str):
+async def raffle_status(interaction: discord.Interaction):
     if interaction.guild is None:
         await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
         return
 
-    raffle = get_active_raffle_by_title(interaction.guild.id, title)
-    if raffle is None:
-        await interaction.response.send_message("해당 제목의 활성 추첨권을 찾지 못했습니다.", ephemeral=True)
+    active_raffles = get_active_raffles(interaction.guild.id)
+    if not active_raffles:
+        await interaction.response.send_message("현재 확인 가능한 활성 추첨권이 없습니다.", ephemeral=True)
         return
 
-    rows, total_quantity, total_amount = get_raffle_summary(raffle["id"], interaction.guild.id)
     lines = []
-    for index, (user_id, quantity, amount) in enumerate(rows[:20], start=1):
-        member = interaction.guild.get_member(int(user_id))
-        name = member.display_name if member else f"알 수 없는 유저 ({user_id})"
-        lines.append(f"**{index}. {name}** - `{int(quantity)}장` / `{format_money(int(amount or 0))}`")
+    for index, (_raffle_id, title, price, daily_limit, _created_at) in enumerate(active_raffles[:25], start=1):
+        lines.append(f"**{index}. {title}** - `{format_money(int(price))}` / 하루 `{int(daily_limit)}장`")
 
-    embed = discord.Embed(title=f"🎟 추첨권 현황: {raffle['title']}", color=0xF1C40F)
-    embed.add_field(name="가격", value=f"`{format_money(raffle['price'])}`", inline=True)
-    embed.add_field(name="하루 제한", value=f"`{raffle['daily_limit']}장`", inline=True)
-    embed.add_field(name="총 판매량", value=f"`{total_quantity}장`", inline=True)
-    embed.add_field(name="총 차감 재화", value=f"`{format_money(total_amount)}`", inline=True)
-    embed.add_field(name="구매자 현황", value=join_compact_discord_field_lines(lines) if lines else "아직 구매자가 없습니다.", inline=False)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    embed = discord.Embed(
+        title="🎟 추첨권 현황 선택",
+        description="아래 선택 메뉴에서 현황을 확인할 추첨권을 골라주세요.",
+        color=0xF1C40F,
+    )
+    embed.add_field(name="확인 가능 추첨권", value=join_compact_discord_field_lines(lines), inline=False)
+    if len(active_raffles) > 25:
+        embed.set_footer(text="선택 메뉴 제한으로 최근 등록된 25개 추첨권만 표시됩니다.")
+    await interaction.response.send_message(
+        embed=embed,
+        view=RaffleStatusView(interaction.user.id, active_raffles),
+    )
 
 
 @bot.tree.command(name="추첨권삭제", description="추첨이 완료된 추첨권을 삭제합니다.")
@@ -11032,8 +11189,12 @@ async def inquiry_panel(interaction: discord.Interaction):
         description="문의하기 전 아래 항목에서 원하는 종류를 선택해주세요.",
         color=0x3498DB,
     )
-    await interaction.channel.send(embed=embed, view=InquiryPanelView())
-    await interaction.response.send_message("문의 패널 생성이 완료되었습니다.", ephemeral=True)
+    await send_panel_to_current_channel(
+        interaction,
+        embed=embed,
+        view=InquiryPanelView(),
+        success_message="문의 패널 생성이 완료되었습니다.",
+    )
 
 @bot.tree.command(name="닉네임패널생성", description="닉네임 접두어 적용 패널을 생성합니다.")
 @app_commands.checks.has_permissions(administrator=True)
@@ -12292,6 +12453,21 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
             await interaction.followup.send("이 명령어는 관리자만 사용할 수 있습니다.", ephemeral=True)
         else:
             await interaction.response.send_message("이 명령어는 관리자만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    original_error = error.original if isinstance(error, app_commands.CommandInvokeError) else error
+    if isinstance(original_error, discord.Forbidden):
+        message = (
+            "마리봇이 이 작업을 수행할 권한이 없습니다.\n"
+            "해당 채널에서 `채널 보기`, `메시지 보내기`, `링크 첨부` 권한을 확인해주세요."
+        )
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
+        except discord.HTTPException:
+            pass
         return
 
     raise error
