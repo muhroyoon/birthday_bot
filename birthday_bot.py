@@ -120,6 +120,10 @@ GUEST_INTERVAL_DAYS = 7
 LEGACY_GUEST_BASE_DATE = datetime(2026, 5, 4, tzinfo=ZoneInfo("Asia/Seoul")).date()
 LEGACY_GUEST_DUE_DATE = datetime(2026, 5, 11, tzinfo=ZoneInfo("Asia/Seoul")).date()
 GUEST_REFRESH_URL = f"https://discord.com/channels/{ATTENDANCE_GUILD_ID}/{GUEST_REFRESH_CHANNEL_ID}"
+DEFAULT_ACTIVITY_WARNING_TYPE = "attendance"
+DEFAULT_ACTIVITY_WARNING_DAYS = "7"
+DEFAULT_ACTIVITY_WARNING_MIN_ATTENDANCE = "2"
+DEFAULT_ACTIVITY_WARNING_MIN_VOICE_HOURS = "5"
 
 MIN_CREDIT_GRADE = MIN_CREDIT_LEVEL
 MAX_CREDIT_GRADE = MAX_CREDIT_LEVEL
@@ -1442,6 +1446,20 @@ def initialize_legacy_guest(member: discord.Member):
     return record
 
 
+def initialize_guest_refresh_from_today(member: discord.Member):
+    today = get_kst_now().date()
+    record = ensure_guest_record(str(member.id), today=today)
+    record["guest_assigned_at"] = format_attendance_date(today)
+    record["last_refresh"] = ""
+    record["next_due"] = format_attendance_date(today + timedelta(days=GUEST_INTERVAL_DAYS))
+    record["miss_count"] = 0
+    record["last_missed_due"] = ""
+    record["last_pre_due_dm"] = ""
+    record["last_due_dm"] = ""
+    record["legacy_initialized"] = False
+    return record
+
+
 def ensure_current_guest_has_record(member: discord.Member, today=None):
     if today is None:
         today = get_kst_now().date()
@@ -1504,6 +1522,73 @@ def count_user_attendance_in_range(user_id: str, start_date, end_date) -> int:
         if day is not None and start_date <= day <= end_date and user_id in attendee_ids:
             count += 1
     return count
+
+
+def get_activity_warning_config(guild_id: int):
+    condition_type = get_setting_with_default(guild_id, "activity_warning_type", DEFAULT_ACTIVITY_WARNING_TYPE)
+    if condition_type not in ("attendance", "voice"):
+        condition_type = DEFAULT_ACTIVITY_WARNING_TYPE
+
+    try:
+        days = int(get_setting_with_default(guild_id, "activity_warning_days", DEFAULT_ACTIVITY_WARNING_DAYS))
+    except (TypeError, ValueError):
+        days = int(DEFAULT_ACTIVITY_WARNING_DAYS)
+    days = max(1, days)
+
+    if condition_type == "voice":
+        try:
+            minimum = float(get_setting_with_default(guild_id, "activity_warning_min_voice_hours", DEFAULT_ACTIVITY_WARNING_MIN_VOICE_HOURS))
+        except (TypeError, ValueError):
+            minimum = float(DEFAULT_ACTIVITY_WARNING_MIN_VOICE_HOURS)
+    else:
+        try:
+            minimum = int(get_setting_with_default(guild_id, "activity_warning_min_attendance", DEFAULT_ACTIVITY_WARNING_MIN_ATTENDANCE))
+        except (TypeError, ValueError):
+            minimum = int(DEFAULT_ACTIVITY_WARNING_MIN_ATTENDANCE)
+    minimum = max(0, minimum)
+
+    return condition_type, days, minimum
+
+
+def get_activity_warning_target_rows(guild: discord.Guild):
+    condition_type, days, minimum = get_activity_warning_config(guild.id)
+    role_id = get_guild_setting_role_id(guild.id, "upgrade_clan_role_id")
+    if role_id is None:
+        return condition_type, days, minimum, []
+
+    start_dt = get_kst_now() - timedelta(days=days)
+    start_date = start_dt.date()
+    end_date = get_kst_now().date()
+    rows = []
+
+    for member in guild.members:
+        if member.bot or not any(role.id == role_id for role in member.roles):
+            continue
+
+        if condition_type == "voice":
+            total_seconds = get_voice_bonus_duration_seconds(guild.id, member.id, start_dt, get_kst_now())
+            value = round(total_seconds / 3600, 2)
+            passed = value >= float(minimum)
+            value_text = f"{value:g}시간"
+            required_text = f"{float(minimum):g}시간"
+        else:
+            count = count_user_attendance_in_range(str(member.id), start_date, end_date)
+            value = count
+            passed = count >= int(minimum)
+            value_text = f"{count}회"
+            required_text = f"{int(minimum)}회"
+
+        if not passed:
+            rows.append(
+                {
+                    "member": member,
+                    "value_text": value_text,
+                    "required_text": required_text,
+                }
+            )
+
+    rows.sort(key=lambda row: (row["value_text"], row["member"].display_name))
+    return condition_type, days, minimum, rows
 
 
 async def send_safe_dm(member: discord.Member, content: str) -> bool:
@@ -7633,6 +7718,8 @@ class GuestRefreshView(discord.ui.View):
         next_due = today + timedelta(days=GUEST_INTERVAL_DAYS)
         record["last_refresh"] = today_str
         record["next_due"] = format_attendance_date(next_due)
+        record["miss_count"] = 0
+        record["last_missed_due"] = ""
         record["last_pre_due_dm"] = ""
         record["last_due_dm"] = ""
         if not record.get("guest_assigned_at"):
@@ -9865,7 +9952,7 @@ async def guest_check(interaction: discord.Interaction):
     await interaction.response.send_message(embed=view.get_embed(), view=view, ephemeral=True)
 
 
-@bot.tree.command(name="기존게스트초기화", description="현재 GUEST 인원을 5월 11일 마감으로 초기화")
+@bot.tree.command(name="게스트갱신초기화", description="현재 GUEST 인원의 갱신 기준을 오늘 날짜로 초기화합니다.")
 @app_commands.default_permissions(manage_guild=True)
 async def initialize_legacy_guests(interaction: discord.Interaction):
     if interaction.guild is None:
@@ -9876,20 +9963,124 @@ async def initialize_legacy_guests(interaction: discord.Interaction):
     guest_members = [member for member in interaction.guild.members if any(role.id == GUEST_ROLE_ID for role in member.roles)]
     updated_count = 0
     for member in guest_members:
-        record = ensure_guest_record(str(member.id))
-        if record.get("last_refresh"):
-            continue
-        initialize_legacy_guest(member)
+        initialize_guest_refresh_from_today(member)
         updated_count += 1
 
     attendance_meta["legacy_guest_initialized_at"] = format_attendance_date(get_kst_now().date())
     save_attendance_data()
+    today = get_kst_now().date()
     await interaction.response.send_message(
-        f"✅ 기존 게스트 초기화 완료\n"
+        f"✅ 게스트 갱신 기준 초기화 완료\n"
         f"대상 인원: {updated_count}명\n"
-        f"기준 마감일: {format_attendance_date(LEGACY_GUEST_DUE_DATE)}",
+        f"기준일: {format_attendance_date(today)}\n"
+        f"다음 마감일: {format_attendance_date(today + timedelta(days=GUEST_INTERVAL_DAYS))}",
         ephemeral=True,
     )
+
+
+@bot.tree.command(name="경고조건설정", description="클랜원 활동 경고 조건을 설정합니다.")
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.rename(condition_type="기준", days="기간일수", minimum="최소값")
+@app_commands.describe(
+    condition_type="attendance 또는 voice",
+    days="며칠 기준으로 확인할지 입력합니다.",
+    minimum="출석 기준이면 횟수, 음성 기준이면 시간입니다.",
+)
+async def set_activity_warning_condition(interaction: discord.Interaction, condition_type: str, days: int, minimum: float):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    normalized_type = condition_type.strip().lower()
+    if normalized_type in ("출석", "attendance"):
+        normalized_type = "attendance"
+    elif normalized_type in ("음성", "voice", "voice_hours"):
+        normalized_type = "voice"
+    else:
+        await interaction.response.send_message("기준은 `출석` 또는 `음성`으로 입력해주세요.", ephemeral=True)
+        return
+
+    if days <= 0:
+        await interaction.response.send_message("기간일수는 1일 이상이어야 합니다.", ephemeral=True)
+        return
+
+    if minimum < 0:
+        await interaction.response.send_message("최소값은 0 이상이어야 합니다.", ephemeral=True)
+        return
+
+    set_guild_setting(interaction.guild.id, "activity_warning_type", normalized_type)
+    set_guild_setting(interaction.guild.id, "activity_warning_days", str(days))
+    if normalized_type == "voice":
+        set_guild_setting(interaction.guild.id, "activity_warning_min_voice_hours", str(minimum))
+        condition_text = f"최근 `{days}일` 동안 음성채널 `{minimum:g}시간` 이상"
+    else:
+        attendance_minimum = int(minimum)
+        set_guild_setting(interaction.guild.id, "activity_warning_min_attendance", str(attendance_minimum))
+        condition_text = f"최근 `{days}일` 동안 출석 `{attendance_minimum}회` 이상"
+
+    await interaction.response.send_message(
+        f"✅ 경고자 조건을 설정했습니다.\n활동 조건: {condition_text}",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="경고조건확인", description="현재 클랜원 활동 경고 조건을 확인합니다.")
+@app_commands.default_permissions(manage_guild=True)
+async def show_activity_warning_condition(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    condition_type, days, minimum = get_activity_warning_config(interaction.guild.id)
+    if condition_type == "voice":
+        condition_text = f"최근 `{days}일` 동안 음성채널 `{float(minimum):g}시간` 이상"
+    else:
+        condition_text = f"최근 `{days}일` 동안 출석 `{int(minimum)}회` 이상"
+
+    role_id = get_guild_setting_role_id(interaction.guild.id, "upgrade_clan_role_id")
+    role_text = f"<@&{role_id}>" if role_id else "`/세팅 클랜등업역할` 미설정"
+    await interaction.response.send_message(
+        f"📋 현재 경고자 조건\n대상 역할: {role_text}\n활동 조건: {condition_text}",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="경고자조회", description="현재 활동 조건을 충족하지 못한 클랜원을 조회합니다.")
+@app_commands.default_permissions(manage_guild=True)
+async def show_activity_warning_targets(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    condition_type, days, minimum, rows = get_activity_warning_target_rows(interaction.guild)
+    if get_guild_setting_role_id(interaction.guild.id, "upgrade_clan_role_id") is None:
+        await interaction.response.send_message("먼저 `/세팅 클랜등업역할`을 설정해주세요.", ephemeral=True)
+        return
+
+    condition_label = "음성채널" if condition_type == "voice" else "출석"
+    required_text = f"{float(minimum):g}시간" if condition_type == "voice" else f"{int(minimum)}회"
+    lines = []
+    for index, row in enumerate(rows[:30], start=1):
+        lines.append(
+            f"{index}. {row['member'].mention} - 현재 `{row['value_text']}` / 필요 `{row['required_text']}`"
+        )
+
+    embed = discord.Embed(
+        title="⚠ 활동 경고 대상 조회",
+        description=(
+            f"기준: 최근 `{days}일` / {condition_label} `{required_text}` 이상\n"
+            f"대상: 클랜원 역할 보유자"
+        ),
+        color=0xE67E22,
+    )
+    embed.add_field(
+        name=f"경고 대상 {len(rows)}명",
+        value=join_compact_discord_field_lines(lines) if lines else "현재 경고 대상자가 없습니다.",
+        inline=False,
+    )
+    if len(rows) > 30:
+        embed.set_footer(text="표시 제한으로 최대 30명까지만 보여줍니다.")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(name="추첨권등록", description="서버 재화로 구매할 수 있는 추첨권을 등록합니다.")
@@ -11878,6 +12069,14 @@ async def admin_commands_guide(interaction: discord.Interaction):
         value=(
             "`/환영메시지`, `/환영메시지삭제`, `/환영메시지목록`\n"
             "`/팀섞기규칙설정`, `/팀섞기규칙확인`, `/닉네임패널생성`"
+        ),
+        inline=False,
+    )
+    admin_embed.add_field(
+        name="📅 출석 / 활동 관리",
+        value=(
+            "`/출석생성`, `/게스트갱신생성`, `/갱신점검`, `/게스트갱신초기화`\n"
+            "`/경고조건설정`, `/경고조건확인`, `/경고자조회`"
         ),
         inline=False,
     )
