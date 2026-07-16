@@ -104,6 +104,9 @@ CREDIT_LEVEL_LIMIT_STEP = 5_000_000
 CREDIT_LEVEL_INTEREST_RATE = 10
 DEFAULT_VOICE_BONUS_HOURLY_AMOUNT = "250000"
 VOICE_BONUS_BLACKLIST_TICKETS_PER_HOUR = 5
+DEFAULT_ACTIVITY_REPORT_HOUR = "9"
+DEFAULT_ACTIVITY_REPORT_MINUTE = "0"
+DEFAULT_ACTIVITY_REPORT_WEEKDAY = "0"
 
 MIN_CREDIT_GRADE = MIN_CREDIT_LEVEL
 MAX_CREDIT_GRADE = MAX_CREDIT_LEVEL
@@ -678,6 +681,62 @@ cursor.execute(
         reward_type TEXT NOT NULL DEFAULT 'money',
         created_at TEXT NOT NULL,
         PRIMARY KEY (guild_id, user_id, claimed_for_date)
+    )
+    """
+)
+
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS raffle_tickets(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        price INTEGER NOT NULL,
+        daily_limit INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        deleted_at TEXT
+    )
+    """
+)
+
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS raffle_purchases(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        raffle_id INTEGER NOT NULL,
+        guild_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        quantity INTEGER NOT NULL,
+        total_amount INTEGER NOT NULL,
+        purchased_at TEXT NOT NULL
+    )
+    """
+)
+
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS chat_message_logs(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )
+    """
+)
+
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS chicken_proof_logs(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        message_id TEXT NOT NULL UNIQUE,
+        mention_count INTEGER NOT NULL,
+        created_at TEXT NOT NULL
     )
     """
 )
@@ -1498,6 +1557,8 @@ def cleanup_storage(days_to_keep: int = STORAGE_LOG_RETENTION_DAYS) -> dict[str,
     result["transfer_logs"] = delete_rows_before("transfer_logs", "created_at", money_cutoff)
     result["team_mix_logs"] = delete_rows_before("team_mix_logs", "created_at", cutoff)
     result["voice_channel_logs"] = delete_rows_before("voice_channel_logs", "ended_at", cutoff)
+    result["chat_message_logs"] = delete_rows_before("chat_message_logs", "created_at", cutoff)
+    result["chicken_proof_logs"] = delete_rows_before("chicken_proof_logs", "created_at", cutoff)
 
     cookie_deleted = False
     if os.path.exists(YTDLP_PERSISTENT_COOKIE_FILE):
@@ -2676,6 +2737,265 @@ def create_voice_bonus_claim(
 def get_voice_bonus_duration_seconds(guild_id: int, user_id: int, start_dt: datetime, end_dt: datetime) -> int:
     intervals = get_voice_channel_intervals_between(guild_id, user_id, start_dt, end_dt)
     return sum(max(0, int((item["end"] - item["start"]).total_seconds())) for item in intervals)
+
+
+def create_raffle_ticket(guild_id: int, title: str, price: int, daily_limit: int, created_by: int):
+    cursor.execute(
+        """
+        INSERT INTO raffle_tickets(guild_id, title, price, daily_limit, status, created_by, created_at)
+        VALUES (?, ?, ?, ?, 'active', ?, ?)
+        """,
+        (str(guild_id), title, price, daily_limit, str(created_by), dt_to_db(get_kst_now())),
+    )
+    conn.commit()
+    return cursor.lastrowid
+
+
+def get_active_raffle_by_title(guild_id: int, title: str):
+    cursor.execute(
+        """
+        SELECT id, title, price, daily_limit, created_by, created_at
+        FROM raffle_tickets
+        WHERE guild_id=? AND title=? AND status='active'
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (str(guild_id), title.strip()),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "id": int(row[0]),
+        "title": row[1],
+        "price": int(row[2]),
+        "daily_limit": int(row[3]),
+        "created_by": row[4],
+        "created_at": row[5],
+    }
+
+
+def get_active_raffle_by_id(guild_id: int, raffle_id: int):
+    cursor.execute(
+        """
+        SELECT id, title, price, daily_limit, created_by, created_at
+        FROM raffle_tickets
+        WHERE guild_id=? AND id=? AND status='active'
+        LIMIT 1
+        """,
+        (str(guild_id), raffle_id),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "id": int(row[0]),
+        "title": row[1],
+        "price": int(row[2]),
+        "daily_limit": int(row[3]),
+        "created_by": row[4],
+        "created_at": row[5],
+    }
+
+
+def get_active_raffles(guild_id: int):
+    cursor.execute(
+        """
+        SELECT id, title, price, daily_limit, created_at
+        FROM raffle_tickets
+        WHERE guild_id=? AND status='active'
+        ORDER BY id DESC
+        """,
+        (str(guild_id),),
+    )
+    return cursor.fetchall()
+
+
+def get_raffle_purchase_count_today(raffle_id: int, guild_id: int, user_id: int) -> int:
+    today = get_today_kst_date_str()
+    start_dt = datetime.strptime(today, "%Y-%m-%d").replace(tzinfo=ZoneInfo("Asia/Seoul"))
+    end_dt = start_dt + timedelta(days=1)
+    cursor.execute(
+        """
+        SELECT COALESCE(SUM(quantity), 0)
+        FROM raffle_purchases
+        WHERE raffle_id=? AND guild_id=? AND user_id=? AND purchased_at>=? AND purchased_at<?
+        """,
+        (raffle_id, str(guild_id), str(user_id), dt_to_db(start_dt), dt_to_db(end_dt)),
+    )
+    row = cursor.fetchone()
+    return int(row[0] or 0)
+
+
+def add_raffle_purchase(raffle_id: int, guild_id: int, user_id: int, quantity: int, total_amount: int):
+    cursor.execute(
+        """
+        INSERT INTO raffle_purchases(raffle_id, guild_id, user_id, quantity, total_amount, purchased_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (raffle_id, str(guild_id), str(user_id), quantity, total_amount, dt_to_db(get_kst_now())),
+    )
+    conn.commit()
+
+
+def get_raffle_summary(raffle_id: int, guild_id: int):
+    cursor.execute(
+        """
+        SELECT user_id, SUM(quantity) AS total_quantity, SUM(total_amount) AS total_amount
+        FROM raffle_purchases
+        WHERE raffle_id=? AND guild_id=?
+        GROUP BY user_id
+        ORDER BY total_quantity DESC, user_id ASC
+        """,
+        (raffle_id, str(guild_id)),
+    )
+    rows = cursor.fetchall()
+    total_quantity = sum(int(row[1] or 0) for row in rows)
+    total_amount = sum(int(row[2] or 0) for row in rows)
+    return rows, total_quantity, total_amount
+
+
+def delete_raffle_ticket(raffle_id: int):
+    cursor.execute(
+        "UPDATE raffle_tickets SET status='deleted', deleted_at=? WHERE id=?",
+        (dt_to_db(get_kst_now()), raffle_id),
+    )
+    conn.commit()
+
+
+def log_activity_message(message: discord.Message):
+    if message.guild is None or message.author.bot:
+        return
+
+    created_at = message.created_at.astimezone(ZoneInfo("Asia/Seoul")) if message.created_at else get_kst_now()
+    cursor.execute(
+        """
+        INSERT INTO chat_message_logs(guild_id, user_id, channel_id, created_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (str(message.guild.id), str(message.author.id), str(message.channel.id), dt_to_db(created_at)),
+    )
+
+    if message.mentions and (message.attachments or message.embeds):
+        cursor.execute(
+            """
+            INSERT OR IGNORE INTO chicken_proof_logs(guild_id, user_id, channel_id, message_id, mention_count, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(message.guild.id),
+                str(message.author.id),
+                str(message.channel.id),
+                str(message.id),
+                len([member for member in message.mentions if not member.bot]),
+                dt_to_db(created_at),
+            ),
+        )
+
+    conn.commit()
+
+
+def get_chat_message_count_between(guild_id: int, start_dt: datetime, end_dt: datetime) -> int:
+    cursor.execute(
+        """
+        SELECT COUNT(*)
+        FROM chat_message_logs
+        WHERE guild_id=? AND created_at>=? AND created_at<?
+        """,
+        (str(guild_id), dt_to_db(start_dt), dt_to_db(end_dt)),
+    )
+    row = cursor.fetchone()
+    return int(row[0] or 0)
+
+
+def get_chicken_proof_count_between(guild_id: int, start_dt: datetime, end_dt: datetime) -> int:
+    cursor.execute(
+        """
+        SELECT COUNT(*)
+        FROM chicken_proof_logs
+        WHERE guild_id=? AND created_at>=? AND created_at<?
+        """,
+        (str(guild_id), dt_to_db(start_dt), dt_to_db(end_dt)),
+    )
+    row = cursor.fetchone()
+    return int(row[0] or 0)
+
+
+def get_voice_ranking_between(guild: discord.Guild, start_dt: datetime, end_dt: datetime, limit: int = 3):
+    rows = []
+    for user_id in get_voice_log_user_ids_between(guild.id, start_dt, end_dt):
+        member = guild.get_member(user_id)
+        if member is None or member.bot:
+            continue
+        total_seconds = get_voice_bonus_duration_seconds(guild.id, user_id, start_dt, end_dt)
+        if total_seconds <= 0:
+            continue
+        rows.append((member, total_seconds))
+
+    rows.sort(key=lambda item: item[1], reverse=True)
+    return rows[:limit]
+
+
+def get_activity_report_setting_int(guild_id: int, key: str, default_value: str, minimum: int, maximum: int) -> int:
+    raw = get_setting_with_default(guild_id, key, default_value)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = int(default_value)
+    return max(minimum, min(maximum, value))
+
+
+def get_activity_report_time(guild_id: int) -> tuple[int, int]:
+    hour = get_activity_report_setting_int(guild_id, "activity_report_hour", DEFAULT_ACTIVITY_REPORT_HOUR, 0, 23)
+    minute = get_activity_report_setting_int(guild_id, "activity_report_minute", DEFAULT_ACTIVITY_REPORT_MINUTE, 0, 59)
+    return hour, minute
+
+
+def get_activity_report_weekday(guild_id: int) -> int:
+    return get_activity_report_setting_int(guild_id, "activity_report_weekday", DEFAULT_ACTIVITY_REPORT_WEEKDAY, 0, 6)
+
+
+def get_activity_report_period(period_type: str) -> tuple[str, datetime, datetime]:
+    now = get_kst_now()
+    today_start = datetime.combine(now.date(), datetime.min.time(), tzinfo=ZoneInfo("Asia/Seoul"))
+    if period_type == "weekly":
+        end_dt = today_start
+        start_dt = end_dt - timedelta(days=7)
+        title = f"{start_dt.strftime('%Y-%m-%d')} ~ {(end_dt - timedelta(seconds=1)).strftime('%Y-%m-%d')}"
+    else:
+        end_dt = today_start
+        start_dt = end_dt - timedelta(days=1)
+        title = start_dt.strftime("%Y-%m-%d")
+    return title, start_dt, end_dt
+
+
+def build_activity_report_embed(guild: discord.Guild, period_type: str) -> discord.Embed:
+    period_title, start_dt, end_dt = get_activity_report_period(period_type)
+    report_name = "주간" if period_type == "weekly" else "일간"
+    voice_rows = get_voice_ranking_between(guild, start_dt, end_dt, 3)
+    chat_count = get_chat_message_count_between(guild.id, start_dt, end_dt)
+    chicken_count = get_chicken_proof_count_between(guild.id, start_dt, end_dt)
+
+    if voice_rows:
+        voice_lines = [
+            f"**{index}. {member.display_name}** - `{format_duration_korean(total_seconds)}`"
+            for index, (member, total_seconds) in enumerate(voice_rows, start=1)
+        ]
+        voice_text = "\n".join(voice_lines)
+    else:
+        voice_text = "집계된 음성채널 기록이 없습니다."
+
+    embed = discord.Embed(
+        title=f"📊 {report_name} 활동 보고서",
+        description=f"집계 기간: `{period_title}`",
+        color=0x3498DB,
+        timestamp=get_kst_now(),
+    )
+    embed.add_field(name="🎙 음성로그 랭킹 TOP 3", value=voice_text, inline=False)
+    embed.add_field(name="💬 채팅 기록", value=f"`{chat_count:,}개`", inline=True)
+    embed.add_field(name="🍗 치킨 인증글", value=f"`{chicken_count:,}개`", inline=True)
+    embed.set_footer(text="채팅/치킨 기록은 기능 적용 이후부터 집계됩니다.")
+    return embed
 
 
 def clear_active_voice_session(guild_id: int, user_id: int):
@@ -6906,6 +7226,178 @@ class VoiceBonusPanelView(discord.ui.View):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+class RaffleTicketCreateModal(discord.ui.Modal):
+    def __init__(self):
+        super().__init__(title="추첨권 등록")
+        self.title_input = discord.ui.TextInput(
+            label="추첨권 제목",
+            placeholder="예: 7월 치킨 추첨권",
+            max_length=60,
+            required=True,
+        )
+        self.price_input = discord.ui.TextInput(
+            label="1장 가격",
+            placeholder="예: 500000",
+            max_length=12,
+            required=True,
+        )
+        self.daily_limit_input = discord.ui.TextInput(
+            label="하루 구매 제한",
+            placeholder="예: 3",
+            max_length=5,
+            required=True,
+        )
+        self.add_item(self.title_input)
+        self.add_item(self.price_input)
+        self.add_item(self.daily_limit_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+            return
+
+        title = self.title_input.value.strip()
+        if not title:
+            await interaction.response.send_message("추첨권 제목을 입력해주세요.", ephemeral=True)
+            return
+
+        try:
+            price = int(self.price_input.value.replace(",", "").strip())
+            daily_limit = int(self.daily_limit_input.value.replace(",", "").strip())
+        except ValueError:
+            await interaction.response.send_message("금액과 하루 제한은 숫자로 입력해주세요.", ephemeral=True)
+            return
+
+        if price <= 0:
+            await interaction.response.send_message("추첨권 금액은 1원 이상이어야 합니다.", ephemeral=True)
+            return
+
+        if daily_limit <= 0:
+            await interaction.response.send_message("하루 구매 제한은 1장 이상이어야 합니다.", ephemeral=True)
+            return
+
+        if get_active_raffle_by_title(interaction.guild.id, title) is not None:
+            await interaction.response.send_message("같은 제목의 활성 추첨권이 이미 있습니다.", ephemeral=True)
+            return
+
+        raffle_id = create_raffle_ticket(interaction.guild.id, title, price, daily_limit, interaction.user.id)
+        embed = discord.Embed(title="🎟 추첨권 등록 완료", color=0xF1C40F)
+        embed.add_field(name="번호", value=f"`#{raffle_id}`", inline=True)
+        embed.add_field(name="제목", value=title, inline=True)
+        embed.add_field(name="가격", value=f"`{format_money(price)}`", inline=True)
+        embed.add_field(name="하루 제한", value=f"`{daily_limit}장`", inline=True)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class RafflePurchaseSelect(discord.ui.Select):
+    def __init__(self, raffles):
+        options = []
+        for raffle_id, title, price, daily_limit, _created_at in raffles[:25]:
+            label = str(title)
+            if len(label) > 100:
+                label = label[:97] + "..."
+            description = f"1장 {format_money(int(price))} / 하루 {int(daily_limit)}장 제한"
+            if len(description) > 100:
+                description = description[:97] + "..."
+            options.append(
+                discord.SelectOption(
+                    label=label,
+                    description=description,
+                    value=str(int(raffle_id)),
+                )
+            )
+        super().__init__(
+            placeholder="구매할 추첨권을 선택해주세요.",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if not isinstance(view, RafflePurchaseView):
+            await interaction.response.send_message("추첨권 구매 패널을 처리하지 못했습니다.", ephemeral=True)
+            return
+        await view.purchase(interaction, int(self.values[0]))
+
+
+class RafflePurchaseView(discord.ui.View):
+    def __init__(self, user_id: int, quantity: int, raffles):
+        super().__init__(timeout=180)
+        self.user_id = user_id
+        self.quantity = quantity
+        self.resolved = False
+        self.add_item(RafflePurchaseSelect(raffles))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("이 추첨권 구매 패널은 명령어를 사용한 본인만 사용할 수 있습니다.", ephemeral=True)
+            return False
+        return True
+
+    def disable_all_items(self):
+        for item in self.children:
+            item.disabled = True
+
+    async def purchase(self, interaction: discord.Interaction, raffle_id: int):
+        if interaction.guild is None:
+            await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+            return
+
+        if self.resolved:
+            await interaction.response.send_message("이미 처리된 추첨권 구매 패널입니다.", ephemeral=True)
+            return
+
+        raffle = get_active_raffle_by_id(interaction.guild.id, raffle_id)
+        if raffle is None:
+            self.resolved = True
+            self.disable_all_items()
+            embed = discord.Embed(
+                title="🎟 추첨권 구매 불가",
+                description="선택한 추첨권이 삭제되었거나 더 이상 판매 중이 아닙니다.",
+                color=0xE74C3C,
+            )
+            await interaction.response.edit_message(embed=embed, view=self)
+            return
+
+        already_bought = get_raffle_purchase_count_today(raffle["id"], interaction.guild.id, interaction.user.id)
+        remaining_count = raffle["daily_limit"] - already_bought
+        if remaining_count <= 0:
+            await interaction.response.send_message(
+                f"오늘 `{raffle['title']}` 추첨권 구매 제한 `{raffle['daily_limit']}장`을 모두 사용했습니다.",
+                ephemeral=True,
+            )
+            return
+
+        if self.quantity > remaining_count:
+            await interaction.response.send_message(
+                f"오늘은 `{remaining_count}장`까지만 더 구매할 수 있습니다.",
+                ephemeral=True,
+            )
+            return
+
+        total_amount = raffle["price"] * self.quantity
+        if not can_afford(interaction.user.id, total_amount):
+            await interaction.response.send_message(
+                f"잔액이 부족합니다. 필요 금액: `{format_money(total_amount)}`",
+                ephemeral=True,
+            )
+            return
+
+        self.resolved = True
+        add_balance(interaction.user.id, -total_amount)
+        add_raffle_purchase(raffle["id"], interaction.guild.id, interaction.user.id, self.quantity, total_amount)
+
+        self.disable_all_items()
+        embed = discord.Embed(title="🎟 추첨권 구매 완료", color=0x2ECC71)
+        embed.add_field(name="추첨권", value=raffle["title"], inline=False)
+        embed.add_field(name="구매 수량", value=f"`{self.quantity}장`", inline=True)
+        embed.add_field(name="차감 금액", value=f"`{format_money(total_amount)}`", inline=True)
+        embed.add_field(name="오늘 구매량", value=f"`{already_bought + self.quantity}/{raffle['daily_limit']}장`", inline=True)
+        embed.add_field(name="현재 잔액", value=f"`{format_money(get_balance(interaction.user.id))}`", inline=False)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+
 class DuckmongView(discord.ui.View):
     def __init__(self, user_id: int, bet_amount: int, fake_names: list[str], hidden_results: dict[str, str]):
         super().__init__(timeout=60)
@@ -7756,6 +8248,62 @@ async def set_voice_bonus_amount(interaction: discord.Interaction, amount: int):
     )
 
 
+@bot.tree.command(name="세팅활동보고서채널", description="현재 채널을 활동 보고서 자동 발송 채널로 설정합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def set_activity_report_channel(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    set_guild_setting(interaction.guild.id, "activity_report_channel_id", str(interaction.channel.id))
+    await interaction.response.send_message(
+        f"활동 보고서 채널을 {interaction.channel.mention} 으로 설정했습니다.",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="세팅활동보고서시간", description="활동 보고서 자동 발송 시간을 설정합니다.")
+@app_commands.rename(hour="시", minute="분")
+@app_commands.describe(hour="0~23 사이의 시", minute="0~59 사이의 분")
+@app_commands.checks.has_permissions(administrator=True)
+async def set_activity_report_time(interaction: discord.Interaction, hour: int, minute: int = 0):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        await interaction.response.send_message("시간은 0~23시, 분은 0~59분으로 입력해주세요.", ephemeral=True)
+        return
+
+    set_guild_setting(interaction.guild.id, "activity_report_hour", str(hour))
+    set_guild_setting(interaction.guild.id, "activity_report_minute", str(minute))
+    await interaction.response.send_message(
+        f"활동 보고서 시간을 `{hour:02d}:{minute:02d}`으로 설정했습니다.",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="세팅활동보고서요일", description="주간 활동 보고서 발송 요일을 설정합니다.")
+@app_commands.rename(weekday="요일번호")
+@app_commands.describe(weekday="0=월요일, 1=화요일, 2=수요일, 3=목요일, 4=금요일, 5=토요일, 6=일요일")
+@app_commands.checks.has_permissions(administrator=True)
+async def set_activity_report_weekday(interaction: discord.Interaction, weekday: int):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    if weekday < 0 or weekday > 6:
+        await interaction.response.send_message("요일번호는 0부터 6까지만 입력할 수 있습니다. 0=월요일, 6=일요일입니다.", ephemeral=True)
+        return
+
+    weekday_names = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"]
+    set_guild_setting(interaction.guild.id, "activity_report_weekday", str(weekday))
+    await interaction.response.send_message(
+        f"주간 활동 보고서 발송 요일을 `{weekday_names[weekday]}`로 설정했습니다.",
+        ephemeral=True,
+    )
+
+
 @bot.tree.command(name="세팅음성생성채널", description="입장 시 1팀, 2팀 음성채널을 자동 생성할 트리거 채널을 추가합니다.")
 @app_commands.rename(channel="채널")
 @app_commands.describe(channel="유저가 입장하면 팀 음성채널을 만들 음성채널")
@@ -8145,6 +8693,27 @@ async def voice_bonus_panel(interaction: discord.Interaction):
     embed.set_footer(text="성과급은 하루 1회만 수령할 수 있습니다.")
     await interaction.channel.send(embed=embed, view=VoiceBonusPanelView())
     await interaction.response.send_message("성과급 패널을 생성했습니다.", ephemeral=True)
+
+
+@bot.tree.command(name="활동보고서", description="서버 활동 보고서를 즉시 출력합니다.")
+@app_commands.rename(period="기간")
+@app_commands.describe(period="일간 또는 주간")
+@app_commands.checks.has_permissions(administrator=True)
+async def activity_report(interaction: discord.Interaction, period: str = "일간"):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    normalized = period.strip()
+    if normalized in {"주간", "weekly", "week"}:
+        period_type = "weekly"
+    elif normalized in {"일간", "daily", "day"}:
+        period_type = "daily"
+    else:
+        await interaction.response.send_message("기간은 `일간` 또는 `주간`으로 입력해주세요.", ephemeral=True)
+        return
+
+    await interaction.response.send_message(embed=build_activity_report_embed(interaction.guild, period_type))
 
 
 # ----------------------------
@@ -8557,6 +9126,108 @@ async def chicken_bonus(interaction: discord.Interaction, amount: int, proof_cou
     )
 
     await interaction.followup.send(embed=embed)
+
+
+@bot.tree.command(name="추첨권등록", description="서버 재화로 구매할 수 있는 추첨권을 등록합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def raffle_create(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    await interaction.response.send_modal(RaffleTicketCreateModal())
+
+
+@bot.tree.command(name="추첨권구매", description="서버 재화로 추첨권을 구매합니다.")
+@app_commands.rename(quantity="수량")
+@app_commands.describe(quantity="구매할 수량")
+async def raffle_buy(interaction: discord.Interaction, quantity: int):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    if quantity <= 0:
+        await interaction.response.send_message("구매 수량은 1장 이상이어야 합니다.", ephemeral=True)
+        return
+
+    active_raffles = get_active_raffles(interaction.guild.id)
+    if not active_raffles:
+        await interaction.response.send_message("현재 구매 가능한 추첨권이 없습니다.", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="🎟 추첨권 구매",
+        description=(
+            f"구매 수량: `{quantity}장`\n"
+            "아래 선택 메뉴에서 구매할 추첨권을 골라주세요."
+        ),
+        color=0xF1C40F,
+    )
+    lines = []
+    for index, (_raffle_id, title, price, daily_limit, _created_at) in enumerate(active_raffles[:25], start=1):
+        lines.append(f"**{index}. {title}** - `{format_money(int(price))}` / 하루 `{int(daily_limit)}장`")
+    embed.add_field(name="구매 가능 추첨권", value=join_compact_discord_field_lines(lines), inline=False)
+    if len(active_raffles) > 25:
+        embed.set_footer(text="선택 메뉴 제한으로 최근 등록된 25개 추첨권만 표시됩니다.")
+    await interaction.response.send_message(
+        embed=embed,
+        view=RafflePurchaseView(interaction.user.id, quantity, active_raffles),
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="추첨권현황", description="선택한 추첨권의 구매 현황을 확인합니다.")
+@app_commands.rename(title="제목")
+@app_commands.describe(title="확인할 추첨권 제목")
+async def raffle_status(interaction: discord.Interaction, title: str):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    raffle = get_active_raffle_by_title(interaction.guild.id, title)
+    if raffle is None:
+        await interaction.response.send_message("해당 제목의 활성 추첨권을 찾지 못했습니다.", ephemeral=True)
+        return
+
+    rows, total_quantity, total_amount = get_raffle_summary(raffle["id"], interaction.guild.id)
+    lines = []
+    for index, (user_id, quantity, amount) in enumerate(rows[:20], start=1):
+        member = interaction.guild.get_member(int(user_id))
+        name = member.display_name if member else f"알 수 없는 유저 ({user_id})"
+        lines.append(f"**{index}. {name}** - `{int(quantity)}장` / `{format_money(int(amount or 0))}`")
+
+    embed = discord.Embed(title=f"🎟 추첨권 현황: {raffle['title']}", color=0xF1C40F)
+    embed.add_field(name="가격", value=f"`{format_money(raffle['price'])}`", inline=True)
+    embed.add_field(name="하루 제한", value=f"`{raffle['daily_limit']}장`", inline=True)
+    embed.add_field(name="총 판매량", value=f"`{total_quantity}장`", inline=True)
+    embed.add_field(name="총 차감 재화", value=f"`{format_money(total_amount)}`", inline=True)
+    embed.add_field(name="구매자 현황", value=join_compact_discord_field_lines(lines) if lines else "아직 구매자가 없습니다.", inline=False)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="추첨권삭제", description="추첨이 완료된 추첨권을 삭제합니다.")
+@app_commands.rename(title="제목")
+@app_commands.describe(title="삭제할 추첨권 제목")
+@app_commands.checks.has_permissions(administrator=True)
+async def raffle_delete(interaction: discord.Interaction, title: str):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    raffle = get_active_raffle_by_title(interaction.guild.id, title)
+    if raffle is None:
+        await interaction.response.send_message("해당 제목의 활성 추첨권을 찾지 못했습니다.", ephemeral=True)
+        return
+
+    rows, total_quantity, total_amount = get_raffle_summary(raffle["id"], interaction.guild.id)
+    delete_raffle_ticket(raffle["id"])
+
+    await interaction.response.send_message(
+        f"`{raffle['title']}` 추첨권을 삭제했습니다.\n"
+        f"최종 판매량: `{total_quantity}장`\n"
+        f"총 차감 재화: `{format_money(total_amount)}`",
+        ephemeral=True,
+    )
 
 
 
@@ -10415,7 +11086,8 @@ async def admin_commands_guide(interaction: discord.Interaction):
         value=(
             "`/세팅등업로그`, `/세팅퇴장로그`, `/세팅규칙로그`\n"
             "`/세팅구인채널`, `/세팅대출알림채널`, `/세팅음성로그채널`, `/세팅음성생성채널`, `/음성생성채널목록`, `/음성생성채널해제`\n"
-            "`/세팅몰빵결과채널`, `/세팅가이드안내`, `/세팅환영메시지채널`\n"
+            "`/세팅몰빵결과채널`, `/세팅활동보고서채널`, `/세팅활동보고서시간`, `/세팅활동보고서요일`\n"
+            "`/세팅가이드안내`, `/세팅환영메시지채널`\n"
             "`/세팅규칙역할`, `/세팅신입역할`, `/신용불량자역할`\n"
             "`/세팅클랜등업역할`, `/세팅게스트등업역할`, `/세팅시간대역할`"
         ),
@@ -10434,7 +11106,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="🎛 메시지 / 패널 생성",
         value=(
             "`/규칙버튼`, `/등업패널`, `/시간설정패널`, `/문의패널`\n"
-            "`/성과급패널`, `/고정메시지`, `/고정메시지해제`, `/고정메시지확인`, `/내전공지`"
+            "`/성과급패널`, `/활동보고서`, `/고정메시지`, `/고정메시지해제`, `/고정메시지확인`, `/내전공지`"
         ),
         inline=False,
     )
@@ -10450,6 +11122,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="💰 경제 / 신용 관리",
         value=(
             "`/돈주기`, `/돈주기내역`, `/돈삭제`, `/치킨성과급`, `/송금내역`, `/벌금부여`, `/벌금삭제`\n"
+            "`/추첨권등록`, `/추첨권삭제`\n"
             "`/신용불량자등록`, `/신용불량자목록`, `/신용불량자삭제`, `/신용초기화`\n"
             "`/노동가챠권지급`\n"
             "`/신용조회`, `/신용레벨표`, `/신용대출`, `/대출상환`, `/중도상환`"
@@ -10480,6 +11153,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="🏠 기본 / 정보",
         value=(
             "`/기초생활수급비`, `/잔액`, `/랭킹`, `/송금`, `/송금내역`\n"
+            "`/추첨권구매`, `/추첨권현황`\n"
             "`/도박명령어`, `/확률표`, `/족보`"
         ),
         inline=False,
@@ -10904,6 +11578,9 @@ async def on_message(message: discord.Message):
         await bot.process_commands(message)
         return
 
+    if message.guild is not None:
+        log_activity_message(message)
+
     if message.guild is None:
         if is_bot_guild_owner(message.author.id):
             content = message.content.strip().lower()
@@ -11175,6 +11852,42 @@ async def savings_auto_claim_loop():
         claim_saving(int(saving_id))
 
 
+@tasks.loop(minutes=1)
+async def activity_report_loop():
+    now = get_kst_now()
+    today = now.strftime("%Y-%m-%d")
+
+    for guild in bot.guilds:
+        channel_id = get_guild_setting_channel_id(guild.id, "activity_report_channel_id")
+        if channel_id is None:
+            continue
+
+        report_hour, report_minute = get_activity_report_time(guild.id)
+        if now.hour != report_hour or now.minute != report_minute:
+            continue
+
+        channel = guild.get_channel(channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            continue
+
+        last_daily_sent = get_guild_setting(guild.id, "activity_report_daily_last_sent")
+        if last_daily_sent != today:
+            try:
+                await channel.send(embed=build_activity_report_embed(guild, "daily"))
+                set_guild_setting(guild.id, "activity_report_daily_last_sent", today)
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+
+        weekly_day = get_activity_report_weekday(guild.id)
+        last_weekly_sent = get_guild_setting(guild.id, "activity_report_weekly_last_sent")
+        if now.weekday() == weekly_day and last_weekly_sent != today:
+            try:
+                await channel.send(embed=build_activity_report_embed(guild, "weekly"))
+                set_guild_setting(guild.id, "activity_report_weekly_last_sent", today)
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+
+
 @tasks.loop(hours=STORAGE_CLEANUP_INTERVAL_HOURS)
 async def storage_cleanup_loop():
     try:
@@ -11232,6 +11945,9 @@ async def on_ready():
 
     if not savings_auto_claim_loop.is_running():
         savings_auto_claim_loop.start()
+
+    if not activity_report_loop.is_running():
+        activity_report_loop.start()
 
     if not storage_cleanup_loop.is_running():
         storage_cleanup_loop.start()
