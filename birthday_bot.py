@@ -6994,7 +6994,7 @@ class HistoryGameSelectView(discord.ui.View):
             color=0x5865F2,
         )
         embed.set_footer(text="최신 기록이 위에 표시됩니다.")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(embed=embed)
 
     @discord.ui.button(label="슬롯", style=discord.ButtonStyle.primary)
     async def slot_history(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -7391,7 +7391,9 @@ class RafflePurchaseView(discord.ui.View):
         add_raffle_purchase(raffle["id"], interaction.guild.id, interaction.user.id, self.quantity, total_amount)
 
         self.disable_all_items()
+        member_name = interaction.user.display_name if isinstance(interaction.user, discord.Member) else interaction.user.name
         embed = discord.Embed(title="🎟 추첨권 구매 완료", color=0x2ECC71)
+        embed.add_field(name="구매자", value=member_name, inline=False)
         embed.add_field(name="추첨권", value=raffle["title"], inline=False)
         embed.add_field(name="구매 수량", value=f"`{self.quantity}장`", inline=True)
         embed.add_field(name="차감 금액", value=f"`{format_money(total_amount)}`", inline=True)
@@ -9174,7 +9176,6 @@ async def raffle_buy(interaction: discord.Interaction, quantity: int):
     await interaction.response.send_message(
         embed=embed,
         view=RafflePurchaseView(interaction.user.id, quantity, active_raffles),
-        ephemeral=True,
     )
 
 
