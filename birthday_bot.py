@@ -222,6 +222,8 @@ intents.message_content = True
 intents.voice_states = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
+settings_group = app_commands.Group(name="세팅", description="서버 설정 명령어")
+bot.tree.add_command(settings_group)
 active_recruits = {}
 playlist_queues: dict[int, list[dict]] = {}
 playlist_now_playing: dict[int, dict] = {}
@@ -8176,35 +8178,35 @@ async def create_recruit_post(
 # 관리자 설정 명령어
 # ----------------------------
 
-@bot.tree.command(name="세팅등업로그", description="현재 채널을 등업 로그 채널로 설정합니다.")
+@settings_group.command(name="등업로그", description="현재 채널을 등업 로그 채널로 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_upgrade_log_channel(interaction: discord.Interaction):
     set_guild_setting(interaction.guild.id, "upgrade_log_channel_id", str(interaction.channel.id))
     await interaction.response.send_message(f"등업 로그 채널을 {interaction.channel.mention} 으로 설정했습니다.", ephemeral=True)
 
 
-@bot.tree.command(name="세팅퇴장로그", description="현재 채널을 퇴장 로그 채널로 설정합니다.")
+@settings_group.command(name="퇴장로그", description="현재 채널을 퇴장 로그 채널로 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_leave_log_channel(interaction: discord.Interaction):
     set_guild_setting(interaction.guild.id, "leave_log_channel_id", str(interaction.channel.id))
     await interaction.response.send_message(f"퇴장 로그 채널을 {interaction.channel.mention} 으로 설정했습니다.", ephemeral=True)
 
 
-@bot.tree.command(name="세팅규칙로그", description="현재 채널을 규칙/신입 알림 로그 채널로 설정합니다.")
+@settings_group.command(name="규칙로그", description="현재 채널을 규칙/신입 알림 로그 채널로 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_rule_log_channel(interaction: discord.Interaction):
     set_guild_setting(interaction.guild.id, "rule_log_channel_id", str(interaction.channel.id))
     await interaction.response.send_message(f"규칙 로그 채널을 {interaction.channel.mention} 으로 설정했습니다.", ephemeral=True)
 
 
-@bot.tree.command(name="세팅구인채널", description="현재 채널을 구인 채널로 설정합니다.")
+@settings_group.command(name="구인채널", description="현재 채널을 구인 채널로 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_recruit_channel(interaction: discord.Interaction):
     set_guild_setting(interaction.guild.id, "recruit_channel_id", str(interaction.channel.id))
     await interaction.response.send_message(f"구인 채널을 {interaction.channel.mention} 으로 설정했습니다.", ephemeral=True)
 
 
-@bot.tree.command(name="세팅대출알림채널", description="현재 채널을 대출 상환 알림 채널로 설정합니다.")
+@settings_group.command(name="대출알림채널", description="현재 채널을 대출 상환 알림 채널로 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_loan_reminder_channel(interaction: discord.Interaction):
     set_guild_setting(interaction.guild.id, "loan_reminder_channel_id", str(interaction.channel.id))
@@ -8215,7 +8217,7 @@ async def set_loan_reminder_channel(interaction: discord.Interaction):
     )
 
 
-@bot.tree.command(name="세팅음성로그채널", description="현재 채널을 음성채널 입장/이동/퇴장 로그 채널로 설정합니다.")
+@settings_group.command(name="음성로그채널", description="현재 채널을 음성채널 입장/이동/퇴장 로그 채널로 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_voice_activity_log_channel(interaction: discord.Interaction):
     set_guild_setting(interaction.guild.id, "voice_activity_log_channel_id", str(interaction.channel.id))
@@ -8227,7 +8229,7 @@ async def set_voice_activity_log_channel(interaction: discord.Interaction):
     )
 
 
-@bot.tree.command(name="세팅성과급금액", description="음성 성과급의 1시간당 지급 금액을 설정합니다.")
+@settings_group.command(name="성과급금액", description="음성 성과급의 1시간당 지급 금액을 설정합니다.")
 @app_commands.rename(amount="금액")
 @app_commands.describe(amount="1시간당 지급할 서버 재화")
 @app_commands.checks.has_permissions(administrator=True)
@@ -8248,7 +8250,7 @@ async def set_voice_bonus_amount(interaction: discord.Interaction, amount: int):
     )
 
 
-@bot.tree.command(name="세팅활동보고서채널", description="현재 채널을 활동 보고서 자동 발송 채널로 설정합니다.")
+@settings_group.command(name="활동보고서채널", description="현재 채널을 활동 보고서 자동 발송 채널로 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_activity_report_channel(interaction: discord.Interaction):
     if interaction.guild is None:
@@ -8262,7 +8264,7 @@ async def set_activity_report_channel(interaction: discord.Interaction):
     )
 
 
-@bot.tree.command(name="세팅활동보고서시간", description="활동 보고서 자동 발송 시간을 설정합니다.")
+@settings_group.command(name="활동보고서시간", description="활동 보고서 자동 발송 시간을 설정합니다.")
 @app_commands.rename(hour="시", minute="분")
 @app_commands.describe(hour="0~23 사이의 시", minute="0~59 사이의 분")
 @app_commands.checks.has_permissions(administrator=True)
@@ -8283,7 +8285,7 @@ async def set_activity_report_time(interaction: discord.Interaction, hour: int, 
     )
 
 
-@bot.tree.command(name="세팅활동보고서요일", description="주간 활동 보고서 발송 요일을 설정합니다.")
+@settings_group.command(name="활동보고서요일", description="주간 활동 보고서 발송 요일을 설정합니다.")
 @app_commands.rename(weekday="요일번호")
 @app_commands.describe(weekday="0=월요일, 1=화요일, 2=수요일, 3=목요일, 4=금요일, 5=토요일, 6=일요일")
 @app_commands.checks.has_permissions(administrator=True)
@@ -8304,7 +8306,7 @@ async def set_activity_report_weekday(interaction: discord.Interaction, weekday:
     )
 
 
-@bot.tree.command(name="세팅음성생성채널", description="입장 시 1팀, 2팀 음성채널을 자동 생성할 트리거 채널을 추가합니다.")
+@settings_group.command(name="음성생성채널", description="입장 시 1팀, 2팀 음성채널을 자동 생성할 트리거 채널을 추가합니다.")
 @app_commands.rename(channel="채널")
 @app_commands.describe(channel="유저가 입장하면 팀 음성채널을 만들 음성채널")
 @app_commands.checks.has_permissions(administrator=True)
@@ -8360,7 +8362,7 @@ async def list_team_voice_create_channels(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="세팅몰빵결과채널", description="현재 채널을 몰빵게임 결과 채널로 설정합니다.")
+@settings_group.command(name="몰빵결과채널", description="현재 채널을 몰빵게임 결과 채널로 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_all_in_result_channel(interaction: discord.Interaction):
     set_guild_setting(interaction.guild.id, "all_in_result_channel_id", str(interaction.channel.id))
@@ -8369,28 +8371,28 @@ async def set_all_in_result_channel(interaction: discord.Interaction):
         ephemeral=True,
     )
 
-@bot.tree.command(name="세팅가이드안내", description="현재 채널을 가이드 안내 채널로 설정합니다.")
+@settings_group.command(name="가이드안내", description="현재 채널을 가이드 안내 채널로 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_welcome_guide_channel(interaction: discord.Interaction):
     set_guild_setting(interaction.guild.id, "welcome_guide_channel_id", str(interaction.channel.id))
     await interaction.response.send_message(f"가이드 안내 채널을 {interaction.channel.mention} 으로 설정했습니다.", ephemeral=True)
 
 
-@bot.tree.command(name="세팅환영메시지채널", description="현재 채널을 환영 메시지 출력 채널로 설정합니다.")
+@settings_group.command(name="환영메시지채널", description="현재 채널을 환영 메시지 출력 채널로 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_welcome_message_channel(interaction: discord.Interaction):
     set_guild_setting(interaction.guild.id, "welcome_message_channel_id", str(interaction.channel.id))
     await interaction.response.send_message(f"환영메시지 채널을 {interaction.channel.mention} 으로 설정했습니다.", ephemeral=True)
 
 
-@bot.tree.command(name="세팅규칙역할", description="규칙 확인 시 지급할 역할을 설정합니다.")
+@settings_group.command(name="규칙역할", description="규칙 확인 시 지급할 역할을 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_rule_role(interaction: discord.Interaction, role: discord.Role):
     set_guild_setting(interaction.guild.id, "rule_role_id", str(role.id))
     await interaction.response.send_message(f"규칙 역할을 {role.mention} 으로 설정했습니다.", ephemeral=True)
 
 
-@bot.tree.command(name="세팅신입역할", description="신입 추적용 역할을 설정합니다.")
+@settings_group.command(name="신입역할", description="신입 추적용 역할을 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_new_member_role(interaction: discord.Interaction, role: discord.Role):
     set_guild_setting(interaction.guild.id, "new_member_role_id", str(role.id))
@@ -8404,21 +8406,21 @@ async def set_blacklist_role(interaction: discord.Interaction, role: discord.Rol
     await interaction.response.send_message(f"신용불량자 역할을 {role.mention} 으로 설정했습니다.", ephemeral=True)
 
 
-@bot.tree.command(name="세팅클랜등업역할", description="클랜 등업 역할을 설정합니다.")
+@settings_group.command(name="클랜등업역할", description="클랜 등업 역할을 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_upgrade_clan_role(interaction: discord.Interaction, role: discord.Role):
     set_guild_setting(interaction.guild.id, "upgrade_clan_role_id", str(role.id))
     await interaction.response.send_message(f"클랜 등업 역할을 {role.mention} 으로 설정했습니다.", ephemeral=True)
 
 
-@bot.tree.command(name="세팅게스트등업역할", description="게스트 등업 역할을 설정합니다.")
+@settings_group.command(name="게스트등업역할", description="게스트 등업 역할을 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_upgrade_guest_role(interaction: discord.Interaction, role: discord.Role):
     set_guild_setting(interaction.guild.id, "upgrade_guest_role_id", str(role.id))
     await interaction.response.send_message(f"게스트 등업 역할을 {role.mention} 으로 설정했습니다.", ephemeral=True)
 
 
-@bot.tree.command(name="세팅시간대역할", description="시간대 버튼에 연결할 역할을 설정합니다.")
+@settings_group.command(name="시간대역할", description="시간대 버튼에 연결할 역할을 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 @app_commands.describe(slot_name="morning / afternoon / evening / night / dawn")
 async def set_time_role_command(interaction: discord.Interaction, slot_name: str, role: discord.Role):
@@ -8431,33 +8433,33 @@ async def set_time_role_command(interaction: discord.Interaction, slot_name: str
     await interaction.response.send_message(f"{TIME_SLOT_LABELS[slot_name]} 역할을 {role.mention} 으로 설정했습니다.", ephemeral=True)
 
 
-@bot.tree.command(name="세팅환영dm", description="유저에게 보낼 환영 DM 문구를 설정합니다.")
+@settings_group.command(name="환영dm", description="유저에게 보낼 환영 DM 문구를 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_welcome_dm_template(interaction: discord.Interaction):
     await interaction.response.send_modal(WelcomeDmModal())
 
 
-@bot.tree.command(name="세팅규칙안내문", description="규칙 버튼 안내문을 설정합니다.")
+@settings_group.command(name="규칙안내문", description="규칙 버튼 안내문을 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_rule_button_template(interaction: discord.Interaction, content: str):
     set_template(interaction.guild.id, "rule_button_text", content)
     await interaction.response.send_message("규칙 안내문을 저장했습니다.", ephemeral=True)
 
 
-@bot.tree.command(name="세팅등업패널문구", description="등업 패널 문구를 설정합니다.")
+@settings_group.command(name="등업패널문구", description="등업 패널 문구를 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_upgrade_panel_template(interaction: discord.Interaction):
     await interaction.response.send_modal(UpgradePanelTemplateModal(interaction.guild.id))
 
 
-@bot.tree.command(name="세팅신입알림문구", description="신입 역할 경과 알림 문구를 설정합니다.")
+@settings_group.command(name="신입알림문구", description="신입 역할 경과 알림 문구를 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_probation_notice_template(interaction: discord.Interaction, content: str):
     set_template(interaction.guild.id, "probation_notice_text", content)
     await interaction.response.send_message("신입 알림 문구를 저장했습니다.", ephemeral=True)
 
 
-@bot.tree.command(name="세팅신입경과일", description="신입 역할 경과 알림 일수를 설정합니다.")
+@settings_group.command(name="신입경과일", description="신입 역할 경과 알림 일수를 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_probation_days(interaction: discord.Interaction, days: int):
     if days < 1:
@@ -11084,20 +11086,20 @@ async def admin_commands_guide(interaction: discord.Interaction):
     admin_embed.add_field(
         name="📌 채널 / 역할 설정",
         value=(
-            "`/세팅등업로그`, `/세팅퇴장로그`, `/세팅규칙로그`\n"
-            "`/세팅구인채널`, `/세팅대출알림채널`, `/세팅음성로그채널`, `/세팅음성생성채널`, `/음성생성채널목록`, `/음성생성채널해제`\n"
-            "`/세팅몰빵결과채널`, `/세팅활동보고서채널`, `/세팅활동보고서시간`, `/세팅활동보고서요일`\n"
-            "`/세팅가이드안내`, `/세팅환영메시지채널`\n"
-            "`/세팅규칙역할`, `/세팅신입역할`, `/신용불량자역할`\n"
-            "`/세팅클랜등업역할`, `/세팅게스트등업역할`, `/세팅시간대역할`"
+            "`/세팅 등업로그`, `/세팅 퇴장로그`, `/세팅 규칙로그`\n"
+            "`/세팅 구인채널`, `/세팅 대출알림채널`, `/세팅 음성로그채널`, `/세팅 음성생성채널`, `/음성생성채널목록`, `/음성생성채널해제`\n"
+            "`/세팅 몰빵결과채널`, `/세팅 활동보고서채널`, `/세팅 활동보고서시간`, `/세팅 활동보고서요일`\n"
+            "`/세팅 가이드안내`, `/세팅 환영메시지채널`\n"
+            "`/세팅 규칙역할`, `/세팅 신입역할`, `/신용불량자역할`\n"
+            "`/세팅 클랜등업역할`, `/세팅 게스트등업역할`, `/세팅 시간대역할`"
         ),
         inline=False,
     )
     admin_embed.add_field(
         name="📝 문구 / 패널 설정",
         value=(
-            "`/세팅환영dm`, `/세팅규칙안내문`, `/세팅등업패널문구`\n"
-            "`/세팅신입알림문구`, `/세팅신입경과일`, `/적금세팅`, `/세팅성과급금액`\n"
+            "`/세팅 환영dm`, `/세팅 규칙안내문`, `/세팅 등업패널문구`\n"
+            "`/세팅 신입알림문구`, `/세팅 신입경과일`, `/적금세팅`, `/세팅 성과급금액`\n"
             "`/문구설정확인`, `/설정확인`, `/역할설정확인`"
         ),
         inline=False,
@@ -11132,7 +11134,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
     admin_embed.add_field(
         name="✨ 자주 쓰는 예시",
         value=(
-            "`/세팅등업패널문구`  여러 줄 패널 문구 설정\n"
+            "`/세팅 등업패널문구`  여러 줄 패널 문구 설정\n"
             "`/신용불량자등록 @유저`  해당 유저 등록\n"
             "`/돈주기 @유저 10000 이벤트 보상`  특정 유저에게 비고와 함께 재화 지급\n"
             "`/치킨성과급 500000 2`  최근 치킨 인증글 2개에 성과급 지급"
