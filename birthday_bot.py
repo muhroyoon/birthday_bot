@@ -4402,6 +4402,24 @@ def add_labor_gacha_tickets(guild_id: int, user_id: int, amount: int):
     conn.commit()
 
 
+def remove_labor_gacha_tickets(guild_id: int, user_id: int, amount: int) -> int:
+    current_count = get_labor_gacha_ticket_count(guild_id, user_id)
+    remove_count = min(max(0, amount), current_count)
+    if remove_count <= 0:
+        return 0
+
+    cursor.execute(
+        """
+        UPDATE labor_gacha_tickets
+        SET ticket_count=ticket_count-?
+        WHERE guild_id=? AND user_id=?
+        """,
+        (remove_count, str(guild_id), str(user_id)),
+    )
+    conn.commit()
+    return remove_count
+
+
 def consume_labor_gacha_ticket(guild_id: int, user_id: int) -> bool:
     current_count = get_labor_gacha_ticket_count(guild_id, user_id)
     if current_count <= 0:
@@ -12247,7 +12265,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
             "`/돈주기`, `/돈주기내역`, `/돈삭제`, `/치킨성과급`, `/송금내역`, `/벌금부여`, `/벌금삭제`\n"
             "`/추첨권등록`, `/추첨권삭제`\n"
             "`/신용불량자등록`, `/신용불량자목록`, `/신용불량자삭제`, `/신용초기화`\n"
-            "`/노동가챠권지급`\n"
+            "`/노동가챠권지급`, `/노동가챠권삭제`\n"
             "`/신용조회`, `/신용레벨표`, `/신용대출`, `/대출상환`, `/중도상환`"
         ),
         inline=False,
@@ -12367,6 +12385,37 @@ async def grant_labor_gacha_ticket(interaction: discord.Interaction, member: dis
         f"{member.mention}님에게 노동가챠권 `{amount}장`을 지급했습니다.\n현재 보유 수량: `{current_count}장`",
         ephemeral=False,
     )
+
+
+@bot.tree.command(name="노동가챠권삭제", description="특정 인원의 노동가챠권을 회수합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+@app_commands.rename(member="인원", amount="개수")
+async def remove_labor_gacha_ticket(interaction: discord.Interaction, member: discord.Member, amount: int):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    if amount <= 0:
+        await interaction.response.send_message("삭제 개수는 1개 이상이어야 합니다.", ephemeral=True)
+        return
+
+    before_count = get_labor_gacha_ticket_count(interaction.guild.id, member.id)
+    if before_count <= 0:
+        await interaction.response.send_message(
+            f"{member.mention}님은 보유한 노동가챠권이 없습니다.",
+            ephemeral=True,
+        )
+        return
+
+    removed_count = remove_labor_gacha_tickets(interaction.guild.id, member.id, amount)
+    current_count = get_labor_gacha_ticket_count(interaction.guild.id, member.id)
+    await interaction.response.send_message(
+        f"{member.mention}님의 노동가챠권 `{removed_count}장`을 삭제했습니다.\n"
+        f"이전 보유 수량: `{before_count}장`\n"
+        f"현재 보유 수량: `{current_count}장`",
+        ephemeral=False,
+    )
+
 
 @bot.tree.command(name="신용불량자목록", description="현재 등록된 신용불량자 목록을 확인합니다.")
 @app_commands.checks.has_permissions(administrator=True)
