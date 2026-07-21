@@ -81,7 +81,7 @@ def parse_date_range(start_date: str | None, end_date: str | None, *, default_da
 
 TOKEN = os.getenv("TOKEN")
 PUBG_API_KEY = os.getenv("PUBG_API_KEY")
-PUBG_DEFAULT_PLATFORM = os.getenv("PUBG_DEFAULT_PLATFORM", "kakao").strip() or "kakao"
+PUBG_DEFAULT_PLATFORM = os.getenv("PUBG_DEFAULT_PLATFORM", "steam").strip() or "steam"
 
 # ============================================================
 # 전역 설정
