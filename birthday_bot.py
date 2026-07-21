@@ -2191,6 +2191,33 @@ def finalize_kill_bet_round(session: dict, round_data: dict) -> list[dict]:
     return calculated_rows
 
 
+def reset_kill_bet_scores(session_id: int):
+    cursor.execute(
+        """
+        UPDATE kill_bet_players
+        SET total_kills=0,
+            total_damage=0,
+            placement_score=0,
+            total_score=0
+        WHERE session_id=?
+        """,
+        (session_id,),
+    )
+    cursor.execute(
+        """
+        DELETE FROM kill_bet_round_scores
+        WHERE round_id IN (
+            SELECT id FROM kill_bet_rounds WHERE session_id=?
+        )
+        """,
+        (session_id,),
+    )
+    cursor.execute("DELETE FROM kill_bet_rounds WHERE session_id=?", (session_id,))
+    cursor.execute("DELETE FROM kill_bet_manual_entries WHERE session_id=?", (session_id,))
+    cursor.execute("DELETE FROM kill_bet_matches WHERE session_id=?", (session_id,))
+    conn.commit()
+
+
 def build_kill_bet_round_embed(guild: discord.Guild, session: dict, round_data: dict) -> discord.Embed:
     players = get_kill_bet_players(session["id"])
     if round_data.get("team_name"):
@@ -2364,6 +2391,17 @@ async def submit_kill_bet_round_scores(
                 pass
 
     await refresh_kill_bet_status_message(interaction.guild, session)
+
+    if is_completed and channel is not None and hasattr(channel, "send"):
+        refreshed_session = get_kill_bet_session_by_id(interaction.guild.id, session["id"]) or session
+        try:
+            status_message = await channel.send(
+                embed=build_kill_bet_status_embed(interaction.guild, refreshed_session),
+                view=KillBetStatusView(session["id"]) if refreshed_session["status"] == "active" else None,
+            )
+            set_kill_bet_status_message(session["id"], status_message.channel.id, status_message.id)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
 
     message = "점수를 입력했습니다."
     if is_completed:
@@ -10014,6 +10052,86 @@ class KillBetStatusView(discord.ui.View):
             view=KillBetPlayerScoreSelectView(interaction.user.id, session["id"], missing_players),
             ephemeral=True,
         )
+
+    @discord.ui.button(label="점수 초기화", style=discord.ButtonStyle.danger)
+    async def reset_score(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild is None:
+            await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+            return
+
+        session = get_kill_bet_session_by_id(interaction.guild.id, self.session_id)
+        if session is None or session["status"] != "active":
+            await interaction.response.send_message("이미 종료되었거나 찾을 수 없는 킬내기입니다.", ephemeral=True)
+            return
+
+        if interaction.user.id != int(session["creator_user_id"]) and not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("킬내기 생성자 또는 관리자만 점수를 초기화할 수 있습니다.", ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title="⚠️ 킬내기 점수 초기화 확인",
+            description=(
+                f"세션 `#{session['id']}`의 모든 누적 점수와 판별 입력 기록을 초기화합니다.\n"
+                "이 작업은 되돌릴 수 없습니다."
+            ),
+            color=0xE74C3C,
+        )
+        await interaction.response.send_message(
+            embed=embed,
+            view=KillBetResetConfirmView(interaction.user.id, session["id"]),
+            ephemeral=True,
+        )
+
+
+class KillBetResetConfirmView(discord.ui.View):
+    def __init__(self, user_id: int, session_id: int):
+        super().__init__(timeout=120)
+        self.user_id = user_id
+        self.session_id = session_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("초기화 확인은 요청한 사람만 누를 수 있습니다.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="초기화 실행", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild is None:
+            await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+            return
+
+        session = get_kill_bet_session_by_id(interaction.guild.id, self.session_id)
+        if session is None or session["status"] != "active":
+            await interaction.response.send_message("이미 종료되었거나 찾을 수 없는 킬내기입니다.", ephemeral=True)
+            return
+
+        reset_kill_bet_scores(session["id"])
+        refreshed_session = get_kill_bet_session_by_id(interaction.guild.id, session["id"]) or session
+        await refresh_kill_bet_status_message(interaction.guild, refreshed_session)
+
+        channel = interaction.guild.get_channel(int(session["channel_id"])) or bot.get_channel(int(session["channel_id"]))
+        if channel is not None and hasattr(channel, "send"):
+            try:
+                await channel.send(
+                    embed=discord.Embed(
+                        title="🔄 킬내기 점수 초기화",
+                        description=f"세션 `#{session['id']}`의 점수와 라운드 기록이 초기화되었습니다.",
+                        color=0xE74C3C,
+                    )
+                )
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(content="점수 초기화가 완료되었습니다.", embed=None, view=self)
+
+    @discord.ui.button(label="취소", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(content="점수 초기화를 취소했습니다.", embed=None, view=self)
 
 
 class KillBetPlayerScoreModal(discord.ui.Modal):
