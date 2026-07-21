@@ -311,6 +311,7 @@ PLAYLIST_YOUTUBE_REQUEST_INTERVAL_SECONDS = 12
 PLAYLIST_FAILURE_NOTICE_INTERVAL = 5
 PLAYLIST_FAILURE_BACKOFF_STEP_SECONDS = 15
 PLAYLIST_FAILURE_BACKOFF_MAX_SECONDS = 90
+PUBG_API_REQUEST_INTERVAL_SECONDS = 7
 
 intents = discord.Intents.default()
 intents.members = True
@@ -332,6 +333,8 @@ playlist_panel_requesters: dict[int, int] = {}
 playlist_failure_counts: dict[int, int] = {}
 playlist_failed_tracks: dict[int, list[dict]] = {}
 playlist_last_youtube_request_at: dict[int, float] = {}
+pubg_api_lock = asyncio.Lock()
+pubg_last_request_at = 0.0
 
 # ============================================================
 # 데이터베이스 초기화
@@ -1400,6 +1403,62 @@ def get_active_kill_bet_session(guild_id: int) -> dict | None:
     }
 
 
+def get_kill_bet_session_by_id(guild_id: int, session_id: int) -> dict | None:
+    cursor.execute(
+        """
+        SELECT id, guild_id, channel_id, creator_user_id, rule_key, platform, target_score, status, started_at, ended_at
+        FROM kill_bet_sessions
+        WHERE guild_id=? AND id=?
+        LIMIT 1
+        """,
+        (str(guild_id), session_id),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "id": row[0],
+        "guild_id": row[1],
+        "channel_id": row[2],
+        "creator_user_id": row[3],
+        "rule_key": row[4],
+        "platform": row[5],
+        "target_score": row[6],
+        "status": row[7],
+        "started_at": row[8],
+        "ended_at": row[9],
+    }
+
+
+def get_active_kill_bet_sessions_for_guild(guild_id: int) -> list[dict]:
+    cursor.execute(
+        """
+        SELECT id, guild_id, channel_id, creator_user_id, rule_key, platform, target_score, status, started_at, ended_at
+        FROM kill_bet_sessions
+        WHERE guild_id=? AND status='active'
+        ORDER BY id DESC
+        """,
+        (str(guild_id),),
+    )
+    sessions = []
+    for row in cursor.fetchall():
+        sessions.append(
+            {
+                "id": row[0],
+                "guild_id": row[1],
+                "channel_id": row[2],
+                "creator_user_id": row[3],
+                "rule_key": row[4],
+                "platform": row[5],
+                "target_score": row[6],
+                "status": row[7],
+                "started_at": row[8],
+                "ended_at": row[9],
+            }
+        )
+    return sessions
+
+
 def get_kill_bet_players(session_id: int) -> list[dict]:
     cursor.execute(
         """
@@ -1648,16 +1707,25 @@ def get_pubg_headers() -> dict:
 
 
 async def pubg_api_get(http_session: aiohttp.ClientSession, platform: str, path: str) -> dict:
+    global pubg_last_request_at
     url = f"https://api.pubg.com/shards/{platform}{path}"
-    async with http_session.get(url, headers=get_pubg_headers(), timeout=20) as response:
-        if response.status == 429:
-            raise RuntimeError("PUBG API 호출 제한에 도달했습니다. 잠시 후 다시 시도합니다.")
-        if response.status == 401:
-            raise RuntimeError("PUBG_API_KEY가 없거나 올바르지 않습니다.")
-        if response.status >= 400:
-            body = await response.text()
-            raise RuntimeError(f"PUBG API 오류 {response.status}: {body[:200]}")
-        return await response.json()
+    async with pubg_api_lock:
+        loop = asyncio.get_running_loop()
+        elapsed = loop.time() - pubg_last_request_at
+        wait_seconds = PUBG_API_REQUEST_INTERVAL_SECONDS - elapsed
+        if wait_seconds > 0:
+            await asyncio.sleep(wait_seconds)
+
+        async with http_session.get(url, headers=get_pubg_headers(), timeout=20) as response:
+            pubg_last_request_at = loop.time()
+            if response.status == 429:
+                raise RuntimeError("PUBG API 호출 제한에 도달했습니다. 잠시 후 다시 시도합니다.")
+            if response.status == 401:
+                raise RuntimeError("PUBG_API_KEY가 없거나 올바르지 않습니다.")
+            if response.status >= 400:
+                body = await response.text()
+                raise RuntimeError(f"PUBG API 오류 {response.status}: {body[:200]}")
+            return await response.json()
 
 
 async def fetch_pubg_players(http_session: aiohttp.ClientSession, platform: str, names: list[str]) -> dict[str, dict]:
@@ -1711,13 +1779,23 @@ def calculate_kill_bet_match_scores(session: dict, match_data: dict) -> tuple[li
     if not registered_players:
         return None
 
-    if any(player["pubg_name"].lower() not in participants_by_name for player in registered_players):
-        return None
+    if rule["mode"] == "solo":
+        if any(player["pubg_name"].lower() not in participants_by_name for player in registered_players):
+            return None
+        scoring_players = registered_players
+    else:
+        scoring_players = [
+            player
+            for player in registered_players
+            if player["pubg_name"].lower() in participants_by_name
+        ]
+        if not scoring_players:
+            return None
 
     team_placement_scores = {}
     if rule["mode"] == "team" and rule["placement_scores"]:
         team_places = {}
-        for player in registered_players:
+        for player in scoring_players:
             team_name = player["team_name"] or "미지정"
             stats = participants_by_name[player["pubg_name"].lower()]
             win_place = int(stats.get("winPlace") or 0)
@@ -1730,7 +1808,7 @@ def calculate_kill_bet_match_scores(session: dict, match_data: dict) -> tuple[li
 
     placement_score_used_for_team = set()
     scored_rows = []
-    for player in registered_players:
+    for player in scoring_players:
         stats = participants_by_name[player["pubg_name"].lower()]
         kills = int(stats.get("kills") or 0)
         damage = float(stats.get("damageDealt") or 0)
@@ -8913,28 +8991,32 @@ class KillBetStartModal(discord.ui.Modal):
             required=False,
         )
         self.handicap_input = discord.ui.TextInput(
-            label="핸디캡",
-            placeholder="예: 머로:+0.2,+0.5; 구름:-0.2,0",
+            label="핸디캡 입력",
+            placeholder="닉네임:킬보정,딜보정 예) 머로:+0.2,+0.5; 구름:-0.2,0",
             style=discord.TextStyle.paragraph,
             max_length=600,
+            required=False,
+        )
+        self.handicap_help_input = discord.ui.TextInput(
+            label="핸디캡 설명",
+            default=(
+                "+0.2 = 1킬당 0.2점 추가\n"
+                "-0.2 = 1킬당 0.2점 차감\n"
+                "+0.5 = 100딜당 0.5점 추가\n"
+                "입력 예시: 머로:+0.2,+0.5; 구름:-0.2,0"
+            ),
+            style=discord.TextStyle.paragraph,
+            max_length=300,
             required=False,
         )
         self.add_item(self.participants_input)
         self.add_item(self.target_score_input)
         self.add_item(self.handicap_input)
+        self.add_item(self.handicap_help_input)
 
     async def on_submit(self, interaction: discord.Interaction):
         if interaction.guild is None or interaction.channel is None:
             await interaction.response.send_message("서버 채널에서만 사용할 수 있습니다.", ephemeral=True)
-            return
-
-        active_session = get_active_kill_bet_session(interaction.guild.id)
-        if active_session is not None:
-            await interaction.response.send_message(
-                f"이미 진행 중인 킬내기 `#{active_session['id']}`가 있습니다.\n"
-                "`/킬내기종료` 후 새 킬내기를 시작해주세요.",
-                ephemeral=True,
-            )
             return
 
         rule = get_kill_bet_rule(self.rule_key)
@@ -8976,7 +9058,7 @@ class KillBetStartModal(discord.ui.Modal):
             target_score,
             participants,
         )
-        session = get_active_kill_bet_session(interaction.guild.id)
+        session = get_kill_bet_session_by_id(interaction.guild.id, session_id)
         embed = build_kill_bet_status_embed(interaction.guild, session)
         embed.description = (
             f"{interaction.user.mention}님이 킬내기를 시작했습니다.\n"
@@ -9023,6 +9105,93 @@ class KillBetRuleSelectView(discord.ui.View):
         super().__init__(timeout=180)
         self.user_id = user_id
         self.add_item(KillBetRuleSelect())
+
+
+def build_kill_bet_select_option(guild: discord.Guild, session: dict) -> discord.SelectOption:
+    rule = get_kill_bet_rule(session["rule_key"])
+    channel = guild.get_channel(int(session["channel_id"]))
+    channel_text = f"#{channel.name}" if channel is not None else f"채널 {session['channel_id']}"
+    players = get_kill_bet_players(session["id"])
+    player_count = len(players)
+    target_text = f" / 목표 {format_score(session['target_score'])}점" if session["target_score"] is not None else ""
+    label = f"#{session['id']} {rule['name'] if rule else session['rule_key']}"
+    description = f"{channel_text} / 참가 {player_count}명{target_text}"
+    return discord.SelectOption(
+        label=label[:100],
+        description=description[:100],
+        value=str(session["id"]),
+    )
+
+
+class KillBetSessionSelect(discord.ui.Select):
+    def __init__(self, guild: discord.Guild, sessions: list[dict], mode: str):
+        self.mode = mode
+        options = [build_kill_bet_select_option(guild, session) for session in sessions[:25]]
+        placeholder = "현황을 확인할 킬내기를 선택해주세요." if mode == "status" else "종료할 킬내기를 선택해주세요."
+        super().__init__(
+            placeholder=placeholder,
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if not isinstance(view, KillBetSessionSelectView):
+            await interaction.response.send_message("킬내기 선택 패널을 처리하지 못했습니다.", ephemeral=True)
+            return
+        await view.handle_selection(interaction, int(self.values[0]))
+
+
+class KillBetSessionSelectView(discord.ui.View):
+    def __init__(self, user_id: int, guild: discord.Guild, sessions: list[dict], mode: str):
+        super().__init__(timeout=180)
+        self.user_id = user_id
+        self.mode = mode
+        self.add_item(KillBetSessionSelect(guild, sessions, mode))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("이 킬내기 선택 패널은 명령어를 사용한 본인만 사용할 수 있습니다.", ephemeral=True)
+            return False
+        return True
+
+    def disable_all_items(self):
+        for item in self.children:
+            item.disabled = True
+
+    async def handle_selection(self, interaction: discord.Interaction, session_id: int):
+        if interaction.guild is None:
+            await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+            return
+
+        session = get_kill_bet_session_by_id(interaction.guild.id, session_id)
+        if session is None or session["status"] != "active":
+            self.disable_all_items()
+            embed = discord.Embed(
+                title="🔫 킬내기 선택 불가",
+                description="선택한 킬내기가 이미 종료되었거나 찾을 수 없습니다.",
+                color=0xE74C3C,
+            )
+            await interaction.response.edit_message(embed=embed, view=self)
+            return
+
+        if self.mode == "status":
+            self.disable_all_items()
+            await interaction.response.edit_message(embed=build_kill_bet_status_embed(interaction.guild, session), view=self)
+            return
+
+        if interaction.user.id != int(session["creator_user_id"]) and not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("킬내기 생성자 또는 관리자만 종료할 수 있습니다.", ephemeral=True)
+            return
+
+        finish_kill_bet_session(session["id"])
+        session["status"] = "ended"
+        session["ended_at"] = dt_to_db(get_kst_now())
+        self.disable_all_items()
+        embed = build_kill_bet_status_embed(interaction.guild, session)
+        embed.title = embed.title.replace("현황", "종료")
+        await interaction.response.edit_message(embed=embed, view=self)
 
 
 class DuckmongView(discord.ui.View):
@@ -13284,15 +13453,6 @@ async def start_kill_bet(interaction: discord.Interaction):
         await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
         return
 
-    active_session = get_active_kill_bet_session(interaction.guild.id)
-    if active_session is not None:
-        await interaction.response.send_message(
-            f"이미 진행 중인 킬내기 `#{active_session['id']}`가 있습니다.\n"
-            "`/킬내기현황`으로 확인하거나 `/킬내기종료` 후 새로 시작해주세요.",
-            ephemeral=True,
-        )
-        return
-
     embed = discord.Embed(
         title="🔫 킬내기 시작",
         description=(
@@ -13313,12 +13473,25 @@ async def kill_bet_status(interaction: discord.Interaction):
         await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
         return
 
-    session = get_active_kill_bet_session(interaction.guild.id)
-    if session is None:
+    sessions = get_active_kill_bet_sessions_for_guild(interaction.guild.id)
+    if not sessions:
         await interaction.response.send_message("현재 진행 중인 킬내기가 없습니다.", ephemeral=True)
         return
 
-    await interaction.response.send_message(embed=build_kill_bet_status_embed(interaction.guild, session))
+    if len(sessions) == 1:
+        await interaction.response.send_message(embed=build_kill_bet_status_embed(interaction.guild, sessions[0]))
+        return
+
+    embed = discord.Embed(
+        title="🔫 킬내기 현황 선택",
+        description="현황을 확인할 킬내기를 선택해주세요.",
+        color=0x3498DB,
+    )
+    await interaction.response.send_message(
+        embed=embed,
+        view=KillBetSessionSelectView(interaction.user.id, interaction.guild, sessions, "status"),
+        ephemeral=True,
+    )
 
 
 @bot.tree.command(name="킬내기종료", description="현재 진행 중인 배틀그라운드 킬내기를 종료합니다.")
@@ -13327,21 +13500,35 @@ async def end_kill_bet(interaction: discord.Interaction):
         await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
         return
 
-    session = get_active_kill_bet_session(interaction.guild.id)
-    if session is None:
+    sessions = get_active_kill_bet_sessions_for_guild(interaction.guild.id)
+    if not sessions:
         await interaction.response.send_message("현재 진행 중인 킬내기가 없습니다.", ephemeral=True)
         return
 
-    if interaction.user.id != int(session["creator_user_id"]) and not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("킬내기 생성자 또는 관리자만 종료할 수 있습니다.", ephemeral=True)
+    if len(sessions) == 1:
+        session = sessions[0]
+        if interaction.user.id != int(session["creator_user_id"]) and not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("킬내기 생성자 또는 관리자만 종료할 수 있습니다.", ephemeral=True)
+            return
+
+        finish_kill_bet_session(session["id"])
+        session["status"] = "ended"
+        session["ended_at"] = dt_to_db(get_kst_now())
+        embed = build_kill_bet_status_embed(interaction.guild, session)
+        embed.title = embed.title.replace("현황", "종료")
+        await interaction.response.send_message(embed=embed)
         return
 
-    finish_kill_bet_session(session["id"])
-    session["status"] = "ended"
-    session["ended_at"] = dt_to_db(get_kst_now())
-    embed = build_kill_bet_status_embed(interaction.guild, session)
-    embed.title = embed.title.replace("현황", "종료")
-    await interaction.response.send_message(embed=embed)
+    embed = discord.Embed(
+        title="🔫 킬내기 종료 선택",
+        description="종료할 킬내기를 선택해주세요.",
+        color=0xE67E22,
+    )
+    await interaction.response.send_message(
+        embed=embed,
+        view=KillBetSessionSelectView(interaction.user.id, interaction.guild, sessions, "end"),
+        ephemeral=True,
+    )
 
 
 @bot.tree.command(name="신용불량자목록", description="현재 등록된 신용불량자 목록을 확인합니다.")
