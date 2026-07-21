@@ -1770,9 +1770,7 @@ def add_kill_bet_manual_entry(session_id: int, input_by: int, raw_text: str) -> 
 
 
 def can_manage_kill_bet_session(interaction: discord.Interaction, session: dict) -> bool:
-    if interaction.user.id == int(session["creator_user_id"]):
-        return True
-    return bool(getattr(interaction.user, "guild_permissions", None) and interaction.user.guild_permissions.administrator)
+    return True
 
 
 def parse_kill_bet_manual_score_lines(raw_text: str) -> list[dict]:
@@ -2145,6 +2143,88 @@ def build_kill_bet_round_embed(guild: discord.Guild, session: dict, round_data: 
     else:
         embed.set_footer(text="전원 입력이 완료되어 누적 점수에 반영되었습니다.")
     return embed
+
+
+async def submit_kill_bet_round_scores(
+    interaction: discord.Interaction,
+    session_id: int,
+    score_rows: list[dict],
+):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    session = get_kill_bet_session_by_id(interaction.guild.id, session_id)
+    if session is None or session["status"] != "active":
+        await interaction.response.send_message("선택한 킬내기가 이미 종료되었거나 찾을 수 없습니다.", ephemeral=True)
+        return
+
+    round_data = get_or_create_open_kill_bet_round(session["id"])
+    try:
+        for row in score_rows:
+            player = get_kill_bet_player_by_id(session["id"], row["player_id"])
+            if player is None:
+                raise ValueError("선택한 참가자를 찾을 수 없습니다.")
+            save_kill_bet_round_score(
+                round_data["id"],
+                player,
+                row["kills"],
+                row["damage"],
+                row.get("rank"),
+                interaction.user.id,
+            )
+    except ValueError as exc:
+        await interaction.response.send_message(str(exc), ephemeral=True)
+        return
+
+    players = get_kill_bet_players(session["id"])
+    scores = get_kill_bet_round_scores(round_data["id"])
+    is_completed = len(scores) >= len(players)
+    if is_completed:
+        finalize_kill_bet_round(session, round_data)
+        round_data["status"] = "completed"
+        round_data["completed_at"] = dt_to_db(get_kst_now())
+
+    embed = build_kill_bet_round_embed(interaction.guild, session, round_data)
+    channel = interaction.guild.get_channel(int(session["channel_id"])) or bot.get_channel(int(session["channel_id"]))
+    sent_or_edited = False
+    if round_data.get("message_id") and round_data.get("message_channel_id"):
+        message_channel = interaction.guild.get_channel(int(round_data["message_channel_id"])) or bot.get_channel(int(round_data["message_channel_id"]))
+        if message_channel is not None and hasattr(message_channel, "fetch_message"):
+            try:
+                message = await message_channel.fetch_message(int(round_data["message_id"]))
+                await message.edit(embed=embed, view=None if is_completed else KillBetRoundProgressView(session["id"]))
+                sent_or_edited = True
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                sent_or_edited = False
+
+    if not sent_or_edited and channel is not None and hasattr(channel, "send"):
+        try:
+            message = await channel.send(embed=embed, view=None if is_completed else KillBetRoundProgressView(session["id"]))
+            set_kill_bet_round_message(round_data["id"], message.channel.id, message.id)
+            sent_or_edited = True
+        except (discord.Forbidden, discord.HTTPException):
+            sent_or_edited = False
+
+    if is_completed and kill_bet_target_reached(session):
+        finish_kill_bet_session(session["id"])
+        session["status"] = "ended"
+        session["ended_at"] = dt_to_db(get_kst_now())
+        final_embed = build_kill_bet_status_embed(interaction.guild, session)
+        final_embed.title = final_embed.title.replace("현황", "목표점수 달성")
+        if channel is not None and hasattr(channel, "send"):
+            try:
+                await channel.send(embed=final_embed)
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+
+    message = "점수를 입력했습니다."
+    if is_completed:
+        message = f"{round_data['round_no']}번째 판 점수 집계가 완료되었습니다."
+    if sent_or_edited:
+        await interaction.response.send_message(message, ephemeral=True)
+    else:
+        await interaction.response.send_message("점수는 저장했지만 공개 현황 메시지를 보낼 권한이 없습니다.", ephemeral=True)
 
 
 def parse_pubg_created_at(value: str | None) -> datetime | None:
@@ -9728,6 +9808,28 @@ class KillBetStatusView(discord.ui.View):
             await interaction.response.send_message("현재 입력 중인 판은 이미 전원 입력이 완료되었습니다.", ephemeral=True)
             return
 
+        rule = get_kill_bet_rule(session["rule_key"])
+        if rule and rule["mode"] == "team":
+            teams = {}
+            for player in missing_players:
+                team_name = player["team_name"] or "미지정"
+                teams.setdefault(team_name, []).append(player)
+
+            embed = discord.Embed(
+                title="🔫 팀 점수 입력",
+                description=(
+                    "점수를 입력할 팀을 선택해주세요.\n"
+                    "팀을 선택하면 해당 팀원들의 `킬 / 딜` 입력창이 열립니다."
+                ),
+                color=0xE67E22,
+            )
+            await interaction.response.send_message(
+                embed=embed,
+                view=KillBetTeamScoreSelectView(interaction.user.id, session["id"], teams),
+                ephemeral=True,
+            )
+            return
+
         embed = discord.Embed(
             title="🔫 점수 입력 대상 선택",
             description=(
@@ -9805,61 +9907,18 @@ class KillBetPlayerScoreModal(discord.ui.Modal):
             await interaction.response.send_message("순위는 1 이상이어야 합니다.", ephemeral=True)
             return
 
-        round_data = get_or_create_open_kill_bet_round(session["id"])
-        try:
-            save_kill_bet_round_score(round_data["id"], player, kills, damage, rank, interaction.user.id)
-        except ValueError as exc:
-            await interaction.response.send_message(str(exc), ephemeral=True)
-            return
-
-        players = get_kill_bet_players(session["id"])
-        scores = get_kill_bet_round_scores(round_data["id"])
-        is_completed = len(scores) >= len(players)
-        if is_completed:
-            finalize_kill_bet_round(session, round_data)
-            round_data["status"] = "completed"
-            round_data["completed_at"] = dt_to_db(get_kst_now())
-
-        embed = build_kill_bet_round_embed(interaction.guild, session, round_data)
-        channel = interaction.guild.get_channel(int(session["channel_id"])) or bot.get_channel(int(session["channel_id"]))
-        sent_or_edited = False
-        if round_data.get("message_id") and round_data.get("message_channel_id"):
-            message_channel = interaction.guild.get_channel(int(round_data["message_channel_id"])) or bot.get_channel(int(round_data["message_channel_id"]))
-            if message_channel is not None and hasattr(message_channel, "fetch_message"):
-                try:
-                    message = await message_channel.fetch_message(int(round_data["message_id"]))
-                    await message.edit(embed=embed, view=None if is_completed else KillBetRoundProgressView(session["id"]))
-                    sent_or_edited = True
-                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                    sent_or_edited = False
-
-        if not sent_or_edited and channel is not None and hasattr(channel, "send"):
-            try:
-                message = await channel.send(embed=embed, view=None if is_completed else KillBetRoundProgressView(session["id"]))
-                set_kill_bet_round_message(round_data["id"], message.channel.id, message.id)
-                sent_or_edited = True
-            except (discord.Forbidden, discord.HTTPException):
-                sent_or_edited = False
-
-        if is_completed and kill_bet_target_reached(session):
-            finish_kill_bet_session(session["id"])
-            session["status"] = "ended"
-            session["ended_at"] = dt_to_db(get_kst_now())
-            final_embed = build_kill_bet_status_embed(interaction.guild, session)
-            final_embed.title = final_embed.title.replace("현황", "목표점수 달성")
-            if channel is not None and hasattr(channel, "send"):
-                try:
-                    await channel.send(embed=final_embed)
-                except (discord.Forbidden, discord.HTTPException):
-                    pass
-
-        message = "점수를 입력했습니다."
-        if is_completed:
-            message = f"{round_data['round_no']}번째 판 점수 집계가 완료되었습니다."
-        if sent_or_edited:
-            await interaction.response.send_message(message, ephemeral=True)
-        else:
-            await interaction.response.send_message("점수는 저장했지만 공개 현황 메시지를 보낼 권한이 없습니다.", ephemeral=True)
+        await submit_kill_bet_round_scores(
+            interaction,
+            session["id"],
+            [
+                {
+                    "player_id": player["id"],
+                    "kills": kills,
+                    "damage": damage,
+                    "rank": rank,
+                }
+            ],
+        )
 
 
 class KillBetPlayerScoreSelect(discord.ui.Select):
@@ -9929,6 +9988,164 @@ class KillBetPlayerScoreSelectView(discord.ui.View):
         )
 
 
+def parse_kill_damage_pair(value: str, label: str) -> tuple[int, float]:
+    parts = [part.strip() for part in re.split(r"[/\s]+", value.strip()) if part.strip()]
+    if len(parts) != 2:
+        raise ValueError(f"`{label}`은 `킬 / 딜` 형식으로 입력해주세요. 예: `5 / 320`")
+    try:
+        kills = int(parts[0])
+        damage = float(parts[1])
+    except ValueError:
+        raise ValueError(f"`{label}`의 킬과 딜은 숫자로 입력해주세요.")
+    if kills < 0 or damage < 0:
+        raise ValueError(f"`{label}`의 킬과 딜은 0 이상이어야 합니다.")
+    return kills, damage
+
+
+class KillBetTeamScoreModal(discord.ui.Modal):
+    def __init__(self, session_id: int, team_name: str, players: list[dict]):
+        super().__init__(title=f"{team_name} 점수 입력")
+        self.session_id = session_id
+        self.team_name = team_name
+        self.players = players
+        self.player_inputs = []
+
+        if len(players) <= 4:
+            for player in players:
+                player_input = discord.ui.TextInput(
+                    label=f"{player['pubg_name']} 킬 / 딜",
+                    placeholder="예: 5 / 320",
+                    max_length=20,
+                    required=True,
+                )
+                self.player_inputs.append((player, player_input))
+                self.add_item(player_input)
+        else:
+            self.bulk_input = discord.ui.TextInput(
+                label="팀원 점수 입력",
+                placeholder="한 줄에 한 명씩 입력\n예: 머로 5 / 320",
+                style=discord.TextStyle.paragraph,
+                max_length=900,
+                required=True,
+            )
+            self.add_item(self.bulk_input)
+
+        self.rank_input = discord.ui.TextInput(
+            label="팀 순위",
+            placeholder="순위 점수 룰만 입력. 예: 1",
+            max_length=4,
+            required=False,
+        )
+        self.add_item(self.rank_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+            return
+
+        try:
+            rank_text = self.rank_input.value.strip()
+            rank = int(rank_text) if rank_text else None
+        except ValueError:
+            await interaction.response.send_message("팀 순위는 숫자로 입력해주세요.", ephemeral=True)
+            return
+        if rank is not None and rank <= 0:
+            await interaction.response.send_message("팀 순위는 1 이상이어야 합니다.", ephemeral=True)
+            return
+
+        score_rows = []
+        try:
+            if len(self.players) <= 4:
+                for player, player_input in self.player_inputs:
+                    kills, damage = parse_kill_damage_pair(player_input.value, player["pubg_name"])
+                    score_rows.append(
+                        {
+                            "player_id": player["id"],
+                            "kills": kills,
+                            "damage": damage,
+                            "rank": rank,
+                        }
+                    )
+            else:
+                players_by_name = {player["pubg_name"].lower(): player for player in self.players}
+                for line_no, line in enumerate(self.bulk_input.value.splitlines(), start=1):
+                    clean_line = line.strip()
+                    if not clean_line:
+                        continue
+                    if " " not in clean_line:
+                        raise ValueError(f"{line_no}번째 줄은 `닉네임 킬 / 딜` 형식으로 입력해주세요.")
+                    name, score_text = clean_line.split(" ", 1)
+                    player = players_by_name.get(name.strip().lower())
+                    if player is None:
+                        raise ValueError(f"`{name}`은 `{self.team_name}`에 등록된 닉네임이 아닙니다.")
+                    kills, damage = parse_kill_damage_pair(score_text, name)
+                    score_rows.append(
+                        {
+                            "player_id": player["id"],
+                            "kills": kills,
+                            "damage": damage,
+                            "rank": rank,
+                        }
+                    )
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+
+        if len(score_rows) != len(self.players):
+            await interaction.response.send_message("팀원 전원의 점수를 입력해주세요.", ephemeral=True)
+            return
+
+        await submit_kill_bet_round_scores(interaction, self.session_id, score_rows)
+
+
+class KillBetTeamScoreSelect(discord.ui.Select):
+    def __init__(self, teams: dict[str, list[dict]]):
+        options = []
+        for team_name, players in sorted(teams.items(), key=lambda item: item[0].lower()):
+            options.append(
+                discord.SelectOption(
+                    label=team_name[:100],
+                    description=f"팀원 {len(players)}명"[:100],
+                    value=team_name,
+                )
+            )
+        super().__init__(
+            placeholder="점수를 입력할 팀을 선택해주세요.",
+            min_values=1,
+            max_values=1,
+            options=options[:25],
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if not isinstance(view, KillBetTeamScoreSelectView):
+            await interaction.response.send_message("팀 점수 입력 패널을 처리하지 못했습니다.", ephemeral=True)
+            return
+        await view.open_modal(interaction, self.values[0])
+
+
+class KillBetTeamScoreSelectView(discord.ui.View):
+    def __init__(self, user_id: int, session_id: int, teams: dict[str, list[dict]]):
+        super().__init__(timeout=180)
+        self.user_id = user_id
+        self.session_id = session_id
+        self.teams = teams
+        self.add_item(KillBetTeamScoreSelect(teams))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("이 팀 점수 입력 패널은 명령어를 사용한 본인만 사용할 수 있습니다.", ephemeral=True)
+            return False
+        return True
+
+    async def open_modal(self, interaction: discord.Interaction, team_name: str):
+        players = self.teams.get(team_name)
+        if not players:
+            await interaction.response.send_message("선택한 팀을 찾을 수 없습니다.", ephemeral=True)
+            return
+        await interaction.response.send_modal(KillBetTeamScoreModal(self.session_id, team_name, players))
+
+
 class KillBetRoundProgressView(discord.ui.View):
     def __init__(self, session_id: int):
         super().__init__(timeout=600)
@@ -9953,6 +10170,20 @@ class KillBetRoundProgressView(discord.ui.View):
         if not missing_players:
             await interaction.response.send_message("이번 판은 이미 전원 입력이 완료되었습니다.", ephemeral=True)
             return
+
+        rule = get_kill_bet_rule(session["rule_key"])
+        if rule and rule["mode"] == "team":
+            teams = {}
+            for player in missing_players:
+                team_name = player["team_name"] or "미지정"
+                teams.setdefault(team_name, []).append(player)
+            await interaction.response.send_message(
+                "점수를 입력할 팀을 선택해주세요.",
+                view=KillBetTeamScoreSelectView(interaction.user.id, session["id"], teams),
+                ephemeral=True,
+            )
+            return
+
         await interaction.response.send_message(
             "점수를 입력할 닉네임을 선택해주세요.",
             view=KillBetPlayerScoreSelectView(interaction.user.id, session["id"], missing_players),
