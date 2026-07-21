@@ -1346,7 +1346,7 @@ def can_afford(user_id: int, amount: int) -> bool:
 
 
 def format_money(amount: int) -> str:
-    return f"{amount:,}원"
+    return f"{amount:,}마리"
 
 
 def format_duration_korean(total_seconds: int) -> str:
@@ -8245,7 +8245,7 @@ class VoiceBonusPanelView(discord.ui.View):
             reward_type = "money"
             if payout <= 0:
                 await interaction.response.send_message(
-                    "현재 성과급 금액이 0원으로 설정되어 있어 수령할 금액이 없습니다.",
+                    "현재 성과급 금액이 0마리로 설정되어 있어 수령할 금액이 없습니다.",
                     ephemeral=True,
                 )
                 return
@@ -8672,7 +8672,7 @@ class RaffleTicketCreateModal(discord.ui.Modal):
             return
 
         if price <= 0:
-            await interaction.response.send_message("추첨권 금액은 1원 이상이어야 합니다.", ephemeral=True)
+            await interaction.response.send_message("추첨권 금액은 1마리 이상이어야 합니다.", ephemeral=True)
             return
 
         if daily_limit <= 0:
@@ -9494,11 +9494,11 @@ class PromissoryNoteModal(discord.ui.Modal):
             return
 
         if principal_amount <= 0:
-            await interaction.response.send_message("원금은 1원 이상이어야 합니다.", ephemeral=True)
+            await interaction.response.send_message("원금은 1마리 이상이어야 합니다.", ephemeral=True)
             return
 
         if interest_amount < 0:
-            await interaction.response.send_message("이자는 0원 이상이어야 합니다.", ephemeral=True)
+            await interaction.response.send_message("이자는 0마리 이상이어야 합니다.", ephemeral=True)
             return
 
         clean_due_text = str(self.due_text).strip()
@@ -9864,7 +9864,7 @@ async def set_voice_bonus_amount(interaction: discord.Interaction, amount: int):
         return
 
     if amount < 0:
-        await interaction.response.send_message("성과급 금액은 0원 이상이어야 합니다.", ephemeral=True)
+        await interaction.response.send_message("성과급 금액은 0마리 이상이어야 합니다.", ephemeral=True)
         return
 
     set_guild_setting(interaction.guild.id, "voice_bonus_hourly_amount", str(amount))
@@ -10409,7 +10409,7 @@ async def activity_report(interaction: discord.Interaction, period: str = "일�
 # 재화 / 적금 명령어
 # ----------------------------
 
-@bot.tree.command(name="기초생활수급비", description="하루에 한 번 기초생활수급비 500,000원을 받습니다.")
+@bot.tree.command(name="기초생활수급비", description="하루에 한 번 기초생활수급비 500,000마리를 받습니다.")
 async def daily_money(interaction: discord.Interaction):
     today = get_kst_now().strftime("%Y-%m-%d")
     cursor.execute("SELECT last_claim_date FROM daily_claims WHERE user_id=?", (str(interaction.user.id),))
@@ -10444,7 +10444,7 @@ async def savings_join(interaction: discord.Interaction, amount: int):
         await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
         return
     if amount <= 0:
-        await interaction.response.send_message("적금 금액은 1원 이상이어야 합니다.", ephemeral=True)
+        await interaction.response.send_message("적금 금액은 1마리 이상이어야 합니다.", ephemeral=True)
         return
     if not can_afford(interaction.user.id, amount):
         await interaction.response.send_message("잔액이 부족합니다.", ephemeral=True)
@@ -10568,7 +10568,7 @@ async def transfer(interaction: discord.Interaction, member: discord.Member, amo
         await interaction.response.send_message("자기 자신에게는 송금할 수 없습니다.", ephemeral=True)
         return
     if amount <= 0:
-        await interaction.response.send_message("송금 금액은 1원 이상이어야 합니다.", ephemeral=True)
+        await interaction.response.send_message("송금 금액은 1마리 이상이어야 합니다.", ephemeral=True)
         return
     if not can_afford(interaction.user.id, amount):
         await interaction.response.send_message("잔액이 부족합니다.", ephemeral=True)
@@ -10650,7 +10650,7 @@ async def grant_money(interaction: discord.Interaction, targets: str, amount: in
         return
 
     if amount <= 0:
-        await interaction.response.send_message("지급 금액은 1원 이상이어야 합니다.", ephemeral=True)
+        await interaction.response.send_message("지급 금액은 1마리 이상이어야 합니다.", ephemeral=True)
         return
 
     raw_ids = []
@@ -10715,7 +10715,7 @@ async def chicken_bonus(interaction: discord.Interaction, amount: int, proof_cou
         return
 
     if amount <= 0:
-        await interaction.response.send_message("지급 금액은 1원 이상이어야 합니다.", ephemeral=True)
+        await interaction.response.send_message("지급 금액은 1마리 이상이어야 합니다.", ephemeral=True)
         return
 
     if proof_count <= 0:
@@ -11207,7 +11207,7 @@ async def remove_money(interaction: discord.Interaction, member: discord.Member,
         return
 
     if amount <= 0:
-        await interaction.response.send_message("차감 금액은 1원 이상이어야 합니다.", ephemeral=True)
+        await interaction.response.send_message("차감 금액은 1마리 이상이어야 합니다.", ephemeral=True)
         return
 
     current_balance = get_balance(member.id)
@@ -11238,7 +11238,7 @@ async def assign_manual_credit_debt(
         return
 
     if amount <= 0:
-        await interaction.response.send_message("벌금 금액은 1원 이상이어야 합니다.", ephemeral=True)
+        await interaction.response.send_message("벌금 금액은 1마리 이상이어야 합니다.", ephemeral=True)
         return
 
     note = (reason or "").strip()
@@ -12330,7 +12330,7 @@ async def loan_money(interaction: discord.Interaction, amount: int):
         return
 
     if amount <= 0:
-        await interaction.response.send_message("대출 금액은 1원 이상이어야 합니다.", ephemeral=True)
+        await interaction.response.send_message("대출 금액은 1마리 이상이어야 합니다.", ephemeral=True)
         return
 
     profile = get_credit_profile(interaction.user.id)
@@ -12671,7 +12671,7 @@ async def repay_single_loan_command(interaction: discord.Interaction, loan_id: i
         return
 
     if amount <= 0:
-        await interaction.response.send_message("상환 금액은 1원 이상이어야 합니다.", ephemeral=True)
+        await interaction.response.send_message("상환 금액은 1마리 이상이어야 합니다.", ephemeral=True)
         return
 
     loan = get_loan_by_id(loan_id)
@@ -13012,7 +13012,7 @@ async def gambling_commands(interaction: discord.Interaction):
             "`/블랙잭 [금액]` - 딜러와 21 대결\n"
             "`/몬티홀 [금액]` - 문 3개 중 보상이 있는 문 찾기\n"
             "`/경마 [금액]` - 원하는 말에 베팅\n"
-            "`/숫자야구` - 10만원 고정 숫자 추리 게임\n"
+            "`/숫자야구` - 100,000마리 고정 숫자 추리 게임\n"
             "`/지뢰찾기 [금액]` - 지뢰를 피해 수익 확정\n"
             "`/섯다 [금액] [상대]` - 봇 또는 유저와 섯다 대결\n"
             "`/몰빵참여 [금액]` - 원하는 금액으로 몰빵게임 참여"
@@ -13162,8 +13162,8 @@ async def admin_commands_guide(interaction: discord.Interaction):
     general_embed.add_field(
         name="✨ 자주 쓰는 예시",
         value=(
-            "`/적금 50000`  5만원 적금\n"
-            "`/보급 10000`  1만원 보급 참여\n"
+            "`/적금 50000`  50,000마리 적금\n"
+            "`/보급 10000`  10,000마리 보급 참여\n"
             "`/내신용`  대출, 신용레벨, 노동 현황 확인\n"
             "`/차용증 @유저`  모달에서 원금, 이자, 상환일 입력\n"
             "`/섯다 10000 @유저`  유저와 섯다 대결 요청"
