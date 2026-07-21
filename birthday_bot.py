@@ -2034,6 +2034,36 @@ def get_kill_bet_round_scores(round_id: int) -> list[dict]:
     ]
 
 
+def get_kill_bet_team_round_summary(session_id: int, team_name: str) -> dict:
+    cursor.execute(
+        """
+        SELECT COUNT(*), COALESCE(MAX(team_round_no), 0)
+        FROM kill_bet_rounds
+        WHERE session_id=? AND team_name=? AND status='completed'
+        """,
+        (session_id, team_name),
+    )
+    completed_count, last_completed_round = cursor.fetchone()
+
+    cursor.execute(
+        """
+        SELECT team_round_no
+        FROM kill_bet_rounds
+        WHERE session_id=? AND team_name=? AND status='inputting'
+        ORDER BY team_round_no DESC
+        LIMIT 1
+        """,
+        (session_id, team_name),
+    )
+    row = cursor.fetchone()
+    inputting_round = row[0] if row else None
+    return {
+        "completed_count": int(completed_count or 0),
+        "last_completed_round": int(last_completed_round or 0),
+        "inputting_round": inputting_round,
+    }
+
+
 def save_kill_bet_round_score(
     round_id: int,
     player: dict,
@@ -2155,20 +2185,41 @@ def build_kill_bet_round_embed(guild: discord.Guild, session: dict, round_data: 
 
     lines = []
     score_by_player_id = {score["player_id"]: score for score in scores}
-    for player in players:
+    display_players = players
+    if is_completed and not round_data.get("team_name"):
+        display_players = sorted(
+            players,
+            key=lambda player: (
+                -score_by_player_id.get(player["id"], {}).get("score", 0),
+                -score_by_player_id.get(player["id"], {}).get("kills", 0),
+                -score_by_player_id.get(player["id"], {}).get("damage", 0),
+                player["pubg_name"].lower(),
+            ),
+        )
+
+    for index, player in enumerate(display_players, start=1):
         score = score_by_player_id.get(player["id"])
         team_text = f"[{player['team_name']}] " if player["team_name"] else ""
         if score:
             rank_text = f" / 순위 `{score['rank']}등`" if score["rank"] is not None else ""
             score_text = f" / +`{format_score(score['score'])}점`" if is_completed else ""
-            lines.append(
-                f"**{team_text}{player['pubg_name']}** 입력 완료{score_text}\n"
-                f"킬 `{score['kills']}` / 딜 `{format_score(score['damage'])}`{rank_text}"
-            )
+            if is_completed and not round_data.get("team_name"):
+                lines.append(
+                    f"**{index}. {player['pubg_name']}**\n"
+                    f"이번 판 점수: `+{format_score(score['score'])}점`\n"
+                    f"킬: `{score['kills']}`\n"
+                    f"딜: `{format_score(score['damage'])}`{rank_text}"
+                )
+            else:
+                lines.append(
+                    f"**{team_text}{player['pubg_name']}** 입력 완료{score_text}\n"
+                    f"킬 `{score['kills']}` / 딜 `{format_score(score['damage'])}`{rank_text}"
+                )
         else:
             lines.append(f"**{team_text}{player['pubg_name']}** `점수 입력 중`")
 
-    embed.add_field(name="입력 현황", value=join_compact_discord_field_lines(lines), inline=False)
+    field_name = "개인별 집계 결과" if is_completed and not round_data.get("team_name") else "입력 현황"
+    embed.add_field(name=field_name, value=join_compact_discord_field_lines(lines), inline=False)
     embed.add_field(name="진행도", value=f"`{len(scored_player_ids)} / {len(players)}`명 입력 완료", inline=True)
     if not is_completed:
         embed.set_footer(text="현황표의 점수 입력 버튼을 눌러 남은 인원의 점수를 입력해주세요.")
@@ -2606,9 +2657,14 @@ def build_kill_bet_status_embed(guild: discord.Guild, session: dict) -> discord.
             start=1,
         ):
             members = ", ".join(info["members"])
+            round_summary = get_kill_bet_team_round_summary(session["id"], team_name)
+            round_text = f"집계 완료 `{round_summary['completed_count']}판`"
+            if round_summary["inputting_round"]:
+                round_text += f" / 입력 중 `{round_summary['inputting_round']}번째 판`"
             lines.append(
                 f"**{index}. {team_name}** `{format_score(info['score'])}점`\n"
                 f"킬 `{info['kills']}` / 딜 `{format_score(info['damage'])}`\n"
+                f"{round_text}\n"
                 f"팀원: {members}"
             )
         embed.add_field(name="팀 순위", value=join_compact_discord_field_lines(lines), inline=False)
@@ -9830,7 +9886,7 @@ class KillBetSessionSelectView(discord.ui.View):
 
 class KillBetStatusView(discord.ui.View):
     def __init__(self, session_id: int):
-        super().__init__(timeout=600)
+        super().__init__(timeout=None)
         self.session_id = session_id
 
     @discord.ui.button(label="점수 입력", style=discord.ButtonStyle.primary)
@@ -10200,7 +10256,7 @@ class KillBetTeamScoreSelectView(discord.ui.View):
 
 class KillBetRoundProgressView(discord.ui.View):
     def __init__(self, session_id: int):
-        super().__init__(timeout=600)
+        super().__init__(timeout=None)
         self.session_id = session_id
 
     @discord.ui.button(label="점수 입력", style=discord.ButtonStyle.primary)
