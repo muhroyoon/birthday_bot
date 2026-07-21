@@ -9,8 +9,10 @@ import re
 import json
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+from urllib.parse import quote
 
 import discord
+import aiohttp
 from discord import app_commands
 from discord.ext import commands, tasks
 
@@ -78,6 +80,8 @@ def parse_date_range(start_date: str | None, end_date: str | None, *, default_da
 
 
 TOKEN = os.getenv("TOKEN")
+PUBG_API_KEY = os.getenv("PUBG_API_KEY")
+PUBG_DEFAULT_PLATFORM = os.getenv("PUBG_DEFAULT_PLATFORM", "kakao").strip() or "kakao"
 
 # ============================================================
 # 전역 설정
@@ -124,6 +128,81 @@ DEFAULT_ACTIVITY_WARNING_TYPE = "attendance"
 DEFAULT_ACTIVITY_WARNING_DAYS = "7"
 DEFAULT_ACTIVITY_WARNING_MIN_ATTENDANCE = "2"
 DEFAULT_ACTIVITY_WARNING_MIN_VOICE_HOURS = "5"
+
+KILL_BET_RULES = {
+    "solo_total": {
+        "rule_no": 1,
+        "name": "개인전 킬 점수",
+        "mode": "solo",
+        "player_count": 4,
+        "min_teams": None,
+        "kill_score": 1.0,
+        "damage_score_per_100": 1.0,
+        "placement_scores": {},
+        "ranking_type": "total_score",
+        "target_score_required": False,
+        "handicap": True,
+        "handicap_targets": ["kill", "damage"],
+        "round_summary": True,
+    },
+    "solo_target": {
+        "rule_no": 2,
+        "name": "개인전 목표점수",
+        "mode": "solo",
+        "player_count": 4,
+        "min_teams": None,
+        "kill_score": 1.0,
+        "damage_score_per_100": 1.0,
+        "placement_scores": {},
+        "ranking_type": "target_score",
+        "target_score_required": True,
+        "handicap": True,
+        "handicap_targets": ["kill", "damage"],
+        "round_summary": True,
+    },
+    "team_total": {
+        "rule_no": 3,
+        "name": "팀전 킬 점수",
+        "mode": "team",
+        "player_count": None,
+        "min_teams": 2,
+        "kill_score": 1.0,
+        "damage_score_per_100": 1.0,
+        "placement_scores": {
+            1: 5,
+            2: 4,
+            3: 3,
+            4: 2,
+            5: 1,
+        },
+        "ranking_type": "total_score",
+        "target_score_required": False,
+        "handicap": True,
+        "handicap_targets": ["kill", "damage"],
+        "round_summary": True,
+    },
+    "team_target": {
+        "rule_no": 4,
+        "name": "팀전 목표점수",
+        "mode": "team",
+        "player_count": None,
+        "min_teams": 2,
+        "kill_score": 1.0,
+        "damage_score_per_100": 1.0,
+        "placement_scores": {
+            1: 5,
+            2: 4,
+            3: 3,
+            4: 2,
+            5: 1,
+        },
+        "ranking_type": "target_score",
+        "target_score_required": True,
+        "handicap": True,
+        "handicap_targets": ["kill", "damage"],
+        "round_summary": True,
+    },
+}
 
 MIN_CREDIT_GRADE = MIN_CREDIT_LEVEL
 MAX_CREDIT_GRADE = MAX_CREDIT_LEVEL
@@ -802,6 +881,66 @@ cursor.execute(
     """
 )
 
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS kill_bet_sessions(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        creator_user_id TEXT NOT NULL,
+        rule_key TEXT NOT NULL,
+        platform TEXT NOT NULL DEFAULT 'kakao',
+        target_score REAL,
+        status TEXT NOT NULL DEFAULT 'active',
+        started_at TEXT NOT NULL,
+        ended_at TEXT
+    )
+    """
+)
+
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS kill_bet_players(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id INTEGER NOT NULL,
+        team_name TEXT,
+        pubg_name TEXT NOT NULL,
+        pubg_account_id TEXT,
+        handicap_kill REAL NOT NULL DEFAULT 0,
+        handicap_damage REAL NOT NULL DEFAULT 0,
+        total_kills INTEGER NOT NULL DEFAULT 0,
+        total_damage REAL NOT NULL DEFAULT 0,
+        placement_score REAL NOT NULL DEFAULT 0,
+        total_score REAL NOT NULL DEFAULT 0
+    )
+    """
+)
+
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS kill_bet_matches(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id INTEGER NOT NULL,
+        match_id TEXT NOT NULL,
+        played_at TEXT,
+        created_at TEXT NOT NULL,
+        UNIQUE(session_id, match_id)
+    )
+    """
+)
+
+cursor.execute("PRAGMA table_info(kill_bet_sessions)")
+kill_bet_session_columns = [row[1] for row in cursor.fetchall()]
+if "platform" not in kill_bet_session_columns:
+    cursor.execute("ALTER TABLE kill_bet_sessions ADD COLUMN platform TEXT NOT NULL DEFAULT 'kakao'")
+    conn.commit()
+
+cursor.execute("PRAGMA table_info(kill_bet_players)")
+kill_bet_player_columns = [row[1] for row in cursor.fetchall()]
+if "pubg_account_id" not in kill_bet_player_columns:
+    cursor.execute("ALTER TABLE kill_bet_players ADD COLUMN pubg_account_id TEXT")
+    conn.commit()
+
 conn.commit()
 
 
@@ -1221,6 +1360,565 @@ def format_duration_korean(total_seconds: int) -> str:
     if seconds or not parts:
         parts.append(f"{seconds}초")
     return " ".join(parts)
+
+
+def format_score(value: float | int) -> str:
+    if float(value).is_integer():
+        return str(int(value))
+    return f"{float(value):.1f}".rstrip("0").rstrip(".")
+
+
+def get_kill_bet_rule(rule_key: str) -> dict | None:
+    return KILL_BET_RULES.get(rule_key)
+
+
+def get_active_kill_bet_session(guild_id: int) -> dict | None:
+    cursor.execute(
+        """
+        SELECT id, guild_id, channel_id, creator_user_id, rule_key, platform, target_score, status, started_at, ended_at
+        FROM kill_bet_sessions
+        WHERE guild_id=? AND status='active'
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (str(guild_id),),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "id": row[0],
+        "guild_id": row[1],
+        "channel_id": row[2],
+        "creator_user_id": row[3],
+        "rule_key": row[4],
+        "platform": row[5],
+        "target_score": row[6],
+        "status": row[7],
+        "started_at": row[8],
+        "ended_at": row[9],
+    }
+
+
+def get_kill_bet_players(session_id: int) -> list[dict]:
+    cursor.execute(
+        """
+        SELECT id, team_name, pubg_name, pubg_account_id, handicap_kill, handicap_damage, total_kills, total_damage, placement_score, total_score
+        FROM kill_bet_players
+        WHERE session_id=?
+        ORDER BY total_score DESC, total_kills DESC, total_damage DESC, id ASC
+        """,
+        (session_id,),
+    )
+    return [
+        {
+            "id": row[0],
+            "team_name": row[1],
+            "pubg_name": row[2],
+            "pubg_account_id": row[3],
+            "handicap_kill": float(row[4] or 0),
+            "handicap_damage": float(row[5] or 0),
+            "total_kills": int(row[6] or 0),
+            "total_damage": float(row[7] or 0),
+            "placement_score": float(row[8] or 0),
+            "total_score": float(row[9] or 0),
+        }
+        for row in cursor.fetchall()
+    ]
+
+
+def parse_kill_bet_handicaps(raw_text: str) -> dict[str, tuple[float, float]]:
+    result = {}
+    text = (raw_text or "").strip()
+    if not text:
+        return result
+
+    for chunk in re.split(r"[\n;]+", text):
+        if not chunk.strip():
+            continue
+        if ":" not in chunk:
+            raise ValueError("핸디캡은 `닉네임:+0.2,+0.5` 형식으로 입력해주세요.")
+        name_part, value_part = chunk.split(":", 1)
+        name = name_part.strip()
+        values = [item.strip() for item in value_part.split(",") if item.strip()]
+        if len(values) != 2:
+            raise ValueError("핸디캡은 킬 보정, 딜 보정을 모두 입력해주세요. 예: `닉네임:+0.2,+0.5`")
+        try:
+            kill_bonus = float(values[0])
+            damage_bonus = float(values[1])
+        except ValueError:
+            raise ValueError("핸디캡 수치는 숫자로 입력해주세요. 예: `닉네임:+0.2,+0.5`")
+        if not name:
+            raise ValueError("핸디캡 대상 닉네임을 입력해주세요.")
+        result[name.lower()] = (kill_bonus, damage_bonus)
+    return result
+
+
+def parse_kill_bet_participants(rule: dict, raw_text: str, handicap_text: str) -> list[dict]:
+    text = (raw_text or "").strip()
+    if not text:
+        raise ValueError("참가자 정보를 입력해주세요.")
+
+    handicaps = parse_kill_bet_handicaps(handicap_text)
+    participants = []
+
+    if rule["mode"] == "solo":
+        names = [item.strip() for item in re.split(r"[,\n]+", text) if item.strip()]
+        if len(names) != rule["player_count"]:
+            raise ValueError(f"`{rule['name']}`은 참가자 {rule['player_count']}명이 필요합니다.")
+        for name in names:
+            kill_bonus, damage_bonus = handicaps.get(name.lower(), (0.0, 0.0))
+            participants.append(
+                {
+                    "team_name": None,
+                    "pubg_name": name,
+                    "handicap_kill": kill_bonus,
+                    "handicap_damage": damage_bonus,
+                }
+            )
+        return participants
+
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        if ":" not in line:
+            raise ValueError("팀전 참가자는 `1팀: 닉네임1, 닉네임2` 형식으로 한 줄씩 입력해주세요.")
+        team_name, members_text = line.split(":", 1)
+        team_name = team_name.strip()
+        names = [item.strip() for item in members_text.split(",") if item.strip()]
+        if not team_name or not names:
+            raise ValueError("팀 이름과 팀원을 모두 입력해주세요.")
+        for name in names:
+            kill_bonus, damage_bonus = handicaps.get(name.lower(), (0.0, 0.0))
+            participants.append(
+                {
+                    "team_name": team_name,
+                    "pubg_name": name,
+                    "handicap_kill": kill_bonus,
+                    "handicap_damage": damage_bonus,
+                }
+            )
+
+    team_count = len({item["team_name"] for item in participants})
+    if team_count < rule["min_teams"]:
+        raise ValueError(f"`{rule['name']}`은 최소 {rule['min_teams']}팀 이상 필요합니다.")
+    return participants
+
+
+def create_kill_bet_session(
+    guild_id: int,
+    channel_id: int,
+    creator_user_id: int,
+    rule_key: str,
+    platform: str,
+    target_score: float | None,
+    participants: list[dict],
+) -> int:
+    now_text = dt_to_db(get_kst_now())
+    cursor.execute(
+        """
+        INSERT INTO kill_bet_sessions(guild_id, channel_id, creator_user_id, rule_key, platform, target_score, status, started_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'active', ?)
+        """,
+        (str(guild_id), str(channel_id), str(creator_user_id), rule_key, platform, target_score, now_text),
+    )
+    session_id = cursor.lastrowid
+    cursor.executemany(
+        """
+        INSERT INTO kill_bet_players(session_id, team_name, pubg_name, handicap_kill, handicap_damage)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                session_id,
+                item["team_name"],
+                item["pubg_name"],
+                item["handicap_kill"],
+                item["handicap_damage"],
+            )
+            for item in participants
+        ],
+    )
+    conn.commit()
+    return session_id
+
+
+def finish_kill_bet_session(session_id: int):
+    cursor.execute(
+        "UPDATE kill_bet_sessions SET status='ended', ended_at=? WHERE id=?",
+        (dt_to_db(get_kst_now()), session_id),
+    )
+    conn.commit()
+
+
+def get_active_kill_bet_sessions() -> list[dict]:
+    cursor.execute(
+        """
+        SELECT id, guild_id, channel_id, creator_user_id, rule_key, platform, target_score, status, started_at, ended_at
+        FROM kill_bet_sessions
+        WHERE status='active'
+        ORDER BY id ASC
+        """
+    )
+    sessions = []
+    for row in cursor.fetchall():
+        sessions.append(
+            {
+                "id": row[0],
+                "guild_id": row[1],
+                "channel_id": row[2],
+                "creator_user_id": row[3],
+                "rule_key": row[4],
+                "platform": row[5],
+                "target_score": row[6],
+                "status": row[7],
+                "started_at": row[8],
+                "ended_at": row[9],
+            }
+        )
+    return sessions
+
+
+def is_kill_bet_match_processed(session_id: int, match_id: str) -> bool:
+    cursor.execute(
+        "SELECT 1 FROM kill_bet_matches WHERE session_id=? AND match_id=?",
+        (session_id, match_id),
+    )
+    return cursor.fetchone() is not None
+
+
+def mark_kill_bet_match_processed(session_id: int, match_id: str, played_at: str | None):
+    cursor.execute(
+        """
+        INSERT OR IGNORE INTO kill_bet_matches(session_id, match_id, played_at, created_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (session_id, match_id, played_at, dt_to_db(get_kst_now())),
+    )
+    conn.commit()
+
+
+def update_kill_bet_player_account_id(session_id: int, pubg_name: str, account_id: str):
+    cursor.execute(
+        """
+        UPDATE kill_bet_players
+        SET pubg_account_id=?
+        WHERE session_id=? AND LOWER(pubg_name)=LOWER(?)
+        """,
+        (account_id, session_id, pubg_name),
+    )
+    conn.commit()
+
+
+def apply_kill_bet_player_score(
+    player_id: int,
+    kills: int,
+    damage: float,
+    placement_score: float,
+    score: float,
+):
+    cursor.execute(
+        """
+        UPDATE kill_bet_players
+        SET total_kills=total_kills+?,
+            total_damage=total_damage+?,
+            placement_score=placement_score+?,
+            total_score=total_score+?
+        WHERE id=?
+        """,
+        (kills, damage, placement_score, score, player_id),
+    )
+    conn.commit()
+
+
+def parse_pubg_created_at(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(ZoneInfo("Asia/Seoul"))
+    except ValueError:
+        return None
+
+
+def get_pubg_headers() -> dict:
+    return {
+        "Authorization": f"Bearer {PUBG_API_KEY}",
+        "Accept": "application/vnd.api+json",
+    }
+
+
+async def pubg_api_get(http_session: aiohttp.ClientSession, platform: str, path: str) -> dict:
+    url = f"https://api.pubg.com/shards/{platform}{path}"
+    async with http_session.get(url, headers=get_pubg_headers(), timeout=20) as response:
+        if response.status == 429:
+            raise RuntimeError("PUBG API 호출 제한에 도달했습니다. 잠시 후 다시 시도합니다.")
+        if response.status == 401:
+            raise RuntimeError("PUBG_API_KEY가 없거나 올바르지 않습니다.")
+        if response.status >= 400:
+            body = await response.text()
+            raise RuntimeError(f"PUBG API 오류 {response.status}: {body[:200]}")
+        return await response.json()
+
+
+async def fetch_pubg_players(http_session: aiohttp.ClientSession, platform: str, names: list[str]) -> dict[str, dict]:
+    result = {}
+    for start in range(0, len(names), 10):
+        chunk = names[start:start + 10]
+        encoded_names = quote(",".join(chunk), safe=",")
+        data = await pubg_api_get(http_session, platform, f"/players?filter[playerNames]={encoded_names}")
+        for player in data.get("data", []):
+            attributes = player.get("attributes", {})
+            name = attributes.get("name")
+            if name:
+                result[name.lower()] = {
+                    "account_id": player.get("id"),
+                    "name": name,
+                    "matches": [
+                        match.get("id")
+                        for match in player.get("relationships", {}).get("matches", {}).get("data", [])
+                        if match.get("id")
+                    ],
+                }
+        await asyncio.sleep(1)
+    return result
+
+
+async def fetch_pubg_match(http_session: aiohttp.ClientSession, platform: str, match_id: str) -> dict:
+    return await pubg_api_get(http_session, platform, f"/matches/{match_id}")
+
+
+def calculate_kill_bet_match_scores(session: dict, match_data: dict) -> tuple[list[dict], str] | None:
+    rule = get_kill_bet_rule(session["rule_key"])
+    if rule is None:
+        return None
+
+    started_at = dt_from_db(session["started_at"])
+    match_created_at_raw = match_data.get("data", {}).get("attributes", {}).get("createdAt")
+    match_created_at = parse_pubg_created_at(match_created_at_raw)
+    if match_created_at is None or match_created_at < started_at:
+        return None
+
+    participants_by_name = {}
+    for item in match_data.get("included", []):
+        if item.get("type") != "participant":
+            continue
+        stats = item.get("attributes", {}).get("stats", {})
+        name = stats.get("name")
+        if name:
+            participants_by_name[name.lower()] = stats
+
+    registered_players = get_kill_bet_players(session["id"])
+    if not registered_players:
+        return None
+
+    if any(player["pubg_name"].lower() not in participants_by_name for player in registered_players):
+        return None
+
+    team_placement_scores = {}
+    if rule["mode"] == "team" and rule["placement_scores"]:
+        team_places = {}
+        for player in registered_players:
+            team_name = player["team_name"] or "미지정"
+            stats = participants_by_name[player["pubg_name"].lower()]
+            win_place = int(stats.get("winPlace") or 0)
+            if win_place > 0:
+                team_places[team_name] = min(team_places.get(team_name, win_place), win_place)
+        team_placement_scores = {
+            team_name: float(rule["placement_scores"].get(place, 0))
+            for team_name, place in team_places.items()
+        }
+
+    placement_score_used_for_team = set()
+    scored_rows = []
+    for player in registered_players:
+        stats = participants_by_name[player["pubg_name"].lower()]
+        kills = int(stats.get("kills") or 0)
+        damage = float(stats.get("damageDealt") or 0)
+        kill_score = kills * (float(rule["kill_score"]) + player["handicap_kill"])
+        damage_score = (damage / 100) * (float(rule["damage_score_per_100"]) + player["handicap_damage"])
+        placement_score = 0.0
+
+        if rule["mode"] == "team":
+            team_name = player["team_name"] or "미지정"
+            if team_name not in placement_score_used_for_team:
+                placement_score = team_placement_scores.get(team_name, 0.0)
+                placement_score_used_for_team.add(team_name)
+
+        total_score = kill_score + damage_score + placement_score
+        scored_rows.append(
+            {
+                "player_id": player["id"],
+                "team_name": player["team_name"],
+                "pubg_name": player["pubg_name"],
+                "kills": kills,
+                "damage": damage,
+                "placement_score": placement_score,
+                "score": total_score,
+            }
+        )
+
+    return scored_rows, match_created_at_raw or dt_to_db(match_created_at)
+
+
+def build_kill_bet_match_embed(guild: discord.Guild, session: dict, match_id: str, scored_rows: list[dict]) -> discord.Embed:
+    rule = get_kill_bet_rule(session["rule_key"])
+    embed = discord.Embed(
+        title=f"🔫 킬내기 매치 집계 - {rule['name'] if rule else session['rule_key']}",
+        description=f"매치 ID: `{match_id}`",
+        color=0xE67E22,
+    )
+
+    lines = []
+    for row in sorted(scored_rows, key=lambda item: (-item["score"], -item["kills"], -item["damage"])):
+        team_text = f"[{row['team_name']}] " if row["team_name"] else ""
+        place_text = f" / 순위 `{format_score(row['placement_score'])}`" if row["placement_score"] else ""
+        lines.append(
+            f"**{team_text}{row['pubg_name']}** `{format_score(row['score'])}점`\n"
+            f"킬 `{row['kills']}` / 딜 `{format_score(row['damage'])}`{place_text}"
+        )
+
+    embed.add_field(name="이번 판 점수", value=join_compact_discord_field_lines(lines), inline=False)
+    embed.add_field(name="누적 현황", value="`/킬내기현황`으로 확인할 수 있습니다.", inline=False)
+    return embed
+
+
+def kill_bet_target_reached(session: dict) -> bool:
+    if session["target_score"] is None:
+        return False
+    players = get_kill_bet_players(session["id"])
+    if not players:
+        return False
+    rule = get_kill_bet_rule(session["rule_key"])
+    if rule and rule["mode"] == "team":
+        team_scores = {}
+        for player in players:
+            team_name = player["team_name"] or "미지정"
+            team_scores[team_name] = team_scores.get(team_name, 0.0) + player["total_score"]
+        return any(score >= float(session["target_score"]) for score in team_scores.values())
+    return any(player["total_score"] >= float(session["target_score"]) for player in players)
+
+
+async def process_kill_bet_session(session: dict):
+    if not PUBG_API_KEY:
+        return
+
+    guild = bot.get_guild(int(session["guild_id"]))
+    if guild is None:
+        return
+
+    channel = guild.get_channel(int(session["channel_id"])) or bot.get_channel(int(session["channel_id"]))
+    if channel is None or not hasattr(channel, "send"):
+        return
+
+    players = get_kill_bet_players(session["id"])
+    if not players:
+        return
+
+    platform = session.get("platform") or PUBG_DEFAULT_PLATFORM
+    names = [player["pubg_name"] for player in players]
+
+    async with aiohttp.ClientSession() as http_session:
+        pubg_players = await fetch_pubg_players(http_session, platform, names)
+
+        candidate_match_ids = []
+        for player in players:
+            pubg_player = pubg_players.get(player["pubg_name"].lower())
+            if pubg_player is None:
+                continue
+            if pubg_player["account_id"]:
+                update_kill_bet_player_account_id(session["id"], player["pubg_name"], pubg_player["account_id"])
+            for match_id in pubg_player["matches"]:
+                if match_id not in candidate_match_ids and not is_kill_bet_match_processed(session["id"], match_id):
+                    candidate_match_ids.append(match_id)
+
+        for match_id in candidate_match_ids[:8]:
+            match_data = await fetch_pubg_match(http_session, platform, match_id)
+            calculated = calculate_kill_bet_match_scores(session, match_data)
+            if calculated is None:
+                continue
+
+            scored_rows, played_at = calculated
+            for row in scored_rows:
+                apply_kill_bet_player_score(
+                    row["player_id"],
+                    row["kills"],
+                    row["damage"],
+                    row["placement_score"],
+                    row["score"],
+                )
+            mark_kill_bet_match_processed(session["id"], match_id, played_at)
+
+            try:
+                await channel.send(embed=build_kill_bet_match_embed(guild, session, match_id, scored_rows))
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+
+            if kill_bet_target_reached(session):
+                finish_kill_bet_session(session["id"])
+                session["status"] = "ended"
+                try:
+                    final_embed = build_kill_bet_status_embed(guild, session)
+                    final_embed.title = final_embed.title.replace("현황", "목표점수 달성")
+                    await channel.send(embed=final_embed)
+                except (discord.Forbidden, discord.HTTPException):
+                    pass
+                break
+
+            await asyncio.sleep(6)
+
+
+def build_kill_bet_status_embed(guild: discord.Guild, session: dict) -> discord.Embed:
+    rule = get_kill_bet_rule(session["rule_key"])
+    players = get_kill_bet_players(session["id"])
+    title = f"🔫 킬내기 현황 - {rule['name'] if rule else session['rule_key']}"
+    embed = discord.Embed(title=title, color=0x2ECC71 if session["status"] == "active" else 0x95A5A6)
+    embed.add_field(name="세션 번호", value=f"`#{session['id']}`", inline=True)
+    embed.add_field(name="상태", value="`진행 중`" if session["status"] == "active" else "`종료`", inline=True)
+    embed.add_field(name="플랫폼", value=f"`{session.get('platform') or PUBG_DEFAULT_PLATFORM}`", inline=True)
+    embed.add_field(name="자동 집계", value="`활성화`" if PUBG_API_KEY else "`PUBG_API_KEY 필요`", inline=True)
+    if session["target_score"] is not None:
+        embed.add_field(name="목표 점수", value=f"`{format_score(session['target_score'])}점`", inline=True)
+
+    if not players:
+        embed.description = "등록된 참가자가 없습니다."
+        return embed
+
+    if rule and rule["mode"] == "team":
+        team_scores = {}
+        for player in players:
+            team_name = player["team_name"] or "미지정"
+            info = team_scores.setdefault(team_name, {"score": 0.0, "kills": 0, "damage": 0.0, "members": []})
+            info["score"] += player["total_score"]
+            info["kills"] += player["total_kills"]
+            info["damage"] += player["total_damage"]
+            info["members"].append(player["pubg_name"])
+        lines = []
+        for index, (team_name, info) in enumerate(
+            sorted(team_scores.items(), key=lambda item: (-item[1]["score"], -item[1]["kills"], -item[0].lower())),
+            start=1,
+        ):
+            members = ", ".join(info["members"])
+            lines.append(
+                f"**{index}. {team_name}** `{format_score(info['score'])}점`\n"
+                f"킬 `{info['kills']}` / 딜 `{format_score(info['damage'])}`\n"
+                f"팀원: {members}"
+            )
+        embed.add_field(name="팀 순위", value=join_compact_discord_field_lines(lines), inline=False)
+    else:
+        lines = []
+        for index, player in enumerate(players, start=1):
+            handicap_text = ""
+            if player["handicap_kill"] or player["handicap_damage"]:
+                handicap_text = f" / 핸디캡 K `{format_score(player['handicap_kill'])}` D `{format_score(player['handicap_damage'])}`"
+            lines.append(
+                f"**{index}. {player['pubg_name']}** `{format_score(player['total_score'])}점`\n"
+                f"킬 `{player['total_kills']}` / 딜 `{format_score(player['total_damage'])}`{handicap_text}"
+            )
+        embed.add_field(name="개인 순위", value=join_compact_discord_field_lines(lines), inline=False)
+
+    embed.set_footer(text="현재는 킬내기 세션 생성/관리 단계이며, PUBG API 자동 집계는 다음 단계에서 연결됩니다.")
+    return embed
+
 
 def get_spectator_prefixes(guild_id: int) -> list[str]:
     raw = get_guild_setting(guild_id, "spectator_prefixes")
@@ -8196,6 +8894,137 @@ class RaffleStatusView(discord.ui.View):
         await interaction.response.edit_message(embed=build_raffle_status_embed(interaction.guild, raffle), view=self)
 
 
+class KillBetStartModal(discord.ui.Modal):
+    def __init__(self, rule_key: str):
+        rule = get_kill_bet_rule(rule_key)
+        super().__init__(title=f"킬내기 시작 - {rule['name']}")
+        self.rule_key = rule_key
+        self.participants_input = discord.ui.TextInput(
+            label="참가자 / 팀 입력",
+            placeholder="개인전: 닉1,닉2,닉3,닉4 / 팀전: 1팀: 닉1,닉2",
+            style=discord.TextStyle.paragraph,
+            max_length=900,
+            required=True,
+        )
+        self.target_score_input = discord.ui.TextInput(
+            label="목표 점수",
+            placeholder="목표점수 룰만 입력. 예: 100",
+            max_length=8,
+            required=False,
+        )
+        self.handicap_input = discord.ui.TextInput(
+            label="핸디캡",
+            placeholder="예: 머로:+0.2,+0.5; 구름:-0.2,0",
+            style=discord.TextStyle.paragraph,
+            max_length=600,
+            required=False,
+        )
+        self.add_item(self.participants_input)
+        self.add_item(self.target_score_input)
+        self.add_item(self.handicap_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.guild is None or interaction.channel is None:
+            await interaction.response.send_message("서버 채널에서만 사용할 수 있습니다.", ephemeral=True)
+            return
+
+        active_session = get_active_kill_bet_session(interaction.guild.id)
+        if active_session is not None:
+            await interaction.response.send_message(
+                f"이미 진행 중인 킬내기 `#{active_session['id']}`가 있습니다.\n"
+                "`/킬내기종료` 후 새 킬내기를 시작해주세요.",
+                ephemeral=True,
+            )
+            return
+
+        rule = get_kill_bet_rule(self.rule_key)
+        if rule is None:
+            await interaction.response.send_message("선택한 킬내기 룰을 찾을 수 없습니다.", ephemeral=True)
+            return
+
+        target_score = None
+        target_score_text = self.target_score_input.value.strip()
+        if rule["target_score_required"]:
+            if not target_score_text:
+                await interaction.response.send_message("목표점수 룰은 목표 점수를 입력해야 합니다.", ephemeral=True)
+                return
+            try:
+                target_score = float(target_score_text)
+            except ValueError:
+                await interaction.response.send_message("목표 점수는 숫자로 입력해주세요.", ephemeral=True)
+                return
+            if target_score <= 0:
+                await interaction.response.send_message("목표 점수는 1점 이상이어야 합니다.", ephemeral=True)
+                return
+
+        try:
+            participants = parse_kill_bet_participants(
+                rule,
+                self.participants_input.value,
+                self.handicap_input.value,
+            )
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+
+        session_id = create_kill_bet_session(
+            interaction.guild.id,
+            interaction.channel.id,
+            interaction.user.id,
+            self.rule_key,
+            PUBG_DEFAULT_PLATFORM,
+            target_score,
+            participants,
+        )
+        session = get_active_kill_bet_session(interaction.guild.id)
+        embed = build_kill_bet_status_embed(interaction.guild, session)
+        embed.description = (
+            f"{interaction.user.mention}님이 킬내기를 시작했습니다.\n"
+            f"세션 번호: `#{session_id}`\n"
+            f"플랫폼: `{PUBG_DEFAULT_PLATFORM}`\n\n"
+            "PUBG API 키가 설정되어 있으면 시작 시점 이후의 매치를 자동으로 집계합니다."
+        )
+        await interaction.response.send_message(embed=embed)
+
+
+class KillBetRuleSelect(discord.ui.Select):
+    def __init__(self):
+        options = []
+        for rule_key, rule in sorted(KILL_BET_RULES.items(), key=lambda item: item[1]["rule_no"]):
+            target_text = "목표점수" if rule["target_score_required"] else "총점"
+            mode_text = "개인전" if rule["mode"] == "solo" else "팀전"
+            options.append(
+                discord.SelectOption(
+                    label=f"룰{rule['rule_no']} - {rule['name']}",
+                    description=f"{mode_text} / {target_text} / 핸디캡 가능",
+                    value=rule_key,
+                )
+            )
+        super().__init__(
+            placeholder="진행할 킬내기 룰을 선택해주세요.",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if not isinstance(view, KillBetRuleSelectView):
+            await interaction.response.send_message("킬내기 룰 선택 패널을 처리하지 못했습니다.", ephemeral=True)
+            return
+        if interaction.user.id != view.user_id:
+            await interaction.response.send_message("이 패널은 명령어를 사용한 사람만 선택할 수 있습니다.", ephemeral=True)
+            return
+        await interaction.response.send_modal(KillBetStartModal(self.values[0]))
+
+
+class KillBetRuleSelectView(discord.ui.View):
+    def __init__(self, user_id: int):
+        super().__init__(timeout=180)
+        self.user_id = user_id
+        self.add_item(KillBetRuleSelect())
+
+
 class DuckmongView(discord.ui.View):
     def __init__(self, user_id: int, bet_amount: int, fake_names: list[str], hidden_results: dict[str, str]):
         super().__init__(timeout=60)
@@ -12417,6 +13246,104 @@ async def remove_labor_gacha_ticket(interaction: discord.Interaction, member: di
     )
 
 
+@bot.tree.command(name="킬내기룰", description="배틀그라운드 킬내기 룰 목록을 확인합니다.")
+async def kill_bet_rules(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="🔫 배틀그라운드 킬내기 룰",
+        description="`/킬내기시작`에서 아래 룰 중 하나를 선택해 진행할 수 있습니다.",
+        color=0x3498DB,
+    )
+
+    for _rule_key, rule in sorted(KILL_BET_RULES.items(), key=lambda item: item[1]["rule_no"]):
+        mode_text = "개인전" if rule["mode"] == "solo" else "팀전"
+        people_text = f"{rule['player_count']}명" if rule["player_count"] else f"{rule['min_teams']}팀 이상"
+        ranking_text = "목표 점수 도달 시 종료" if rule["target_score_required"] else "종료 시점 총점 높은 순"
+        placement_text = ""
+        if rule["placement_scores"]:
+            placement_text = "\n순위 점수: 치킨 5점 / 2등 4점 / 3등 3점 / 4등 2점 / 5등 1점"
+
+        embed.add_field(
+            name=f"룰{rule['rule_no']} - {rule['name']}",
+            value=(
+                f"방식: `{mode_text}` / 참여: `{people_text}`\n"
+                f"킬 점수: `1킬당 {format_score(rule['kill_score'])}점`\n"
+                f"딜 점수: `100딜당 {format_score(rule['damage_score_per_100'])}점`\n"
+                f"순위 산정: `{ranking_text}`"
+                f"{placement_text}\n"
+                "핸디캡: `킬, 딜 점수 보정 가능`"
+            ),
+            inline=False,
+        )
+
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="킬내기시작", description="배틀그라운드 킬내기 룰을 선택하고 세션을 시작합니다.")
+async def start_kill_bet(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    active_session = get_active_kill_bet_session(interaction.guild.id)
+    if active_session is not None:
+        await interaction.response.send_message(
+            f"이미 진행 중인 킬내기 `#{active_session['id']}`가 있습니다.\n"
+            "`/킬내기현황`으로 확인하거나 `/킬내기종료` 후 새로 시작해주세요.",
+            ephemeral=True,
+        )
+        return
+
+    embed = discord.Embed(
+        title="🔫 킬내기 시작",
+        description=(
+            "진행할 룰을 선택해주세요.\n\n"
+            "`룰1` 개인전 킬 점수\n"
+            "`룰2` 개인전 목표점수\n"
+            "`룰3` 팀전 킬 점수\n"
+            "`룰4` 팀전 목표점수"
+        ),
+        color=0x3498DB,
+    )
+    await interaction.response.send_message(embed=embed, view=KillBetRuleSelectView(interaction.user.id), ephemeral=True)
+
+
+@bot.tree.command(name="킬내기현황", description="현재 진행 중인 배틀그라운드 킬내기 현황을 확인합니다.")
+async def kill_bet_status(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    session = get_active_kill_bet_session(interaction.guild.id)
+    if session is None:
+        await interaction.response.send_message("현재 진행 중인 킬내기가 없습니다.", ephemeral=True)
+        return
+
+    await interaction.response.send_message(embed=build_kill_bet_status_embed(interaction.guild, session))
+
+
+@bot.tree.command(name="킬내기종료", description="현재 진행 중인 배틀그라운드 킬내기를 종료합니다.")
+async def end_kill_bet(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    session = get_active_kill_bet_session(interaction.guild.id)
+    if session is None:
+        await interaction.response.send_message("현재 진행 중인 킬내기가 없습니다.", ephemeral=True)
+        return
+
+    if interaction.user.id != int(session["creator_user_id"]) and not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("킬내기 생성자 또는 관리자만 종료할 수 있습니다.", ephemeral=True)
+        return
+
+    finish_kill_bet_session(session["id"])
+    session["status"] = "ended"
+    session["ended_at"] = dt_to_db(get_kst_now())
+    embed = build_kill_bet_status_embed(interaction.guild, session)
+    embed.title = embed.title.replace("현황", "종료")
+    await interaction.response.send_message(embed=embed)
+
+
 @bot.tree.command(name="신용불량자목록", description="현재 등록된 신용불량자 목록을 확인합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def blacklist_list(interaction: discord.Interaction):
@@ -13137,6 +14064,19 @@ async def attendance_daily_loop():
         await run_guest_checks()
 
 
+@tasks.loop(minutes=3)
+async def kill_bet_monitor_loop():
+    if not PUBG_API_KEY:
+        return
+
+    for session in get_active_kill_bet_sessions():
+        try:
+            await process_kill_bet_session(session)
+        except Exception as e:
+            print(f"킬내기 자동 집계 실패 (session {session['id']}): {e}")
+        await asyncio.sleep(6)
+
+
 @tasks.loop(hours=STORAGE_CLEANUP_INTERVAL_HOURS)
 async def storage_cleanup_loop():
     try:
@@ -13202,6 +14142,9 @@ async def on_ready():
 
     if not attendance_daily_loop.is_running():
         attendance_daily_loop.start()
+
+    if not kill_bet_monitor_loop.is_running():
+        kill_bet_monitor_loop.start()
 
     if not storage_cleanup_loop.is_running():
         storage_cleanup_loop.start()
