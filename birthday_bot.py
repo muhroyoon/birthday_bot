@@ -2060,6 +2060,33 @@ def get_kill_bet_round_scores(round_id: int) -> list[dict]:
     ]
 
 
+def get_kill_bet_round_by_id(session_id: int, round_id: int) -> dict | None:
+    cursor.execute(
+        """
+        SELECT id, session_id, round_no, status, message_channel_id, message_id, created_at, completed_at, team_name, team_round_no
+        FROM kill_bet_rounds
+        WHERE session_id=? AND id=?
+        LIMIT 1
+        """,
+        (session_id, round_id),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "id": row[0],
+        "session_id": row[1],
+        "round_no": row[2],
+        "status": row[3],
+        "message_channel_id": row[4],
+        "message_id": row[5],
+        "created_at": row[6],
+        "completed_at": row[7],
+        "team_name": row[8],
+        "team_round_no": row[9],
+    }
+
+
 def get_kill_bet_team_round_summary(session_id: int, team_name: str) -> dict:
     cursor.execute(
         """
@@ -2218,6 +2245,86 @@ def reset_kill_bet_scores(session_id: int):
     conn.commit()
 
 
+def update_kill_bet_round_score(score_id: int, kills: int, damage: float, rank: int | None):
+    cursor.execute(
+        """
+        UPDATE kill_bet_round_scores
+        SET kills=?, damage=?, rank=?
+        WHERE id=?
+        """,
+        (kills, damage, rank, score_id),
+    )
+    conn.commit()
+
+
+def recalculate_kill_bet_session_totals(session_id: int):
+    cursor.execute(
+        """
+        UPDATE kill_bet_players
+        SET total_kills=0,
+            total_damage=0,
+            placement_score=0,
+            total_score=0
+        WHERE session_id=?
+        """,
+        (session_id,),
+    )
+
+    cursor.execute(
+        """
+        SELECT id
+        FROM kill_bet_rounds
+        WHERE session_id=? AND status='completed'
+        ORDER BY round_no ASC, id ASC
+        """,
+        (session_id,),
+    )
+    round_ids = [row[0] for row in cursor.fetchall()]
+    session = None
+    cursor.execute(
+        """
+        SELECT guild_id
+        FROM kill_bet_sessions
+        WHERE id=?
+        LIMIT 1
+        """,
+        (session_id,),
+    )
+    guild_row = cursor.fetchone()
+    if guild_row:
+        try:
+            session = get_kill_bet_session_by_id(int(guild_row[0]), session_id)
+        except ValueError:
+            session = None
+
+    if session is None:
+        conn.commit()
+        return
+
+    for round_id in round_ids:
+        for row in calculate_kill_bet_round_scores(session, round_id):
+            cursor.execute(
+                """
+                UPDATE kill_bet_round_scores
+                SET placement_score=?, score=?
+                WHERE id=?
+                """,
+                (row["placement_score"], row["score"], row["id"]),
+            )
+            cursor.execute(
+                """
+                UPDATE kill_bet_players
+                SET total_kills=total_kills+?,
+                    total_damage=total_damage+?,
+                    placement_score=placement_score+?,
+                    total_score=total_score+?
+                WHERE id=?
+                """,
+                (row["kills"], row["damage"], row["placement_score"], row["score"], row["player_id"]),
+            )
+    conn.commit()
+
+
 def build_kill_bet_round_embed(guild: discord.Guild, session: dict, round_data: dict) -> discord.Embed:
     players = get_kill_bet_players(session["id"])
     if round_data.get("team_name"):
@@ -2358,21 +2465,31 @@ async def submit_kill_bet_round_scores(
         round_data["completed_at"] = dt_to_db(get_kst_now())
 
     embed = build_kill_bet_round_embed(interaction.guild, session, round_data)
-    channel = interaction.guild.get_channel(int(session["channel_id"])) or bot.get_channel(int(session["channel_id"]))
+    channel = (
+        interaction.guild.get_channel(int(session["channel_id"]))
+        or bot.get_channel(int(session["channel_id"]))
+        or interaction.channel
+    )
     sent_or_edited = False
     if round_data.get("message_id") and round_data.get("message_channel_id"):
         message_channel = interaction.guild.get_channel(int(round_data["message_channel_id"])) or bot.get_channel(int(round_data["message_channel_id"]))
         if message_channel is not None and hasattr(message_channel, "fetch_message"):
             try:
                 message = await message_channel.fetch_message(int(round_data["message_id"]))
-                await message.edit(embed=embed, view=None if is_completed else KillBetRoundProgressView(session["id"]))
+                await message.edit(
+                    embed=embed,
+                    view=KillBetRoundCompletedView(session["id"], round_data["id"]) if is_completed else KillBetRoundProgressView(session["id"]),
+                )
                 sent_or_edited = True
             except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                 sent_or_edited = False
 
     if not sent_or_edited and channel is not None and hasattr(channel, "send"):
         try:
-            message = await channel.send(embed=embed, view=None if is_completed else KillBetRoundProgressView(session["id"]))
+            message = await channel.send(
+                embed=embed,
+                view=KillBetRoundCompletedView(session["id"], round_data["id"]) if is_completed else KillBetRoundProgressView(session["id"]),
+            )
             set_kill_bet_round_message(round_data["id"], message.channel.id, message.id)
             sent_or_edited = True
         except (discord.Forbidden, discord.HTTPException):
@@ -2413,6 +2530,56 @@ async def submit_kill_bet_round_scores(
         await interaction.response.send_message(message, ephemeral=True)
     else:
         await interaction.response.send_message("점수는 저장했지만 공개 현황 메시지를 보낼 권한이 없습니다.", ephemeral=True)
+
+
+async def apply_kill_bet_score_edit(
+    interaction: discord.Interaction,
+    session_id: int,
+    round_data: dict,
+    edit_rows: list[dict],
+):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    session = get_kill_bet_session_by_id(interaction.guild.id, session_id)
+    if session is None:
+        await interaction.response.send_message("킬내기 세션을 찾을 수 없습니다.", ephemeral=True)
+        return
+
+    try:
+        for row in edit_rows:
+            kills = int(str(row["kills"]).strip())
+            damage = float(str(row["damage"]).strip())
+            rank_text = str(row.get("rank") or "").strip()
+            rank = int(rank_text) if rank_text else None
+            if kills < 0 or damage < 0:
+                raise ValueError("킬과 딜은 0 이상이어야 합니다.")
+            if rank is not None and rank <= 0:
+                raise ValueError("순위는 1 이상이어야 합니다.")
+            update_kill_bet_round_score(row["score_id"], kills, damage, rank)
+    except ValueError as exc:
+        await interaction.response.send_message(str(exc), ephemeral=True)
+        return
+
+    recalculate_kill_bet_session_totals(session_id)
+    refreshed_round = get_kill_bet_round_by_id(session_id, round_data["id"]) or round_data
+    refreshed_session = get_kill_bet_session_by_id(interaction.guild.id, session_id) or session
+
+    if refreshed_round.get("message_id") and refreshed_round.get("message_channel_id"):
+        channel = interaction.guild.get_channel(int(refreshed_round["message_channel_id"])) or bot.get_channel(int(refreshed_round["message_channel_id"]))
+        if channel is not None and hasattr(channel, "fetch_message"):
+            try:
+                message = await channel.fetch_message(int(refreshed_round["message_id"]))
+                await message.edit(
+                    embed=build_kill_bet_round_embed(interaction.guild, refreshed_session, refreshed_round),
+                    view=KillBetRoundCompletedView(session_id, refreshed_round["id"]),
+                )
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+
+    await refresh_kill_bet_status_message(interaction.guild, refreshed_session)
+    await interaction.response.send_message("점수를 수정하고 누적 현황을 다시 계산했습니다.", ephemeral=True)
 
 
 def parse_pubg_created_at(value: str | None) -> datetime | None:
@@ -10210,6 +10377,132 @@ class KillBetPlayerScoreModal(discord.ui.Modal):
         )
 
 
+class KillBetRoundCompletedView(discord.ui.View):
+    def __init__(self, session_id: int, round_id: int):
+        super().__init__(timeout=None)
+        self.session_id = session_id
+        self.round_id = round_id
+
+    @discord.ui.button(label="점수 수정", style=discord.ButtonStyle.secondary)
+    async def edit_score(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild is None:
+            await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+            return
+
+        session = get_kill_bet_session_by_id(interaction.guild.id, self.session_id)
+        round_data = get_kill_bet_round_by_id(self.session_id, self.round_id)
+        if session is None or round_data is None:
+            await interaction.response.send_message("수정할 킬내기 기록을 찾을 수 없습니다.", ephemeral=True)
+            return
+
+        scores = get_kill_bet_round_scores(self.round_id)
+        if not scores:
+            await interaction.response.send_message("수정할 점수 기록이 없습니다.", ephemeral=True)
+            return
+
+        if round_data.get("team_name"):
+            await interaction.response.send_modal(KillBetTeamScoreEditModal(session["id"], round_data, scores))
+            return
+
+        await interaction.response.send_message(
+            "수정할 닉네임을 선택해주세요.",
+            view=KillBetScoreEditSelectView(interaction.user.id, session["id"], round_data, scores),
+            ephemeral=True,
+        )
+
+
+class KillBetScoreEditSelect(discord.ui.Select):
+    def __init__(self, scores: list[dict]):
+        options = [
+            discord.SelectOption(
+                label=score["pubg_name"][:100],
+                description=f"킬 {score['kills']} / 딜 {format_score(score['damage'])}"[:100],
+                value=str(score["id"]),
+            )
+            for score in scores[:25]
+        ]
+        super().__init__(
+            placeholder="수정할 닉네임을 선택해주세요.",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if not isinstance(view, KillBetScoreEditSelectView):
+            await interaction.response.send_message("점수 수정 패널을 처리하지 못했습니다.", ephemeral=True)
+            return
+        await view.open_modal(interaction, int(self.values[0]))
+
+
+class KillBetScoreEditSelectView(discord.ui.View):
+    def __init__(self, user_id: int, session_id: int, round_data: dict, scores: list[dict]):
+        super().__init__(timeout=180)
+        self.user_id = user_id
+        self.session_id = session_id
+        self.round_data = round_data
+        self.scores = scores
+        self.add_item(KillBetScoreEditSelect(scores))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("이 점수 수정 패널은 요청한 사람만 사용할 수 있습니다.", ephemeral=True)
+            return False
+        return True
+
+    async def open_modal(self, interaction: discord.Interaction, score_id: int):
+        score = next((item for item in self.scores if item["id"] == score_id), None)
+        if score is None:
+            await interaction.response.send_message("수정할 점수 기록을 찾을 수 없습니다.", ephemeral=True)
+            return
+        await interaction.response.send_modal(KillBetScoreEditModal(self.session_id, self.round_data, score))
+
+
+class KillBetScoreEditModal(discord.ui.Modal):
+    def __init__(self, session_id: int, round_data: dict, score: dict):
+        super().__init__(title=f"{score['pubg_name']} 점수 수정")
+        self.session_id = session_id
+        self.round_data = round_data
+        self.score = score
+        self.kills_input = discord.ui.TextInput(
+            label="킬",
+            default=str(score["kills"]),
+            max_length=4,
+            required=True,
+        )
+        self.damage_input = discord.ui.TextInput(
+            label="딜",
+            default=format_score(score["damage"]),
+            max_length=8,
+            required=True,
+        )
+        self.rank_input = discord.ui.TextInput(
+            label="순위",
+            default=str(score["rank"]) if score["rank"] is not None else "",
+            max_length=4,
+            required=False,
+        )
+        self.add_item(self.kills_input)
+        self.add_item(self.damage_input)
+        self.add_item(self.rank_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await apply_kill_bet_score_edit(
+            interaction,
+            self.session_id,
+            self.round_data,
+            [
+                {
+                    "score_id": self.score["id"],
+                    "kills": self.kills_input.value,
+                    "damage": self.damage_input.value,
+                    "rank": self.rank_input.value,
+                }
+            ],
+        )
+
+
 class KillBetPlayerScoreSelect(discord.ui.Select):
     def __init__(self, players: list[dict], page: int):
         self.page = page
@@ -10385,6 +10678,95 @@ class KillBetTeamScoreModal(discord.ui.Modal):
             return
 
         await submit_kill_bet_round_scores(interaction, self.session_id, score_rows)
+
+
+class KillBetTeamScoreEditModal(discord.ui.Modal):
+    def __init__(self, session_id: int, round_data: dict, scores: list[dict]):
+        team_name = round_data.get("team_name") or "팀"
+        super().__init__(title=f"{team_name} 점수 수정")
+        self.session_id = session_id
+        self.round_data = round_data
+        self.scores = scores
+        self.score_inputs = []
+
+        if len(scores) <= 4:
+            for score in scores:
+                score_input = discord.ui.TextInput(
+                    label=f"{score['pubg_name']} 킬 / 딜",
+                    default=f"{score['kills']} / {format_score(score['damage'])}",
+                    max_length=20,
+                    required=True,
+                )
+                self.score_inputs.append((score, score_input))
+                self.add_item(score_input)
+        else:
+            self.bulk_input = discord.ui.TextInput(
+                label="팀원 점수 수정",
+                default="\n".join(
+                    f"{score['pubg_name']} {score['kills']} / {format_score(score['damage'])}"
+                    for score in scores
+                ),
+                style=discord.TextStyle.paragraph,
+                max_length=900,
+                required=True,
+            )
+            self.add_item(self.bulk_input)
+
+        first_rank = next((score["rank"] for score in scores if score["rank"] is not None), None)
+        self.rank_input = discord.ui.TextInput(
+            label="팀 순위",
+            default=str(first_rank) if first_rank is not None else "",
+            max_length=4,
+            required=False,
+        )
+        self.add_item(self.rank_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        edit_rows = []
+        rank_text = self.rank_input.value.strip()
+
+        try:
+            if len(self.scores) <= 4:
+                for score, score_input in self.score_inputs:
+                    kills, damage = parse_kill_damage_pair(score_input.value, score["pubg_name"])
+                    edit_rows.append(
+                        {
+                            "score_id": score["id"],
+                            "kills": kills,
+                            "damage": damage,
+                            "rank": rank_text,
+                        }
+                    )
+            else:
+                scores_by_name = {score["pubg_name"].lower(): score for score in self.scores}
+                for line_no, line in enumerate(self.bulk_input.value.splitlines(), start=1):
+                    clean_line = line.strip()
+                    if not clean_line:
+                        continue
+                    if " " not in clean_line:
+                        raise ValueError(f"{line_no}번째 줄은 `닉네임 킬 / 딜` 형식으로 입력해주세요.")
+                    name, score_text = clean_line.split(" ", 1)
+                    score = scores_by_name.get(name.strip().lower())
+                    if score is None:
+                        raise ValueError(f"`{name}`은 이 판에 입력된 닉네임이 아닙니다.")
+                    kills, damage = parse_kill_damage_pair(score_text, name)
+                    edit_rows.append(
+                        {
+                            "score_id": score["id"],
+                            "kills": kills,
+                            "damage": damage,
+                            "rank": rank_text,
+                        }
+                    )
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+
+        if len(edit_rows) != len(self.scores):
+            await interaction.response.send_message("팀원 전원의 점수를 입력해주세요.", ephemeral=True)
+            return
+
+        await apply_kill_bet_score_edit(interaction, self.session_id, self.round_data, edit_rows)
 
 
 class KillBetTeamScoreSelect(discord.ui.Select):
