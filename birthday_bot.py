@@ -991,6 +991,15 @@ if "voice_channel_id" not in kill_bet_session_columns:
     cursor.execute("ALTER TABLE kill_bet_sessions ADD COLUMN voice_channel_id TEXT")
     conn.commit()
 
+cursor.execute("PRAGMA table_info(kill_bet_rounds)")
+kill_bet_round_columns = [row[1] for row in cursor.fetchall()]
+if "team_name" not in kill_bet_round_columns:
+    cursor.execute("ALTER TABLE kill_bet_rounds ADD COLUMN team_name TEXT")
+    conn.commit()
+if "team_round_no" not in kill_bet_round_columns:
+    cursor.execute("ALTER TABLE kill_bet_rounds ADD COLUMN team_round_no INTEGER")
+    conn.commit()
+
 cursor.execute("PRAGMA table_info(kill_bet_players)")
 kill_bet_player_columns = [row[1] for row in cursor.fetchall()]
 if "pubg_account_id" not in kill_bet_player_columns:
@@ -1907,16 +1916,23 @@ def get_kill_bet_player_by_id(session_id: int, player_id: int) -> dict | None:
     return None
 
 
-def get_open_kill_bet_round(session_id: int) -> dict | None:
+def get_open_kill_bet_round(session_id: int, team_name: str | None = None) -> dict | None:
+    if team_name is None:
+        team_filter = "AND team_name IS NULL"
+        params = (session_id,)
+    else:
+        team_filter = "AND team_name=?"
+        params = (session_id, team_name)
+
     cursor.execute(
-        """
-        SELECT id, session_id, round_no, status, message_channel_id, message_id, created_at, completed_at
+        f"""
+        SELECT id, session_id, round_no, status, message_channel_id, message_id, created_at, completed_at, team_name, team_round_no
         FROM kill_bet_rounds
-        WHERE session_id=? AND status='inputting'
+        WHERE session_id=? AND status='inputting' {team_filter}
         ORDER BY round_no DESC
         LIMIT 1
         """,
-        (session_id,),
+        params,
     )
     row = cursor.fetchone()
     if not row:
@@ -1930,28 +1946,39 @@ def get_open_kill_bet_round(session_id: int) -> dict | None:
         "message_id": row[5],
         "created_at": row[6],
         "completed_at": row[7],
+        "team_name": row[8],
+        "team_round_no": row[9],
     }
 
 
-def create_kill_bet_round(session_id: int) -> dict:
+def create_kill_bet_round(session_id: int, team_name: str | None = None) -> dict:
     cursor.execute(
         "SELECT COALESCE(MAX(round_no), 0) + 1 FROM kill_bet_rounds WHERE session_id=?",
         (session_id,),
     )
     round_no = int(cursor.fetchone()[0])
+
+    team_round_no = None
+    if team_name is not None:
+        cursor.execute(
+            "SELECT COALESCE(MAX(team_round_no), 0) + 1 FROM kill_bet_rounds WHERE session_id=? AND team_name=?",
+            (session_id, team_name),
+        )
+        team_round_no = int(cursor.fetchone()[0])
+
     cursor.execute(
         """
-        INSERT INTO kill_bet_rounds(session_id, round_no, status, created_at)
-        VALUES (?, ?, 'inputting', ?)
+        INSERT INTO kill_bet_rounds(session_id, round_no, team_name, team_round_no, status, created_at)
+        VALUES (?, ?, ?, ?, 'inputting', ?)
         """,
-        (session_id, round_no, dt_to_db(get_kst_now())),
+        (session_id, round_no, team_name, team_round_no, dt_to_db(get_kst_now())),
     )
     conn.commit()
-    return get_open_kill_bet_round(session_id)
+    return get_open_kill_bet_round(session_id, team_name)
 
 
-def get_or_create_open_kill_bet_round(session_id: int) -> dict:
-    return get_open_kill_bet_round(session_id) or create_kill_bet_round(session_id)
+def get_or_create_open_kill_bet_round(session_id: int, team_name: str | None = None) -> dict:
+    return get_open_kill_bet_round(session_id, team_name) or create_kill_bet_round(session_id, team_name)
 
 
 def set_kill_bet_round_message(round_id: int, channel_id: int, message_id: int):
@@ -2110,13 +2137,18 @@ def finalize_kill_bet_round(session: dict, round_data: dict) -> list[dict]:
 
 def build_kill_bet_round_embed(guild: discord.Guild, session: dict, round_data: dict) -> discord.Embed:
     players = get_kill_bet_players(session["id"])
+    if round_data.get("team_name"):
+        players = [player for player in players if (player["team_name"] or "미지정") == round_data["team_name"]]
     scores = get_kill_bet_round_scores(round_data["id"])
     scored_player_ids = {score["player_id"] for score in scores}
     is_completed = round_data["status"] == "completed"
     title_status = "집계 완료" if is_completed else "점수 입력 중"
     color = 0x2ECC71 if is_completed else 0xE67E22
+    round_label = f"{round_data['round_no']}번째 판"
+    if round_data.get("team_name"):
+        round_label = f"{round_data['team_name']} {round_data.get('team_round_no') or round_data['round_no']}번째 판"
     embed = discord.Embed(
-        title=f"🔫 {round_data['round_no']}번째 판 {title_status}",
+        title=f"🔫 {round_label} {title_status}",
         description=f"세션 번호: `#{session['id']}`",
         color=color,
     )
@@ -2141,7 +2173,7 @@ def build_kill_bet_round_embed(guild: discord.Guild, session: dict, round_data: 
     if not is_completed:
         embed.set_footer(text="현황표의 점수 입력 버튼을 눌러 남은 인원의 점수를 입력해주세요.")
     else:
-        embed.set_footer(text="전원 입력이 완료되어 누적 점수에 반영되었습니다.")
+        embed.set_footer(text="입력이 완료되어 누적 점수에 반영되었습니다.")
     return embed
 
 
@@ -2159,12 +2191,21 @@ async def submit_kill_bet_round_scores(
         await interaction.response.send_message("선택한 킬내기가 이미 종료되었거나 찾을 수 없습니다.", ephemeral=True)
         return
 
-    round_data = get_or_create_open_kill_bet_round(session["id"])
+    rule = get_kill_bet_rule(session["rule_key"])
+    team_name = None
+    if rule and rule["mode"] == "team" and score_rows:
+        first_player = get_kill_bet_player_by_id(session["id"], score_rows[0]["player_id"])
+        if first_player is not None:
+            team_name = first_player["team_name"] or "미지정"
+
+    round_data = get_or_create_open_kill_bet_round(session["id"], team_name)
     try:
         for row in score_rows:
             player = get_kill_bet_player_by_id(session["id"], row["player_id"])
             if player is None:
                 raise ValueError("선택한 참가자를 찾을 수 없습니다.")
+            if team_name is not None and (player["team_name"] or "미지정") != team_name:
+                raise ValueError("한 번에 한 팀의 점수만 입력할 수 있습니다.")
             save_kill_bet_round_score(
                 round_data["id"],
                 player,
@@ -2178,6 +2219,8 @@ async def submit_kill_bet_round_scores(
         return
 
     players = get_kill_bet_players(session["id"])
+    if team_name is not None:
+        players = [player for player in players if (player["team_name"] or "미지정") == team_name]
     scores = get_kill_bet_round_scores(round_data["id"])
     is_completed = len(scores) >= len(players)
     if is_completed:
@@ -2220,7 +2263,10 @@ async def submit_kill_bet_round_scores(
 
     message = "점수를 입력했습니다."
     if is_completed:
-        message = f"{round_data['round_no']}번째 판 점수 집계가 완료되었습니다."
+        if round_data.get("team_name"):
+            message = f"{round_data['team_name']} {round_data.get('team_round_no') or round_data['round_no']}번째 판 점수 집계가 완료되었습니다."
+        else:
+            message = f"{round_data['round_no']}번째 판 점수 집계가 완료되었습니다."
     if sent_or_edited:
         await interaction.response.send_message(message, ephemeral=True)
     else:
@@ -9802,18 +9848,18 @@ class KillBetStatusView(discord.ui.View):
             await interaction.response.send_message("킬내기 생성자 또는 관리자만 점수를 입력할 수 있습니다.", ephemeral=True)
             return
 
-        round_data = get_open_kill_bet_round(session["id"])
-        missing_players = get_kill_bet_missing_players(session["id"], round_data["id"] if round_data else None)
-        if not missing_players:
-            await interaction.response.send_message("현재 입력 중인 판은 이미 전원 입력이 완료되었습니다.", ephemeral=True)
-            return
-
         rule = get_kill_bet_rule(session["rule_key"])
         if rule and rule["mode"] == "team":
             teams = {}
-            for player in missing_players:
+            for player in get_kill_bet_players(session["id"]):
                 team_name = player["team_name"] or "미지정"
-                teams.setdefault(team_name, []).append(player)
+                round_data = get_open_kill_bet_round(session["id"], team_name)
+                missing_players = get_kill_bet_missing_players(session["id"], round_data["id"] if round_data else None)
+                team_missing_players = [
+                    item for item in missing_players if (item["team_name"] or "미지정") == team_name
+                ]
+                if team_missing_players:
+                    teams.setdefault(team_name, team_missing_players)
 
             embed = discord.Embed(
                 title="🔫 팀 점수 입력",
@@ -9828,6 +9874,12 @@ class KillBetStatusView(discord.ui.View):
                 view=KillBetTeamScoreSelectView(interaction.user.id, session["id"], teams),
                 ephemeral=True,
             )
+            return
+
+        round_data = get_open_kill_bet_round(session["id"])
+        missing_players = get_kill_bet_missing_players(session["id"], round_data["id"] if round_data else None)
+        if not missing_players:
+            await interaction.response.send_message("현재 입력 중인 판은 이미 전원 입력이 완료되었습니다.", ephemeral=True)
             return
 
         embed = discord.Embed(
@@ -10165,23 +10217,29 @@ class KillBetRoundProgressView(discord.ui.View):
             await interaction.response.send_message("킬내기 생성자 또는 관리자만 점수를 입력할 수 있습니다.", ephemeral=True)
             return
 
-        round_data = get_open_kill_bet_round(session["id"])
-        missing_players = get_kill_bet_missing_players(session["id"], round_data["id"] if round_data else None)
-        if not missing_players:
-            await interaction.response.send_message("이번 판은 이미 전원 입력이 완료되었습니다.", ephemeral=True)
-            return
-
         rule = get_kill_bet_rule(session["rule_key"])
         if rule and rule["mode"] == "team":
             teams = {}
-            for player in missing_players:
+            for player in get_kill_bet_players(session["id"]):
                 team_name = player["team_name"] or "미지정"
-                teams.setdefault(team_name, []).append(player)
+                round_data = get_open_kill_bet_round(session["id"], team_name)
+                missing_players = get_kill_bet_missing_players(session["id"], round_data["id"] if round_data else None)
+                team_missing_players = [
+                    item for item in missing_players if (item["team_name"] or "미지정") == team_name
+                ]
+                if team_missing_players:
+                    teams.setdefault(team_name, team_missing_players)
             await interaction.response.send_message(
                 "점수를 입력할 팀을 선택해주세요.",
                 view=KillBetTeamScoreSelectView(interaction.user.id, session["id"], teams),
                 ephemeral=True,
             )
+            return
+
+        round_data = get_open_kill_bet_round(session["id"])
+        missing_players = get_kill_bet_missing_players(session["id"], round_data["id"] if round_data else None)
+        if not missing_players:
+            await interaction.response.send_message("이번 판은 이미 전원 입력이 완료되었습니다.", ephemeral=True)
             return
 
         await interaction.response.send_message(
