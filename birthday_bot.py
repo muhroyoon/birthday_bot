@@ -2556,7 +2556,7 @@ def build_kill_bet_status_embed(guild: discord.Guild, session: dict) -> discord.
             info["members"].append(player["pubg_name"])
         lines = []
         for index, (team_name, info) in enumerate(
-            sorted(team_scores.items(), key=lambda item: (-item[1]["score"], -item[1]["kills"], -item[0].lower())),
+            sorted(team_scores.items(), key=lambda item: (-item[1]["score"], -item[1]["kills"], item[0].lower())),
             start=1,
         ):
             members = ", ".join(info["members"])
