@@ -934,6 +934,54 @@ cursor.execute(
     """
 )
 
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS kill_bet_manual_entries(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id INTEGER NOT NULL,
+        input_by TEXT NOT NULL,
+        raw_text TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )
+    """
+)
+
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS kill_bet_rounds(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id INTEGER NOT NULL,
+        round_no INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'inputting',
+        message_channel_id TEXT,
+        message_id TEXT,
+        created_at TEXT NOT NULL,
+        completed_at TEXT,
+        UNIQUE(session_id, round_no)
+    )
+    """
+)
+
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS kill_bet_round_scores(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        round_id INTEGER NOT NULL,
+        player_id INTEGER NOT NULL,
+        team_name TEXT,
+        pubg_name TEXT NOT NULL,
+        kills INTEGER NOT NULL DEFAULT 0,
+        damage REAL NOT NULL DEFAULT 0,
+        rank INTEGER,
+        placement_score REAL NOT NULL DEFAULT 0,
+        score REAL NOT NULL DEFAULT 0,
+        input_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(round_id, player_id)
+    )
+    """
+)
+
 cursor.execute("PRAGMA table_info(kill_bet_sessions)")
 kill_bet_session_columns = [row[1] for row in cursor.fetchall()]
 if "platform" not in kill_bet_session_columns:
@@ -1709,6 +1757,396 @@ def apply_kill_bet_player_score(
     conn.commit()
 
 
+def add_kill_bet_manual_entry(session_id: int, input_by: int, raw_text: str) -> int:
+    cursor.execute(
+        """
+        INSERT INTO kill_bet_manual_entries(session_id, input_by, raw_text, created_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (session_id, str(input_by), raw_text, dt_to_db(get_kst_now())),
+    )
+    conn.commit()
+    return cursor.lastrowid
+
+
+def can_manage_kill_bet_session(interaction: discord.Interaction, session: dict) -> bool:
+    if interaction.user.id == int(session["creator_user_id"]):
+        return True
+    return bool(getattr(interaction.user, "guild_permissions", None) and interaction.user.guild_permissions.administrator)
+
+
+def parse_kill_bet_manual_score_lines(raw_text: str) -> list[dict]:
+    rows = []
+    for line_no, line in enumerate(raw_text.splitlines(), start=1):
+        clean_line = line.strip()
+        if not clean_line:
+            continue
+
+        if "," in clean_line:
+            parts = [part.strip() for part in clean_line.split(",")]
+        else:
+            parts = clean_line.split()
+
+        parts = [part for part in parts if part]
+        if len(parts) < 3:
+            raise ValueError(f"{line_no}번째 줄은 `닉네임,킬,딜,순위` 형식으로 입력해주세요.")
+
+        pubg_name = parts[0]
+        try:
+            kills = int(parts[1])
+            damage = float(parts[2])
+            rank = int(parts[3]) if len(parts) >= 4 else None
+        except ValueError:
+            raise ValueError(f"{line_no}번째 줄의 킬, 딜, 순위는 숫자로 입력해주세요.")
+
+        if kills < 0 or damage < 0:
+            raise ValueError(f"{line_no}번째 줄의 킬과 딜은 0 이상이어야 합니다.")
+        if rank is not None and rank <= 0:
+            raise ValueError(f"{line_no}번째 줄의 순위는 1 이상이어야 합니다.")
+
+        rows.append(
+            {
+                "pubg_name": pubg_name,
+                "kills": kills,
+                "damage": damage,
+                "rank": rank,
+            }
+        )
+
+    if not rows:
+        raise ValueError("입력된 점수 기록이 없습니다.")
+    return rows
+
+
+def apply_kill_bet_manual_scores(session: dict, input_by: int, raw_text: str) -> tuple[int, list[dict]]:
+    rule = get_kill_bet_rule(session["rule_key"])
+    if rule is None:
+        raise ValueError("킬내기 룰을 찾을 수 없습니다.")
+
+    players = get_kill_bet_players(session["id"])
+    players_by_name = {player["pubg_name"].lower(): player for player in players}
+    parsed_rows = parse_kill_bet_manual_score_lines(raw_text)
+    placement_score_used_for_team = set()
+    scored_rows = []
+
+    for row in parsed_rows:
+        player = players_by_name.get(row["pubg_name"].lower())
+        if player is None:
+            raise ValueError(f"`{row['pubg_name']}`은 이 킬내기에 등록된 닉네임이 아닙니다.")
+
+        kills = row["kills"]
+        damage = row["damage"]
+        placement_score = 0.0
+
+        if rule["placement_scores"] and row["rank"] is not None:
+            if rule["mode"] == "team":
+                team_name = player["team_name"] or "미지정"
+                if team_name not in placement_score_used_for_team:
+                    placement_score = float(rule["placement_scores"].get(row["rank"], 0))
+                    placement_score_used_for_team.add(team_name)
+            else:
+                placement_score = float(rule["placement_scores"].get(row["rank"], 0))
+
+        kill_score = kills * (float(rule["kill_score"]) + player["handicap_kill"])
+        damage_score = (damage / 100) * (float(rule["damage_score_per_100"]) + player["handicap_damage"])
+        total_score = kill_score + damage_score + placement_score
+
+        apply_kill_bet_player_score(
+            player["id"],
+            kills,
+            damage,
+            placement_score,
+            total_score,
+        )
+        scored_rows.append(
+            {
+                "team_name": player["team_name"],
+                "pubg_name": player["pubg_name"],
+                "kills": kills,
+                "damage": damage,
+                "rank": row["rank"],
+                "placement_score": placement_score,
+                "score": total_score,
+            }
+        )
+
+    entry_id = add_kill_bet_manual_entry(session["id"], input_by, raw_text)
+    return entry_id, scored_rows
+
+
+def build_kill_bet_manual_score_embed(
+    guild: discord.Guild,
+    session: dict,
+    entry_id: int,
+    scored_rows: list[dict],
+) -> discord.Embed:
+    rule = get_kill_bet_rule(session["rule_key"])
+    embed = discord.Embed(
+        title=f"🔫 킬내기 점수 입력 - {rule['name'] if rule else session['rule_key']}",
+        description=f"세션 번호: `#{session['id']}` / 입력 번호: `#{entry_id}`",
+        color=0xE67E22,
+    )
+
+    lines = []
+    for row in sorted(scored_rows, key=lambda item: (-item["score"], -item["kills"], -item["damage"])):
+        team_text = f"[{row['team_name']}] " if row["team_name"] else ""
+        rank_text = f" / 순위 `{row['rank']}등`" if row["rank"] is not None else ""
+        placement_text = f" / 순위점수 `{format_score(row['placement_score'])}`" if row["placement_score"] else ""
+        lines.append(
+            f"**{team_text}{row['pubg_name']}** `+{format_score(row['score'])}점`\n"
+            f"킬 `{row['kills']}` / 딜 `{format_score(row['damage'])}`{rank_text}{placement_text}"
+        )
+
+    embed.add_field(name="이번 입력", value=join_compact_discord_field_lines(lines), inline=False)
+    embed.add_field(name="누적 현황", value="`/킬내기현황`으로 확인할 수 있습니다.", inline=False)
+    return embed
+
+
+def get_kill_bet_player_by_id(session_id: int, player_id: int) -> dict | None:
+    for player in get_kill_bet_players(session_id):
+        if player["id"] == player_id:
+            return player
+    return None
+
+
+def get_open_kill_bet_round(session_id: int) -> dict | None:
+    cursor.execute(
+        """
+        SELECT id, session_id, round_no, status, message_channel_id, message_id, created_at, completed_at
+        FROM kill_bet_rounds
+        WHERE session_id=? AND status='inputting'
+        ORDER BY round_no DESC
+        LIMIT 1
+        """,
+        (session_id,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "id": row[0],
+        "session_id": row[1],
+        "round_no": row[2],
+        "status": row[3],
+        "message_channel_id": row[4],
+        "message_id": row[5],
+        "created_at": row[6],
+        "completed_at": row[7],
+    }
+
+
+def create_kill_bet_round(session_id: int) -> dict:
+    cursor.execute(
+        "SELECT COALESCE(MAX(round_no), 0) + 1 FROM kill_bet_rounds WHERE session_id=?",
+        (session_id,),
+    )
+    round_no = int(cursor.fetchone()[0])
+    cursor.execute(
+        """
+        INSERT INTO kill_bet_rounds(session_id, round_no, status, created_at)
+        VALUES (?, ?, 'inputting', ?)
+        """,
+        (session_id, round_no, dt_to_db(get_kst_now())),
+    )
+    conn.commit()
+    return get_open_kill_bet_round(session_id)
+
+
+def get_or_create_open_kill_bet_round(session_id: int) -> dict:
+    return get_open_kill_bet_round(session_id) or create_kill_bet_round(session_id)
+
+
+def set_kill_bet_round_message(round_id: int, channel_id: int, message_id: int):
+    cursor.execute(
+        """
+        UPDATE kill_bet_rounds
+        SET message_channel_id=?, message_id=?
+        WHERE id=?
+        """,
+        (str(channel_id), str(message_id), round_id),
+    )
+    conn.commit()
+
+
+def complete_kill_bet_round(round_id: int):
+    cursor.execute(
+        """
+        UPDATE kill_bet_rounds
+        SET status='completed', completed_at=?
+        WHERE id=?
+        """,
+        (dt_to_db(get_kst_now()), round_id),
+    )
+    conn.commit()
+
+
+def get_kill_bet_round_scores(round_id: int) -> list[dict]:
+    cursor.execute(
+        """
+        SELECT id, round_id, player_id, team_name, pubg_name, kills, damage, rank, placement_score, score, input_by, created_at
+        FROM kill_bet_round_scores
+        WHERE round_id=?
+        ORDER BY id ASC
+        """,
+        (round_id,),
+    )
+    return [
+        {
+            "id": row[0],
+            "round_id": row[1],
+            "player_id": row[2],
+            "team_name": row[3],
+            "pubg_name": row[4],
+            "kills": int(row[5] or 0),
+            "damage": float(row[6] or 0),
+            "rank": row[7],
+            "placement_score": float(row[8] or 0),
+            "score": float(row[9] or 0),
+            "input_by": row[10],
+            "created_at": row[11],
+        }
+        for row in cursor.fetchall()
+    ]
+
+
+def save_kill_bet_round_score(
+    round_id: int,
+    player: dict,
+    kills: int,
+    damage: float,
+    rank: int | None,
+    input_by: int,
+):
+    cursor.execute(
+        "SELECT 1 FROM kill_bet_round_scores WHERE round_id=? AND player_id=?",
+        (round_id, player["id"]),
+    )
+    if cursor.fetchone():
+        raise ValueError(f"`{player['pubg_name']}`님은 이미 이번 판 점수를 입력했습니다.")
+
+    cursor.execute(
+        """
+        INSERT INTO kill_bet_round_scores(
+            round_id, player_id, team_name, pubg_name, kills, damage, rank, input_by, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            round_id,
+            player["id"],
+            player["team_name"],
+            player["pubg_name"],
+            kills,
+            damage,
+            rank,
+            str(input_by),
+            dt_to_db(get_kst_now()),
+        ),
+    )
+    conn.commit()
+
+
+def get_kill_bet_missing_players(session_id: int, round_id: int | None = None) -> list[dict]:
+    players = get_kill_bet_players(session_id)
+    if round_id is None:
+        return players
+
+    scored_player_ids = {row["player_id"] for row in get_kill_bet_round_scores(round_id)}
+    return [player for player in players if player["id"] not in scored_player_ids]
+
+
+def calculate_kill_bet_round_scores(session: dict, round_id: int) -> list[dict]:
+    rule = get_kill_bet_rule(session["rule_key"])
+    if rule is None:
+        raise ValueError("킬내기 룰을 찾을 수 없습니다.")
+
+    rows = get_kill_bet_round_scores(round_id)
+    placement_score_used_for_team = set()
+    calculated_rows = []
+
+    for row in rows:
+        player = get_kill_bet_player_by_id(session["id"], row["player_id"])
+        if player is None:
+            continue
+
+        placement_score = 0.0
+        if rule["placement_scores"] and row["rank"] is not None:
+            if rule["mode"] == "team":
+                team_name = row["team_name"] or "미지정"
+                if team_name not in placement_score_used_for_team:
+                    placement_score = float(rule["placement_scores"].get(row["rank"], 0))
+                    placement_score_used_for_team.add(team_name)
+            else:
+                placement_score = float(rule["placement_scores"].get(row["rank"], 0))
+
+        kill_score = row["kills"] * (float(rule["kill_score"]) + player["handicap_kill"])
+        damage_score = (row["damage"] / 100) * (float(rule["damage_score_per_100"]) + player["handicap_damage"])
+        total_score = kill_score + damage_score + placement_score
+        calculated_rows.append({**row, "placement_score": placement_score, "score": total_score})
+
+    return calculated_rows
+
+
+def finalize_kill_bet_round(session: dict, round_data: dict) -> list[dict]:
+    calculated_rows = calculate_kill_bet_round_scores(session, round_data["id"])
+    for row in calculated_rows:
+        apply_kill_bet_player_score(
+            row["player_id"],
+            row["kills"],
+            row["damage"],
+            row["placement_score"],
+            row["score"],
+        )
+        cursor.execute(
+            """
+            UPDATE kill_bet_round_scores
+            SET placement_score=?, score=?
+            WHERE id=?
+            """,
+            (row["placement_score"], row["score"], row["id"]),
+        )
+    complete_kill_bet_round(round_data["id"])
+    conn.commit()
+    return calculated_rows
+
+
+def build_kill_bet_round_embed(guild: discord.Guild, session: dict, round_data: dict) -> discord.Embed:
+    players = get_kill_bet_players(session["id"])
+    scores = get_kill_bet_round_scores(round_data["id"])
+    scored_player_ids = {score["player_id"] for score in scores}
+    is_completed = round_data["status"] == "completed"
+    title_status = "집계 완료" if is_completed else "점수 입력 중"
+    color = 0x2ECC71 if is_completed else 0xE67E22
+    embed = discord.Embed(
+        title=f"🔫 {round_data['round_no']}번째 판 {title_status}",
+        description=f"세션 번호: `#{session['id']}`",
+        color=color,
+    )
+
+    lines = []
+    score_by_player_id = {score["player_id"]: score for score in scores}
+    for player in players:
+        score = score_by_player_id.get(player["id"])
+        team_text = f"[{player['team_name']}] " if player["team_name"] else ""
+        if score:
+            rank_text = f" / 순위 `{score['rank']}등`" if score["rank"] is not None else ""
+            score_text = f" / +`{format_score(score['score'])}점`" if is_completed else ""
+            lines.append(
+                f"**{team_text}{player['pubg_name']}** 입력 완료{score_text}\n"
+                f"킬 `{score['kills']}` / 딜 `{format_score(score['damage'])}`{rank_text}"
+            )
+        else:
+            lines.append(f"**{team_text}{player['pubg_name']}** `점수 입력 중`")
+
+    embed.add_field(name="입력 현황", value=join_compact_discord_field_lines(lines), inline=False)
+    embed.add_field(name="진행도", value=f"`{len(scored_player_ids)} / {len(players)}`명 입력 완료", inline=True)
+    if not is_completed:
+        embed.set_footer(text="현황표의 점수 입력 버튼을 눌러 남은 인원의 점수를 입력해주세요.")
+    else:
+        embed.set_footer(text="전원 입력이 완료되어 누적 점수에 반영되었습니다.")
+    return embed
+
+
 def parse_pubg_created_at(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -2011,8 +2449,7 @@ def build_kill_bet_status_embed(guild: discord.Guild, session: dict) -> discord.
     embed = discord.Embed(title=title, color=0x2ECC71 if session["status"] == "active" else 0x95A5A6)
     embed.add_field(name="세션 번호", value=f"`#{session['id']}`", inline=True)
     embed.add_field(name="상태", value="`진행 중`" if session["status"] == "active" else "`종료`", inline=True)
-    embed.add_field(name="플랫폼", value=f"`{session.get('platform') or PUBG_DEFAULT_PLATFORM}`", inline=True)
-    embed.add_field(name="자동 집계", value="`활성화`" if PUBG_API_KEY else "`PUBG_API_KEY 필요`", inline=True)
+    embed.add_field(name="집계 방식", value="`수동 입력`", inline=True)
     voice_channel_id = session.get("voice_channel_id")
     if voice_channel_id:
         voice_channel = guild.get_channel(int(voice_channel_id))
@@ -2061,7 +2498,7 @@ def build_kill_bet_status_embed(guild: discord.Guild, session: dict) -> discord.
             )
         embed.add_field(name="개인 순위", value=join_compact_discord_field_lines(lines), inline=False)
 
-    embed.set_footer(text="현재는 킬내기 세션 생성/관리 단계이며, PUBG API 자동 집계는 다음 단계에서 연결됩니다.")
+    embed.set_footer(text="아래 점수 입력 버튼으로 닉네임별 킬/딜을 입력합니다. 전원 입력 시 누적 점수에 반영됩니다.")
     return embed
 
 
@@ -9131,10 +9568,10 @@ class KillBetStartModal(discord.ui.Modal):
         embed.description = (
             f"{interaction.user.mention}님이 킬내기를 시작했습니다.\n"
             f"세션 번호: `#{session_id}`\n"
-            f"플랫폼: `{PUBG_DEFAULT_PLATFORM}`\n\n"
-            "PUBG API 키가 설정되어 있으면 시작 시점 이후의 매치를 자동으로 집계합니다."
+            f"자동 만료: `{KILL_BET_AUTO_EXPIRE_HOURS}시간`\n\n"
+            "아래 `점수 입력` 버튼으로 판마다 킬/딜을 입력할 수 있습니다."
         )
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(embed=embed, view=KillBetStatusView(session_id))
 
 
 class KillBetRuleSelect(discord.ui.Select):
@@ -9246,7 +9683,10 @@ class KillBetSessionSelectView(discord.ui.View):
 
         if self.mode == "status":
             self.disable_all_items()
-            await interaction.response.edit_message(embed=build_kill_bet_status_embed(interaction.guild, session), view=self)
+            await interaction.response.edit_message(
+                embed=build_kill_bet_status_embed(interaction.guild, session),
+                view=KillBetStatusView(session["id"]),
+            )
             return
 
         if interaction.user.id != int(session["creator_user_id"]) and not interaction.user.guild_permissions.administrator:
@@ -9260,6 +9700,365 @@ class KillBetSessionSelectView(discord.ui.View):
         embed = build_kill_bet_status_embed(interaction.guild, session)
         embed.title = embed.title.replace("현황", "종료")
         await interaction.response.edit_message(embed=embed, view=self)
+
+
+class KillBetStatusView(discord.ui.View):
+    def __init__(self, session_id: int):
+        super().__init__(timeout=600)
+        self.session_id = session_id
+
+    @discord.ui.button(label="점수 입력", style=discord.ButtonStyle.primary)
+    async def input_score(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild is None:
+            await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+            return
+
+        session = get_kill_bet_session_by_id(interaction.guild.id, self.session_id)
+        if session is None or session["status"] != "active":
+            await interaction.response.send_message("이미 종료되었거나 찾을 수 없는 킬내기입니다.", ephemeral=True)
+            return
+
+        if not can_manage_kill_bet_session(interaction, session):
+            await interaction.response.send_message("킬내기 생성자 또는 관리자만 점수를 입력할 수 있습니다.", ephemeral=True)
+            return
+
+        round_data = get_open_kill_bet_round(session["id"])
+        missing_players = get_kill_bet_missing_players(session["id"], round_data["id"] if round_data else None)
+        if not missing_players:
+            await interaction.response.send_message("현재 입력 중인 판은 이미 전원 입력이 완료되었습니다.", ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title="🔫 점수 입력 대상 선택",
+            description=(
+                "점수를 입력할 닉네임을 선택해주세요.\n"
+                "첫 점수가 제출되면 전체공개로 `N번째 판 점수 입력 중` 현황판이 생성됩니다."
+            ),
+            color=0xE67E22,
+        )
+        await interaction.response.send_message(
+            embed=embed,
+            view=KillBetPlayerScoreSelectView(interaction.user.id, session["id"], missing_players),
+            ephemeral=True,
+        )
+
+
+class KillBetPlayerScoreModal(discord.ui.Modal):
+    def __init__(self, session_id: int, player_id: int):
+        super().__init__(title="킬내기 점수 입력")
+        self.session_id = session_id
+        self.player_id = player_id
+        self.kills_input = discord.ui.TextInput(
+            label="킬",
+            placeholder="예: 5",
+            max_length=4,
+            required=True,
+        )
+        self.damage_input = discord.ui.TextInput(
+            label="딜",
+            placeholder="예: 320",
+            max_length=8,
+            required=True,
+        )
+        self.rank_input = discord.ui.TextInput(
+            label="순위",
+            placeholder="팀전 순위 점수 룰만 입력. 예: 1",
+            max_length=4,
+            required=False,
+        )
+        self.add_item(self.kills_input)
+        self.add_item(self.damage_input)
+        self.add_item(self.rank_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.guild is None or interaction.channel is None:
+            await interaction.response.send_message("서버 채널에서만 사용할 수 있습니다.", ephemeral=True)
+            return
+
+        session = get_kill_bet_session_by_id(interaction.guild.id, self.session_id)
+        if session is None or session["status"] != "active":
+            await interaction.response.send_message("선택한 킬내기가 이미 종료되었거나 찾을 수 없습니다.", ephemeral=True)
+            return
+
+        if not can_manage_kill_bet_session(interaction, session):
+            await interaction.response.send_message("킬내기 생성자 또는 관리자만 점수를 입력할 수 있습니다.", ephemeral=True)
+            return
+
+        player = get_kill_bet_player_by_id(session["id"], self.player_id)
+        if player is None:
+            await interaction.response.send_message("선택한 참가자를 찾을 수 없습니다.", ephemeral=True)
+            return
+
+        try:
+            kills = int(self.kills_input.value.strip())
+            damage = float(self.damage_input.value.strip())
+            rank_text = self.rank_input.value.strip()
+            rank = int(rank_text) if rank_text else None
+        except ValueError:
+            await interaction.response.send_message("킬, 딜, 순위는 숫자로 입력해주세요.", ephemeral=True)
+            return
+
+        if kills < 0 or damage < 0:
+            await interaction.response.send_message("킬과 딜은 0 이상이어야 합니다.", ephemeral=True)
+            return
+        if rank is not None and rank <= 0:
+            await interaction.response.send_message("순위는 1 이상이어야 합니다.", ephemeral=True)
+            return
+
+        round_data = get_or_create_open_kill_bet_round(session["id"])
+        try:
+            save_kill_bet_round_score(round_data["id"], player, kills, damage, rank, interaction.user.id)
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+
+        players = get_kill_bet_players(session["id"])
+        scores = get_kill_bet_round_scores(round_data["id"])
+        is_completed = len(scores) >= len(players)
+        if is_completed:
+            finalize_kill_bet_round(session, round_data)
+            round_data["status"] = "completed"
+            round_data["completed_at"] = dt_to_db(get_kst_now())
+
+        embed = build_kill_bet_round_embed(interaction.guild, session, round_data)
+        channel = interaction.guild.get_channel(int(session["channel_id"])) or bot.get_channel(int(session["channel_id"]))
+        sent_or_edited = False
+        if round_data.get("message_id") and round_data.get("message_channel_id"):
+            message_channel = interaction.guild.get_channel(int(round_data["message_channel_id"])) or bot.get_channel(int(round_data["message_channel_id"]))
+            if message_channel is not None and hasattr(message_channel, "fetch_message"):
+                try:
+                    message = await message_channel.fetch_message(int(round_data["message_id"]))
+                    await message.edit(embed=embed, view=None if is_completed else KillBetRoundProgressView(session["id"]))
+                    sent_or_edited = True
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    sent_or_edited = False
+
+        if not sent_or_edited and channel is not None and hasattr(channel, "send"):
+            try:
+                message = await channel.send(embed=embed, view=None if is_completed else KillBetRoundProgressView(session["id"]))
+                set_kill_bet_round_message(round_data["id"], message.channel.id, message.id)
+                sent_or_edited = True
+            except (discord.Forbidden, discord.HTTPException):
+                sent_or_edited = False
+
+        if is_completed and kill_bet_target_reached(session):
+            finish_kill_bet_session(session["id"])
+            session["status"] = "ended"
+            session["ended_at"] = dt_to_db(get_kst_now())
+            final_embed = build_kill_bet_status_embed(interaction.guild, session)
+            final_embed.title = final_embed.title.replace("현황", "목표점수 달성")
+            if channel is not None and hasattr(channel, "send"):
+                try:
+                    await channel.send(embed=final_embed)
+                except (discord.Forbidden, discord.HTTPException):
+                    pass
+
+        message = "점수를 입력했습니다."
+        if is_completed:
+            message = f"{round_data['round_no']}번째 판 점수 집계가 완료되었습니다."
+        if sent_or_edited:
+            await interaction.response.send_message(message, ephemeral=True)
+        else:
+            await interaction.response.send_message("점수는 저장했지만 공개 현황 메시지를 보낼 권한이 없습니다.", ephemeral=True)
+
+
+class KillBetPlayerScoreSelect(discord.ui.Select):
+    def __init__(self, players: list[dict], page: int):
+        self.page = page
+        start = page * 25
+        page_players = players[start:start + 25]
+        options = []
+        for player in page_players:
+            team_text = f"{player['team_name']} / " if player["team_name"] else ""
+            options.append(
+                discord.SelectOption(
+                    label=player["pubg_name"][:100],
+                    description=f"{team_text}누적 {format_score(player['total_score'])}점"[:100],
+                    value=str(player["id"]),
+                )
+            )
+        super().__init__(
+            placeholder="점수를 입력할 닉네임을 선택해주세요.",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if not isinstance(view, KillBetPlayerScoreSelectView):
+            await interaction.response.send_message("점수 입력 대상 선택 패널을 처리하지 못했습니다.", ephemeral=True)
+            return
+        await view.open_modal(interaction, int(self.values[0]))
+
+
+class KillBetPlayerScoreSelectView(discord.ui.View):
+    def __init__(self, user_id: int, session_id: int, players: list[dict], page: int = 0):
+        super().__init__(timeout=180)
+        self.user_id = user_id
+        self.session_id = session_id
+        self.players = players
+        self.page = page
+        self.add_item(KillBetPlayerScoreSelect(players, page))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("이 점수 입력 패널은 명령어를 사용한 본인만 사용할 수 있습니다.", ephemeral=True)
+            return False
+        return True
+
+    async def open_modal(self, interaction: discord.Interaction, player_id: int):
+        await interaction.response.send_modal(KillBetPlayerScoreModal(self.session_id, player_id))
+
+    @discord.ui.button(label="이전", style=discord.ButtonStyle.secondary)
+    async def previous_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.page <= 0:
+            await interaction.response.send_message("첫 페이지입니다.", ephemeral=True)
+            return
+        await interaction.response.edit_message(
+            view=KillBetPlayerScoreSelectView(self.user_id, self.session_id, self.players, self.page - 1)
+        )
+
+    @discord.ui.button(label="다음", style=discord.ButtonStyle.secondary)
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if (self.page + 1) * 25 >= len(self.players):
+            await interaction.response.send_message("마지막 페이지입니다.", ephemeral=True)
+            return
+        await interaction.response.edit_message(
+            view=KillBetPlayerScoreSelectView(self.user_id, self.session_id, self.players, self.page + 1)
+        )
+
+
+class KillBetRoundProgressView(discord.ui.View):
+    def __init__(self, session_id: int):
+        super().__init__(timeout=600)
+        self.session_id = session_id
+
+    @discord.ui.button(label="점수 입력", style=discord.ButtonStyle.primary)
+    async def input_score(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild is None:
+            await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+            return
+
+        session = get_kill_bet_session_by_id(interaction.guild.id, self.session_id)
+        if session is None or session["status"] != "active":
+            await interaction.response.send_message("이미 종료되었거나 찾을 수 없는 킬내기입니다.", ephemeral=True)
+            return
+        if not can_manage_kill_bet_session(interaction, session):
+            await interaction.response.send_message("킬내기 생성자 또는 관리자만 점수를 입력할 수 있습니다.", ephemeral=True)
+            return
+
+        round_data = get_open_kill_bet_round(session["id"])
+        missing_players = get_kill_bet_missing_players(session["id"], round_data["id"] if round_data else None)
+        if not missing_players:
+            await interaction.response.send_message("이번 판은 이미 전원 입력이 완료되었습니다.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            "점수를 입력할 닉네임을 선택해주세요.",
+            view=KillBetPlayerScoreSelectView(interaction.user.id, session["id"], missing_players),
+            ephemeral=True,
+        )
+
+
+class KillBetManualScoreModal(discord.ui.Modal):
+    def __init__(self, session_id: int):
+        super().__init__(title=f"킬내기 일괄 입력 #{session_id}")
+        self.session_id = session_id
+        self.score_input = discord.ui.TextInput(
+            label="일괄 점수 입력",
+            placeholder=(
+                "한 줄에 한 명씩 입력\n"
+                "예) 머로,5,320,1\n"
+                "형식: 닉네임,킬,딜,순위"
+            ),
+            style=discord.TextStyle.paragraph,
+            max_length=1400,
+            required=True,
+        )
+        self.add_item(self.score_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+            return
+
+        session = get_kill_bet_session_by_id(interaction.guild.id, self.session_id)
+        if session is None or session["status"] != "active":
+            await interaction.response.send_message("선택한 킬내기가 이미 종료되었거나 찾을 수 없습니다.", ephemeral=True)
+            return
+
+        if not can_manage_kill_bet_session(interaction, session):
+            await interaction.response.send_message("킬내기 생성자 또는 관리자만 점수를 입력할 수 있습니다.", ephemeral=True)
+            return
+
+        try:
+            entry_id, scored_rows = apply_kill_bet_manual_scores(
+                session,
+                interaction.user.id,
+                self.score_input.value,
+            )
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+
+        embed = build_kill_bet_manual_score_embed(interaction.guild, session, entry_id, scored_rows)
+        if kill_bet_target_reached(session):
+            finish_kill_bet_session(session["id"])
+            session["status"] = "ended"
+            session["ended_at"] = dt_to_db(get_kst_now())
+            embed.add_field(name="목표점수 달성", value="목표 점수에 도달해 킬내기를 자동 종료했습니다.", inline=False)
+
+        await interaction.response.send_message(embed=embed)
+
+
+class KillBetManualScoreSelect(discord.ui.Select):
+    def __init__(self, guild: discord.Guild, sessions: list[dict]):
+        options = [build_kill_bet_select_option(guild, session) for session in sessions[:25]]
+        super().__init__(
+            placeholder="점수를 입력할 킬내기를 선택해주세요.",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if not isinstance(view, KillBetManualScoreSelectView):
+            await interaction.response.send_message("킬내기 점수 입력 패널을 처리하지 못했습니다.", ephemeral=True)
+            return
+        await view.handle_selection(interaction, int(self.values[0]))
+
+
+class KillBetManualScoreSelectView(discord.ui.View):
+    def __init__(self, user_id: int, guild: discord.Guild, sessions: list[dict]):
+        super().__init__(timeout=180)
+        self.user_id = user_id
+        self.add_item(KillBetManualScoreSelect(guild, sessions))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("이 킬내기 선택 패널은 명령어를 사용한 본인만 사용할 수 있습니다.", ephemeral=True)
+            return False
+        return True
+
+    async def handle_selection(self, interaction: discord.Interaction, session_id: int):
+        if interaction.guild is None:
+            await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+            return
+
+        session = get_kill_bet_session_by_id(interaction.guild.id, session_id)
+        if session is None or session["status"] != "active":
+            await interaction.response.send_message("선택한 킬내기가 이미 종료되었거나 찾을 수 없습니다.", ephemeral=True)
+            return
+
+        if not can_manage_kill_bet_session(interaction, session):
+            await interaction.response.send_message("킬내기 생성자 또는 관리자만 점수를 입력할 수 있습니다.", ephemeral=True)
+            return
+
+        await interaction.response.edit_message(
+            embed=build_kill_bet_status_embed(interaction.guild, session),
+            view=KillBetStatusView(session["id"]),
+        )
 
 
 class DuckmongView(discord.ui.View):
@@ -13547,7 +14346,10 @@ async def kill_bet_status(interaction: discord.Interaction):
         return
 
     if len(sessions) == 1:
-        await interaction.response.send_message(embed=build_kill_bet_status_embed(interaction.guild, sessions[0]))
+        await interaction.response.send_message(
+            embed=build_kill_bet_status_embed(interaction.guild, sessions[0]),
+            view=KillBetStatusView(sessions[0]["id"]),
+        )
         return
 
     embed = discord.Embed(
@@ -13558,6 +14360,45 @@ async def kill_bet_status(interaction: discord.Interaction):
     await interaction.response.send_message(
         embed=embed,
         view=KillBetSessionSelectView(interaction.user.id, interaction.guild, sessions, "status"),
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="킬내기점수입력", description="진행 중인 킬내기에 킬/딜 점수를 수동 입력합니다.")
+async def kill_bet_manual_score(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    sessions = get_active_kill_bet_sessions_for_guild(interaction.guild.id)
+    if not sessions:
+        await interaction.response.send_message("현재 진행 중인 킬내기가 없습니다.", ephemeral=True)
+        return
+
+    if len(sessions) == 1:
+        session = sessions[0]
+        if not can_manage_kill_bet_session(interaction, session):
+            await interaction.response.send_message("킬내기 생성자 또는 관리자만 점수를 입력할 수 있습니다.", ephemeral=True)
+            return
+
+        await interaction.response.send_message(
+            embed=build_kill_bet_status_embed(interaction.guild, session),
+            view=KillBetStatusView(session["id"]),
+            ephemeral=True,
+        )
+        return
+
+    embed = discord.Embed(
+        title="🔫 킬내기 점수 입력",
+        description=(
+            "점수를 입력할 킬내기를 선택해주세요.\n\n"
+            "선택 후 현황표의 `점수 입력` 버튼을 눌러 닉네임별로 입력합니다."
+        ),
+        color=0xE67E22,
+    )
+    await interaction.response.send_message(
+        embed=embed,
+        view=KillBetManualScoreSelectView(interaction.user.id, interaction.guild, sessions),
         ephemeral=True,
     )
 
@@ -14319,19 +15160,13 @@ async def attendance_daily_loop():
         await run_guest_checks()
 
 
-@tasks.loop(minutes=3)
+@tasks.loop(minutes=1)
 async def kill_bet_monitor_loop():
-    if not PUBG_API_KEY:
-        return
-
     for session in get_active_kill_bet_sessions():
         try:
-            if await auto_close_kill_bet_session_if_needed(session):
-                continue
-            await process_kill_bet_session(session)
+            await auto_close_kill_bet_session_if_needed(session)
         except Exception as e:
-            print(f"킬내기 자동 집계 실패 (session {session['id']}): {e}")
-        await asyncio.sleep(6)
+            print(f"킬내기 자동 종료 점검 실패 (session {session['id']}): {e}")
 
 
 @tasks.loop(hours=STORAGE_CLEANUP_INTERVAL_HOURS)
