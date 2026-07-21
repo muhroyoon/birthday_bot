@@ -312,6 +312,7 @@ PLAYLIST_FAILURE_NOTICE_INTERVAL = 5
 PLAYLIST_FAILURE_BACKOFF_STEP_SECONDS = 15
 PLAYLIST_FAILURE_BACKOFF_MAX_SECONDS = 90
 PUBG_API_REQUEST_INTERVAL_SECONDS = 7
+KILL_BET_AUTO_EXPIRE_HOURS = 6
 
 intents = discord.Intents.default()
 intents.members = True
@@ -890,6 +891,7 @@ cursor.execute(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         guild_id TEXT NOT NULL,
         channel_id TEXT NOT NULL,
+        voice_channel_id TEXT,
         creator_user_id TEXT NOT NULL,
         rule_key TEXT NOT NULL,
         platform TEXT NOT NULL DEFAULT 'kakao',
@@ -936,6 +938,9 @@ cursor.execute("PRAGMA table_info(kill_bet_sessions)")
 kill_bet_session_columns = [row[1] for row in cursor.fetchall()]
 if "platform" not in kill_bet_session_columns:
     cursor.execute("ALTER TABLE kill_bet_sessions ADD COLUMN platform TEXT NOT NULL DEFAULT 'kakao'")
+    conn.commit()
+if "voice_channel_id" not in kill_bet_session_columns:
+    cursor.execute("ALTER TABLE kill_bet_sessions ADD COLUMN voice_channel_id TEXT")
     conn.commit()
 
 cursor.execute("PRAGMA table_info(kill_bet_players)")
@@ -1378,7 +1383,7 @@ def get_kill_bet_rule(rule_key: str) -> dict | None:
 def get_active_kill_bet_session(guild_id: int) -> dict | None:
     cursor.execute(
         """
-        SELECT id, guild_id, channel_id, creator_user_id, rule_key, platform, target_score, status, started_at, ended_at
+        SELECT id, guild_id, channel_id, voice_channel_id, creator_user_id, rule_key, platform, target_score, status, started_at, ended_at
         FROM kill_bet_sessions
         WHERE guild_id=? AND status='active'
         ORDER BY id DESC
@@ -1393,20 +1398,21 @@ def get_active_kill_bet_session(guild_id: int) -> dict | None:
         "id": row[0],
         "guild_id": row[1],
         "channel_id": row[2],
-        "creator_user_id": row[3],
-        "rule_key": row[4],
-        "platform": row[5],
-        "target_score": row[6],
-        "status": row[7],
-        "started_at": row[8],
-        "ended_at": row[9],
+        "voice_channel_id": row[3],
+        "creator_user_id": row[4],
+        "rule_key": row[5],
+        "platform": row[6],
+        "target_score": row[7],
+        "status": row[8],
+        "started_at": row[9],
+        "ended_at": row[10],
     }
 
 
 def get_kill_bet_session_by_id(guild_id: int, session_id: int) -> dict | None:
     cursor.execute(
         """
-        SELECT id, guild_id, channel_id, creator_user_id, rule_key, platform, target_score, status, started_at, ended_at
+        SELECT id, guild_id, channel_id, voice_channel_id, creator_user_id, rule_key, platform, target_score, status, started_at, ended_at
         FROM kill_bet_sessions
         WHERE guild_id=? AND id=?
         LIMIT 1
@@ -1420,20 +1426,21 @@ def get_kill_bet_session_by_id(guild_id: int, session_id: int) -> dict | None:
         "id": row[0],
         "guild_id": row[1],
         "channel_id": row[2],
-        "creator_user_id": row[3],
-        "rule_key": row[4],
-        "platform": row[5],
-        "target_score": row[6],
-        "status": row[7],
-        "started_at": row[8],
-        "ended_at": row[9],
+        "voice_channel_id": row[3],
+        "creator_user_id": row[4],
+        "rule_key": row[5],
+        "platform": row[6],
+        "target_score": row[7],
+        "status": row[8],
+        "started_at": row[9],
+        "ended_at": row[10],
     }
 
 
 def get_active_kill_bet_sessions_for_guild(guild_id: int) -> list[dict]:
     cursor.execute(
         """
-        SELECT id, guild_id, channel_id, creator_user_id, rule_key, platform, target_score, status, started_at, ended_at
+        SELECT id, guild_id, channel_id, voice_channel_id, creator_user_id, rule_key, platform, target_score, status, started_at, ended_at
         FROM kill_bet_sessions
         WHERE guild_id=? AND status='active'
         ORDER BY id DESC
@@ -1447,13 +1454,14 @@ def get_active_kill_bet_sessions_for_guild(guild_id: int) -> list[dict]:
                 "id": row[0],
                 "guild_id": row[1],
                 "channel_id": row[2],
-                "creator_user_id": row[3],
-                "rule_key": row[4],
-                "platform": row[5],
-                "target_score": row[6],
-                "status": row[7],
-                "started_at": row[8],
-                "ended_at": row[9],
+                "voice_channel_id": row[3],
+                "creator_user_id": row[4],
+                "rule_key": row[5],
+                "platform": row[6],
+                "target_score": row[7],
+                "status": row[8],
+                "started_at": row[9],
+                "ended_at": row[10],
             }
         )
     return sessions
@@ -1567,6 +1575,7 @@ def parse_kill_bet_participants(rule: dict, raw_text: str, handicap_text: str) -
 def create_kill_bet_session(
     guild_id: int,
     channel_id: int,
+    voice_channel_id: int | None,
     creator_user_id: int,
     rule_key: str,
     platform: str,
@@ -1576,10 +1585,19 @@ def create_kill_bet_session(
     now_text = dt_to_db(get_kst_now())
     cursor.execute(
         """
-        INSERT INTO kill_bet_sessions(guild_id, channel_id, creator_user_id, rule_key, platform, target_score, status, started_at)
-        VALUES (?, ?, ?, ?, ?, ?, 'active', ?)
+        INSERT INTO kill_bet_sessions(guild_id, channel_id, voice_channel_id, creator_user_id, rule_key, platform, target_score, status, started_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)
         """,
-        (str(guild_id), str(channel_id), str(creator_user_id), rule_key, platform, target_score, now_text),
+        (
+            str(guild_id),
+            str(channel_id),
+            str(voice_channel_id) if voice_channel_id is not None else None,
+            str(creator_user_id),
+            rule_key,
+            platform,
+            target_score,
+            now_text,
+        ),
     )
     session_id = cursor.lastrowid
     cursor.executemany(
@@ -1613,7 +1631,7 @@ def finish_kill_bet_session(session_id: int):
 def get_active_kill_bet_sessions() -> list[dict]:
     cursor.execute(
         """
-        SELECT id, guild_id, channel_id, creator_user_id, rule_key, platform, target_score, status, started_at, ended_at
+        SELECT id, guild_id, channel_id, voice_channel_id, creator_user_id, rule_key, platform, target_score, status, started_at, ended_at
         FROM kill_bet_sessions
         WHERE status='active'
         ORDER BY id ASC
@@ -1626,13 +1644,14 @@ def get_active_kill_bet_sessions() -> list[dict]:
                 "id": row[0],
                 "guild_id": row[1],
                 "channel_id": row[2],
-                "creator_user_id": row[3],
-                "rule_key": row[4],
-                "platform": row[5],
-                "target_score": row[6],
-                "status": row[7],
-                "started_at": row[8],
-                "ended_at": row[9],
+                "voice_channel_id": row[3],
+                "creator_user_id": row[4],
+                "rule_key": row[5],
+                "platform": row[6],
+                "target_score": row[7],
+                "status": row[8],
+                "started_at": row[9],
+                "ended_at": row[10],
             }
         )
     return sessions
@@ -1945,6 +1964,46 @@ async def process_kill_bet_session(session: dict):
             await asyncio.sleep(6)
 
 
+async def auto_close_kill_bet_session_if_needed(session: dict) -> bool:
+    guild = bot.get_guild(int(session["guild_id"]))
+    if guild is None:
+        return False
+
+    close_reason = None
+    try:
+        started_at = dt_from_db(session["started_at"])
+    except Exception:
+        started_at = get_kst_now()
+
+    if get_kst_now() - started_at >= timedelta(hours=KILL_BET_AUTO_EXPIRE_HOURS):
+        close_reason = f"시작 후 {KILL_BET_AUTO_EXPIRE_HOURS}시간이 지나 자동 종료되었습니다."
+
+    voice_channel_id = session.get("voice_channel_id")
+    if close_reason is None and voice_channel_id:
+        voice_channel = guild.get_channel(int(voice_channel_id)) or bot.get_channel(int(voice_channel_id))
+        if voice_channel is None:
+            close_reason = "킬내기를 시작할 때 연결된 음성채널이 삭제되어 자동 종료되었습니다."
+
+    if close_reason is None:
+        return False
+
+    finish_kill_bet_session(session["id"])
+    session["status"] = "ended"
+    session["ended_at"] = dt_to_db(get_kst_now())
+
+    text_channel = guild.get_channel(int(session["channel_id"])) or bot.get_channel(int(session["channel_id"]))
+    if text_channel is not None and hasattr(text_channel, "send"):
+        embed = build_kill_bet_status_embed(guild, session)
+        embed.title = embed.title.replace("현황", "자동 종료")
+        embed.description = close_reason
+        try:
+            await text_channel.send(embed=embed)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+    return True
+
+
 def build_kill_bet_status_embed(guild: discord.Guild, session: dict) -> discord.Embed:
     rule = get_kill_bet_rule(session["rule_key"])
     players = get_kill_bet_players(session["id"])
@@ -1954,6 +2013,14 @@ def build_kill_bet_status_embed(guild: discord.Guild, session: dict) -> discord.
     embed.add_field(name="상태", value="`진행 중`" if session["status"] == "active" else "`종료`", inline=True)
     embed.add_field(name="플랫폼", value=f"`{session.get('platform') or PUBG_DEFAULT_PLATFORM}`", inline=True)
     embed.add_field(name="자동 집계", value="`활성화`" if PUBG_API_KEY else "`PUBG_API_KEY 필요`", inline=True)
+    voice_channel_id = session.get("voice_channel_id")
+    if voice_channel_id:
+        voice_channel = guild.get_channel(int(voice_channel_id))
+        voice_text = voice_channel.mention if voice_channel is not None else "`삭제됨`"
+    else:
+        voice_text = "`연결 없음`"
+    embed.add_field(name="연결 음성채널", value=voice_text, inline=True)
+    embed.add_field(name="자동 만료", value=f"`{KILL_BET_AUTO_EXPIRE_HOURS}시간`", inline=True)
     if session["target_score"] is not None:
         embed.add_field(name="목표 점수", value=f"`{format_score(session['target_score'])}점`", inline=True)
 
@@ -9052,6 +9119,7 @@ class KillBetStartModal(discord.ui.Modal):
         session_id = create_kill_bet_session(
             interaction.guild.id,
             interaction.channel.id,
+            interaction.user.voice.channel.id if interaction.user.voice and interaction.user.voice.channel else None,
             interaction.user.id,
             self.rule_key,
             PUBG_DEFAULT_PLATFORM,
@@ -14258,6 +14326,8 @@ async def kill_bet_monitor_loop():
 
     for session in get_active_kill_bet_sessions():
         try:
+            if await auto_close_kill_bet_session_if_needed(session):
+                continue
             await process_kill_bet_session(session)
         except Exception as e:
             print(f"킬내기 자동 집계 실패 (session {session['id']}): {e}")
