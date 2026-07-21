@@ -990,6 +990,12 @@ if "platform" not in kill_bet_session_columns:
 if "voice_channel_id" not in kill_bet_session_columns:
     cursor.execute("ALTER TABLE kill_bet_sessions ADD COLUMN voice_channel_id TEXT")
     conn.commit()
+if "status_channel_id" not in kill_bet_session_columns:
+    cursor.execute("ALTER TABLE kill_bet_sessions ADD COLUMN status_channel_id TEXT")
+    conn.commit()
+if "status_message_id" not in kill_bet_session_columns:
+    cursor.execute("ALTER TABLE kill_bet_sessions ADD COLUMN status_message_id TEXT")
+    conn.commit()
 
 cursor.execute("PRAGMA table_info(kill_bet_rounds)")
 kill_bet_round_columns = [row[1] for row in cursor.fetchall()]
@@ -1440,7 +1446,7 @@ def get_kill_bet_rule(rule_key: str) -> dict | None:
 def get_active_kill_bet_session(guild_id: int) -> dict | None:
     cursor.execute(
         """
-        SELECT id, guild_id, channel_id, voice_channel_id, creator_user_id, rule_key, platform, target_score, status, started_at, ended_at
+        SELECT id, guild_id, channel_id, voice_channel_id, creator_user_id, rule_key, platform, target_score, status, started_at, ended_at, status_channel_id, status_message_id
         FROM kill_bet_sessions
         WHERE guild_id=? AND status='active'
         ORDER BY id DESC
@@ -1463,13 +1469,15 @@ def get_active_kill_bet_session(guild_id: int) -> dict | None:
         "status": row[8],
         "started_at": row[9],
         "ended_at": row[10],
+        "status_channel_id": row[11],
+        "status_message_id": row[12],
     }
 
 
 def get_kill_bet_session_by_id(guild_id: int, session_id: int) -> dict | None:
     cursor.execute(
         """
-        SELECT id, guild_id, channel_id, voice_channel_id, creator_user_id, rule_key, platform, target_score, status, started_at, ended_at
+        SELECT id, guild_id, channel_id, voice_channel_id, creator_user_id, rule_key, platform, target_score, status, started_at, ended_at, status_channel_id, status_message_id
         FROM kill_bet_sessions
         WHERE guild_id=? AND id=?
         LIMIT 1
@@ -1491,13 +1499,15 @@ def get_kill_bet_session_by_id(guild_id: int, session_id: int) -> dict | None:
         "status": row[8],
         "started_at": row[9],
         "ended_at": row[10],
+        "status_channel_id": row[11],
+        "status_message_id": row[12],
     }
 
 
 def get_active_kill_bet_sessions_for_guild(guild_id: int) -> list[dict]:
     cursor.execute(
         """
-        SELECT id, guild_id, channel_id, voice_channel_id, creator_user_id, rule_key, platform, target_score, status, started_at, ended_at
+        SELECT id, guild_id, channel_id, voice_channel_id, creator_user_id, rule_key, platform, target_score, status, started_at, ended_at, status_channel_id, status_message_id
         FROM kill_bet_sessions
         WHERE guild_id=? AND status='active'
         ORDER BY id DESC
@@ -1519,6 +1529,8 @@ def get_active_kill_bet_sessions_for_guild(guild_id: int) -> list[dict]:
                 "status": row[8],
                 "started_at": row[9],
                 "ended_at": row[10],
+                "status_channel_id": row[11],
+                "status_message_id": row[12],
             }
         )
     return sessions
@@ -1688,7 +1700,7 @@ def finish_kill_bet_session(session_id: int):
 def get_active_kill_bet_sessions() -> list[dict]:
     cursor.execute(
         """
-        SELECT id, guild_id, channel_id, voice_channel_id, creator_user_id, rule_key, platform, target_score, status, started_at, ended_at
+        SELECT id, guild_id, channel_id, voice_channel_id, creator_user_id, rule_key, platform, target_score, status, started_at, ended_at, status_channel_id, status_message_id
         FROM kill_bet_sessions
         WHERE status='active'
         ORDER BY id ASC
@@ -1709,9 +1721,23 @@ def get_active_kill_bet_sessions() -> list[dict]:
                 "status": row[8],
                 "started_at": row[9],
                 "ended_at": row[10],
+                "status_channel_id": row[11],
+                "status_message_id": row[12],
             }
         )
     return sessions
+
+
+def set_kill_bet_status_message(session_id: int, channel_id: int, message_id: int):
+    cursor.execute(
+        """
+        UPDATE kill_bet_sessions
+        SET status_channel_id=?, status_message_id=?
+        WHERE id=?
+        """,
+        (str(channel_id), str(message_id), session_id),
+    )
+    conn.commit()
 
 
 def is_kill_bet_match_processed(session_id: int, match_id: str) -> bool:
@@ -2218,14 +2244,39 @@ def build_kill_bet_round_embed(guild: discord.Guild, session: dict, round_data: 
         else:
             lines.append(f"**{team_text}{player['pubg_name']}** `점수 입력 중`")
 
-    field_name = "개인별 집계 결과" if is_completed and not round_data.get("team_name") else "입력 현황"
-    embed.add_field(name=field_name, value=join_compact_discord_field_lines(lines), inline=False)
+    is_solo_completed = is_completed and not round_data.get("team_name")
+    field_name = "개인별 집계 결과" if is_solo_completed else "입력 현황"
+    field_value = "\n\n".join(lines) if is_solo_completed else join_compact_discord_field_lines(lines)
+    if len(field_value) > 1024:
+        field_value = join_compact_discord_field_lines(lines)
+    embed.add_field(name=field_name, value=field_value, inline=False)
     embed.add_field(name="진행도", value=f"`{len(scored_player_ids)} / {len(players)}`명 입력 완료", inline=True)
     if not is_completed:
         embed.set_footer(text="현황표의 점수 입력 버튼을 눌러 남은 인원의 점수를 입력해주세요.")
     else:
         embed.set_footer(text="입력이 완료되어 누적 점수에 반영되었습니다.")
     return embed
+
+
+async def refresh_kill_bet_status_message(guild: discord.Guild, session: dict):
+    status_channel_id = session.get("status_channel_id")
+    status_message_id = session.get("status_message_id")
+    if not status_channel_id or not status_message_id:
+        return
+
+    channel = guild.get_channel(int(status_channel_id)) or bot.get_channel(int(status_channel_id))
+    if channel is None or not hasattr(channel, "fetch_message"):
+        return
+
+    refreshed_session = get_kill_bet_session_by_id(guild.id, session["id"]) or session
+    try:
+        message = await channel.fetch_message(int(status_message_id))
+        await message.edit(
+            embed=build_kill_bet_status_embed(guild, refreshed_session),
+            view=KillBetStatusView(session["id"]) if refreshed_session["status"] == "active" else None,
+        )
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        pass
 
 
 async def submit_kill_bet_round_scores(
@@ -2311,6 +2362,8 @@ async def submit_kill_bet_round_scores(
                 await channel.send(embed=final_embed)
             except (discord.Forbidden, discord.HTTPException):
                 pass
+
+    await refresh_kill_bet_status_message(interaction.guild, session)
 
     message = "점수를 입력했습니다."
     if is_completed:
@@ -9754,6 +9807,11 @@ class KillBetStartModal(discord.ui.Modal):
             "아래 `점수 입력` 버튼으로 판마다 킬/딜을 입력할 수 있습니다."
         )
         await interaction.response.send_message(embed=embed, view=KillBetStatusView(session_id))
+        try:
+            status_message = await interaction.original_response()
+            set_kill_bet_status_message(session_id, status_message.channel.id, status_message.id)
+        except (discord.NotFound, discord.HTTPException):
+            pass
 
 
 class KillBetRuleSelect(discord.ui.Select):
@@ -9869,6 +9927,11 @@ class KillBetSessionSelectView(discord.ui.View):
                 embed=build_kill_bet_status_embed(interaction.guild, session),
                 view=KillBetStatusView(session["id"]),
             )
+            try:
+                message = await interaction.original_response()
+                set_kill_bet_status_message(session["id"], message.channel.id, message.id)
+            except (discord.NotFound, discord.HTTPException):
+                pass
             return
 
         if interaction.user.id != int(session["creator_user_id"]) and not interaction.user.guild_permissions.administrator:
@@ -14695,6 +14758,11 @@ async def kill_bet_status(interaction: discord.Interaction):
             embed=build_kill_bet_status_embed(interaction.guild, sessions[0]),
             view=KillBetStatusView(sessions[0]["id"]),
         )
+        try:
+            message = await interaction.original_response()
+            set_kill_bet_status_message(sessions[0]["id"], message.channel.id, message.id)
+        except (discord.NotFound, discord.HTTPException):
+            pass
         return
 
     embed = discord.Embed(
