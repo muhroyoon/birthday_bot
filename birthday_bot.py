@@ -123,7 +123,6 @@ ATTENDANCE_DATA_FILE = "/data/attendance.json"
 GUEST_INTERVAL_DAYS = 7
 LEGACY_GUEST_BASE_DATE = datetime(2026, 5, 4, tzinfo=ZoneInfo("Asia/Seoul")).date()
 LEGACY_GUEST_DUE_DATE = datetime(2026, 5, 11, tzinfo=ZoneInfo("Asia/Seoul")).date()
-GUEST_REFRESH_URL = f"https://discord.com/channels/{ATTENDANCE_GUILD_ID}/{GUEST_REFRESH_CHANNEL_ID}"
 DEFAULT_ACTIVITY_WARNING_TYPE = "attendance"
 DEFAULT_ACTIVITY_WARNING_DAYS = "7"
 DEFAULT_ACTIVITY_WARNING_MIN_ATTENDANCE = "2"
@@ -1062,6 +1061,48 @@ def get_guild_setting_role_id(guild_id: int, key: str):
         return int(value)
     except ValueError:
         return None
+
+
+def get_attendance_channel_id(guild_id: int) -> int:
+    return get_guild_setting_channel_id(guild_id, "attendance_channel_id") or ATTENDANCE_CHANNEL_ID
+
+
+def get_attendance_midnight_channel_id(guild_id: int) -> int:
+    return get_guild_setting_channel_id(guild_id, "attendance_midnight_channel_id") or ATTENDANCE_MIDNIGHT_CHANNEL_ID
+
+
+def get_guest_role_id(guild_id: int) -> int:
+    return get_guild_setting_role_id(guild_id, "guest_role_id") or GUEST_ROLE_ID
+
+
+def get_guest_alert_channel_id(guild_id: int) -> int:
+    return get_guild_setting_channel_id(guild_id, "guest_alert_channel_id") or GUEST_ALERT_CHANNEL_ID
+
+
+def get_guest_refresh_channel_id(guild_id: int) -> int:
+    return get_guild_setting_channel_id(guild_id, "guest_refresh_channel_id") or GUEST_REFRESH_CHANNEL_ID
+
+
+def get_attendance_eligible_role_ids(guild_id: int) -> list[int]:
+    value = get_guild_setting(guild_id, "attendance_eligible_role_ids")
+    if not value:
+        return ATTENDANCE_ELIGIBLE_ROLE_IDS
+
+    role_ids = []
+    for raw_role_id in value.split(","):
+        try:
+            role_ids.append(int(raw_role_id.strip()))
+        except ValueError:
+            continue
+    return role_ids or ATTENDANCE_ELIGIBLE_ROLE_IDS
+
+
+def get_guest_refresh_url(guild_id: int) -> str:
+    return f"https://discord.com/channels/{guild_id}/{get_guest_refresh_channel_id(guild_id)}"
+
+
+def get_attendance_panel_url(guild_id: int) -> str:
+    return f"https://discord.com/channels/{guild_id}/{get_attendance_channel_id(guild_id)}"
 
 
 def set_template(guild_id: int, template_name: str, content: str):
@@ -3060,12 +3101,7 @@ def get_today_kst_date_str() -> str:
 def load_attendance_data():
     os.makedirs(os.path.dirname(ATTENDANCE_DATA_FILE), exist_ok=True)
     if not os.path.exists(ATTENDANCE_DATA_FILE):
-        initial_data = {
-            "users": {},
-            "today_order": {},
-            "guest_updates": {},
-            "meta": {},
-        }
+        initial_data = {"guilds": {}}
         with open(ATTENDANCE_DATA_FILE, "w", encoding="utf-8") as f:
             json.dump(initial_data, f, indent=4, ensure_ascii=False)
         return initial_data
@@ -3073,25 +3109,61 @@ def load_attendance_data():
     with open(ATTENDANCE_DATA_FILE, "r", encoding="utf-8") as f:
         loaded = json.load(f)
 
-    loaded.setdefault("users", {})
-    loaded.setdefault("today_order", {})
-    loaded.setdefault("guest_updates", {})
-    loaded.setdefault("meta", {})
+    if "guilds" not in loaded:
+        loaded = {
+            "guilds": {
+                str(ATTENDANCE_GUILD_ID): {
+                    "users": loaded.get("users", {}),
+                    "today_order": loaded.get("today_order", {}),
+                    "guest_updates": loaded.get("guest_updates", {}),
+                    "meta": loaded.get("meta", {}),
+                }
+            }
+        }
+    loaded.setdefault("guilds", {})
     return loaded
 
 
 attendance_data = load_attendance_data()
-attendance_users = attendance_data["users"]
-attendance_guest_updates = attendance_data["guest_updates"]
-attendance_meta = attendance_data["meta"]
+
+
+def make_empty_attendance_guild_data():
+    return {
+        "users": {},
+        "today_order": {},
+        "guest_updates": {},
+        "meta": {},
+    }
+
+
+def get_attendance_guild_data(guild_id: int | str | None):
+    if guild_id is None:
+        guild_id = ATTENDANCE_GUILD_ID
+
+    guild_data = attendance_data.setdefault("guilds", {}).setdefault(
+        str(guild_id),
+        make_empty_attendance_guild_data(),
+    )
+    guild_data.setdefault("users", {})
+    guild_data.setdefault("today_order", {})
+    guild_data.setdefault("guest_updates", {})
+    guild_data.setdefault("meta", {})
+    return guild_data
+
+
+default_attendance_guild_data = get_attendance_guild_data(ATTENDANCE_GUILD_ID)
+attendance_users = default_attendance_guild_data["users"]
+attendance_guest_updates = default_attendance_guild_data["guest_updates"]
+attendance_meta = default_attendance_guild_data["meta"]
 
 
 def refresh_attendance_data():
     global attendance_data, attendance_users, attendance_guest_updates, attendance_meta
     attendance_data = load_attendance_data()
-    attendance_users = attendance_data["users"]
-    attendance_guest_updates = attendance_data["guest_updates"]
-    attendance_meta = attendance_data["meta"]
+    default_guild_data = get_attendance_guild_data(ATTENDANCE_GUILD_ID)
+    attendance_users = default_guild_data["users"]
+    attendance_guest_updates = default_guild_data["guest_updates"]
+    attendance_meta = default_guild_data["meta"]
     return attendance_data
 
 
@@ -3114,11 +3186,12 @@ def format_attendance_date(date_value) -> str:
     return date_value.strftime("%Y-%m-%d")
 
 
-def ensure_guest_record(user_id: str, today=None):
+def ensure_guest_record(user_id: str, today=None, guild_id: int | str | None = None):
     if today is None:
         today = get_kst_now().date()
 
-    record = attendance_guest_updates.setdefault(
+    guild_data = get_attendance_guild_data(guild_id)
+    record = guild_data["guest_updates"].setdefault(
         user_id,
         {
             "last_refresh": "",
@@ -3156,7 +3229,7 @@ def set_guest_due_from_assignment(record, assigned_date):
 
 
 def initialize_legacy_guest(member: discord.Member):
-    record = ensure_guest_record(str(member.id))
+    record = ensure_guest_record(str(member.id), guild_id=member.guild.id)
     if record.get("last_refresh"):
         return record
 
@@ -3168,7 +3241,7 @@ def initialize_legacy_guest(member: discord.Member):
 
 def initialize_guest_refresh_from_today(member: discord.Member):
     today = get_kst_now().date()
-    record = ensure_guest_record(str(member.id), today=today)
+    record = ensure_guest_record(str(member.id), today=today, guild_id=member.guild.id)
     record["guest_assigned_at"] = format_attendance_date(today)
     record["last_refresh"] = ""
     record["next_due"] = format_attendance_date(today + timedelta(days=GUEST_INTERVAL_DAYS))
@@ -3184,7 +3257,7 @@ def ensure_current_guest_has_record(member: discord.Member, today=None):
     if today is None:
         today = get_kst_now().date()
 
-    record = ensure_guest_record(str(member.id), today=today)
+    record = ensure_guest_record(str(member.id), today=today, guild_id=member.guild.id)
     if not record.get("guest_assigned_at"):
         set_guest_due_from_assignment(record, today)
     return record
@@ -3212,16 +3285,17 @@ def get_attendance_ranking_periods(now: datetime):
 
 def get_attendance_period_ranking(guild: discord.Guild, period_key: str):
     refresh_attendance_data()
+    guild_data = get_attendance_guild_data(guild.id)
     period_name, start_date, end_date = get_attendance_ranking_periods(get_kst_now())[period_key]
     eligible_members = {
         str(member.id): member
         for member in guild.members
-        if any(role.id in ATTENDANCE_ELIGIBLE_ROLE_IDS for role in member.roles)
+        if any(role.id in get_attendance_eligible_role_ids(guild.id) for role in member.roles)
     }
     counts = {uid: 0 for uid in eligible_members}
     position_scores = {uid: 0 for uid in eligible_members}
 
-    for day_str, attendee_ids in attendance_data.get("today_order", {}).items():
+    for day_str, attendee_ids in guild_data.get("today_order", {}).items():
         day = parse_attendance_date(day_str)
         if day is None or not (start_date <= day <= end_date):
             continue
@@ -3234,10 +3308,11 @@ def get_attendance_period_ranking(guild: discord.Guild, period_key: str):
     return period_name, start_date, end_date, ranking_list
 
 
-def count_user_attendance_in_range(user_id: str, start_date, end_date) -> int:
+def count_user_attendance_in_range(user_id: str, start_date, end_date, guild_id: int | str | None = None) -> int:
     refresh_attendance_data()
+    guild_data = get_attendance_guild_data(guild_id)
     count = 0
-    for day_str, attendee_ids in attendance_data.get("today_order", {}).items():
+    for day_str, attendee_ids in guild_data.get("today_order", {}).items():
         day = parse_attendance_date(day_str)
         if day is not None and start_date <= day <= end_date and user_id in attendee_ids:
             count += 1
@@ -3292,7 +3367,7 @@ def get_activity_warning_target_rows(guild: discord.Guild):
             value_text = f"{value:g}시간"
             required_text = f"{float(minimum):g}시간"
         else:
-            count = count_user_attendance_in_range(str(member.id), start_date, end_date)
+            count = count_user_attendance_in_range(str(member.id), start_date, end_date, guild.id)
             value = count
             passed = count >= int(minimum)
             value_text = f"{count}회"
@@ -3319,17 +3394,20 @@ async def send_safe_dm(member: discord.Member, content: str) -> bool:
         return False
 
 
-async def run_guest_checks():
+async def run_guest_checks(guild_id: int = ATTENDANCE_GUILD_ID):
     refresh_attendance_data()
 
-    guild = bot.get_guild(ATTENDANCE_GUILD_ID)
+    guild = bot.get_guild(guild_id)
     if guild is None:
         return
 
-    alert_channel = bot.get_channel(GUEST_ALERT_CHANNEL_ID)
+    guild_data = get_attendance_guild_data(guild.id)
+    guild_meta = guild_data["meta"]
+    guest_role_id = get_guest_role_id(guild.id)
+    alert_channel = bot.get_channel(get_guest_alert_channel_id(guild.id))
     today = get_kst_now().date()
     today_str = format_attendance_date(today)
-    guest_members = [member for member in guild.members if any(role.id == GUEST_ROLE_ID for role in member.roles)]
+    guest_members = [member for member in guild.members if any(role.id == guest_role_id for role in member.roles)]
 
     for member in guest_members:
         record = ensure_current_guest_has_record(member, today=today)
@@ -3343,7 +3421,7 @@ async def run_guest_checks():
                 member,
                 f"안내드립니다. GUEST 갱신 기간이 하루 남았습니다.\n"
                 f"다음 갱신 마감일은 {record['next_due']} 입니다.\n"
-                f"갱신하러 가기: {GUEST_REFRESH_URL}",
+                f"갱신하러 가기: {get_guest_refresh_url(guild.id)}",
             )
             if sent:
                 record["last_pre_due_dm"] = record["next_due"]
@@ -3353,7 +3431,7 @@ async def run_guest_checks():
                 member,
                 f"안내드립니다. 오늘이 GUEST 갱신 마감일입니다.\n"
                 f"오늘 안에 갱신하기 버튼을 눌러 주세요. 마감일: {record['next_due']}\n"
-                f"갱신하러 가기: {GUEST_REFRESH_URL}",
+                f"갱신하러 가기: {get_guest_refresh_url(guild.id)}",
             )
             if sent:
                 record["last_due_dm"] = record["next_due"]
@@ -3384,7 +3462,7 @@ async def run_guest_checks():
                     f"{penalty_text}"
                 )
 
-    attendance_meta["last_guest_check_date"] = today_str
+    guild_meta["last_guest_check_date"] = today_str
     save_attendance_data()
 
 
@@ -9360,6 +9438,9 @@ class AttendanceButton(discord.ui.Button):
             return
 
         refresh_attendance_data()
+        guild_data = get_attendance_guild_data(interaction.guild.id)
+        guild_users = guild_data["users"]
+        guild_today_order = guild_data["today_order"]
         user_id = str(interaction.user.id)
         now = get_kst_now()
         today = self.get_attendance_date(interaction)
@@ -9370,12 +9451,12 @@ class AttendanceButton(discord.ui.Button):
             await interaction.response.send_message("지난 날짜의 출석 버튼은 사용할 수 없습니다.", ephemeral=True)
             return
 
-        attendance_data["today_order"].setdefault(today, [])
-        today_list = attendance_data["today_order"][today]
+        guild_today_order.setdefault(today, [])
+        today_list = guild_today_order[today]
 
         if user_id in today_list:
             rank = today_list.index(user_id) + 1
-            user = attendance_users.get(user_id, {})
+            user = guild_users.get(user_id, {})
             monthly_count = user.get("monthly", {}).get(month, 0)
             total_count = user.get("total", 0)
             streak_count = user.get("streak", 0)
@@ -9389,7 +9470,7 @@ class AttendanceButton(discord.ui.Button):
             )
             return
 
-        attendance_users.setdefault(
+        guild_users.setdefault(
             user_id,
             {
                 "last_attendance": "",
@@ -9399,7 +9480,7 @@ class AttendanceButton(discord.ui.Button):
             },
         )
 
-        user = attendance_users[user_id]
+        user = guild_users[user_id]
         yesterday = format_attendance_date((now - timedelta(days=1)).date())
         user["streak"] = user["streak"] + 1 if user["last_attendance"] == yesterday else 1
         user["last_attendance"] = today
@@ -9436,7 +9517,7 @@ class GuestRefreshView(discord.ui.View):
             await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
             return
 
-        if not any(role.id == GUEST_ROLE_ID for role in interaction.user.roles):
+        if not any(role.id == get_guest_role_id(interaction.guild.id) for role in interaction.user.roles):
             await interaction.response.send_message("❌ GUEST 역할이 있는 인원만 사용할 수 있습니다.", ephemeral=True)
             return
 
@@ -9444,7 +9525,7 @@ class GuestRefreshView(discord.ui.View):
         today = get_kst_now().date()
         today_str = format_attendance_date(today)
         user_id = str(interaction.user.id)
-        record = ensure_guest_record(user_id, today=today)
+        record = ensure_guest_record(user_id, today=today, guild_id=interaction.guild.id)
 
         if record["last_refresh"] == today_str:
             await interaction.response.send_message(
@@ -9467,19 +9548,19 @@ class GuestRefreshView(discord.ui.View):
         await interaction.response.send_message(
             f"✅ GUEST 기간 갱신이 완료되었습니다.\n"
             f"다음 갱신 마감일은 {record['next_due']} 입니다.\n"
-            f"갱신 채널: {GUEST_REFRESH_URL}",
+            f"갱신 채널: {get_guest_refresh_url(interaction.guild.id)}",
             ephemeral=True,
         )
 
 
 class MoveToAttendanceView(discord.ui.View):
-    def __init__(self):
+    def __init__(self, guild_id: int = ATTENDANCE_GUILD_ID):
         super().__init__(timeout=None)
         self.add_item(
             discord.ui.Button(
                 label="📍 출석하러 가기",
                 style=discord.ButtonStyle.link,
-                url=f"https://discord.com/channels/{ATTENDANCE_GUILD_ID}/{ATTENDANCE_CHANNEL_ID}",
+                url=get_attendance_panel_url(guild_id),
             )
         )
 
@@ -11798,6 +11879,71 @@ async def set_voice_activity_log_channel(interaction: discord.Interaction):
     )
 
 
+@settings_group.command(name="출석기능", description="출석/게스트 기능에 사용할 채널과 역할을 설정합니다.")
+@app_commands.rename(
+    attendance_channel="출석채널",
+    midnight_channel="출석알림채널",
+    attendance_role="출석대상역할",
+    guest_role="게스트역할",
+    guest_alert_channel="게스트알림채널",
+    guest_refresh_channel="게스트갱신채널",
+)
+@app_commands.describe(
+    attendance_channel="출석 패널이 생성될 채널",
+    midnight_channel="자정 출석 안내 메시지가 올라갈 채널",
+    attendance_role="출석랭킹 대상에 포함할 역할",
+    guest_role="게스트 갱신 대상 역할",
+    guest_alert_channel="게스트 미갱신 알림이 올라갈 관리자 채널",
+    guest_refresh_channel="게스트 갱신 패널이 있는 채널",
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def set_attendance_feature(
+    interaction: discord.Interaction,
+    attendance_channel: discord.TextChannel | None = None,
+    midnight_channel: discord.TextChannel | None = None,
+    attendance_role: discord.Role | None = None,
+    guest_role: discord.Role | None = None,
+    guest_alert_channel: discord.TextChannel | None = None,
+    guest_refresh_channel: discord.TextChannel | None = None,
+):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    changed = []
+    if attendance_channel is not None:
+        set_guild_setting(interaction.guild.id, "attendance_channel_id", str(attendance_channel.id))
+        changed.append(f"출석채널: {attendance_channel.mention}")
+    if midnight_channel is not None:
+        set_guild_setting(interaction.guild.id, "attendance_midnight_channel_id", str(midnight_channel.id))
+        changed.append(f"출석알림채널: {midnight_channel.mention}")
+    if attendance_role is not None:
+        set_guild_setting(interaction.guild.id, "attendance_eligible_role_ids", str(attendance_role.id))
+        changed.append(f"출석대상역할: {attendance_role.mention}")
+    if guest_role is not None:
+        set_guild_setting(interaction.guild.id, "guest_role_id", str(guest_role.id))
+        changed.append(f"게스트역할: {guest_role.mention}")
+    if guest_alert_channel is not None:
+        set_guild_setting(interaction.guild.id, "guest_alert_channel_id", str(guest_alert_channel.id))
+        changed.append(f"게스트알림채널: {guest_alert_channel.mention}")
+    if guest_refresh_channel is not None:
+        set_guild_setting(interaction.guild.id, "guest_refresh_channel_id", str(guest_refresh_channel.id))
+        changed.append(f"게스트갱신채널: {guest_refresh_channel.mention}")
+
+    if not changed:
+        await interaction.response.send_message(
+            "변경할 항목을 하나 이상 선택해주세요.\n"
+            "예: `/세팅 출석기능 출석채널:#출석 게스트역할:@GUEST`",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.send_message(
+        "출석 기능 설정을 저장했습니다.\n" + "\n".join(changed),
+        ephemeral=True,
+    )
+
+
 @settings_group.command(name="성과급금액", description="음성 성과급의 1시간당 지급 금액을 설정합니다.")
 @app_commands.rename(amount="금액")
 @app_commands.describe(amount="1시간당 지급할 서버 재화")
@@ -12071,6 +12217,10 @@ async def show_settings(interaction: discord.Interaction):
         ("구인 채널", "recruit_channel_id"),
         ("대출 알림", "loan_reminder_channel_id"),
         ("음성 로그", "voice_activity_log_channel_id"),
+        ("출석 채널", "attendance_channel_id"),
+        ("출석 알림", "attendance_midnight_channel_id"),
+        ("게스트 알림", "guest_alert_channel_id"),
+        ("게스트 갱신", "guest_refresh_channel_id"),
         ("가이드 안내", "welcome_guide_channel_id"),
         ("환영메시지 채널", "welcome_message_channel_id"),
     ]
@@ -12081,6 +12231,12 @@ async def show_settings(interaction: discord.Interaction):
     embed = discord.Embed(title="채널 설정", color=0x5865F2)
     for label, key in keys:
         embed.add_field(name=label, value=fmt(get_guild_setting(guild_id, key)), inline=False)
+
+    guest_role_id = get_guild_setting_role_id(guild_id, "guest_role_id")
+    attendance_role_ids = get_attendance_eligible_role_ids(guild_id)
+    attendance_role_text = ", ".join(f"<@&{role_id}>" for role_id in attendance_role_ids)
+    embed.add_field(name="출석 대상 역할", value=attendance_role_text or "미설정", inline=False)
+    embed.add_field(name="게스트 역할", value=f"<@&{guest_role_id}>" if guest_role_id else "미설정", inline=False)
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -12774,19 +12930,25 @@ async def attendance_ranking(interaction: discord.Interaction):
 @bot.tree.command(name="출석점검", description="유저 출석 확인")
 @app_commands.describe(member="출석 기록을 확인할 유저")
 async def check_attendance(interaction: discord.Interaction, member: discord.Member):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
     refresh_attendance_data()
+    guild_data = get_attendance_guild_data(interaction.guild.id)
+    guild_users = guild_data["users"]
 
     user_id = str(member.id)
-    if user_id not in attendance_users:
+    if user_id not in guild_users:
         await interaction.response.send_message(f"❌ {member.display_name}님의 출석 기록이 없습니다.", ephemeral=True)
         return
 
-    user = attendance_users[user_id]
+    user = guild_users[user_id]
     now = get_kst_now()
     month = now.strftime("%Y-%m")
     periods = get_attendance_ranking_periods(now)
-    this_week_count = count_user_attendance_in_range(user_id, periods["this_week"][1], periods["this_week"][2])
-    last_week_count = count_user_attendance_in_range(user_id, periods["last_week"][1], periods["last_week"][2])
+    this_week_count = count_user_attendance_in_range(user_id, periods["this_week"][1], periods["this_week"][2], interaction.guild.id)
+    last_week_count = count_user_attendance_in_range(user_id, periods["last_week"][1], periods["last_week"][2], interaction.guild.id)
     this_month_count = user.get("monthly", {}).get(month, 0)
 
     last_6_months = []
@@ -12819,8 +12981,9 @@ async def today_attendance(interaction: discord.Interaction):
         return
 
     refresh_attendance_data()
+    guild_data = get_attendance_guild_data(interaction.guild.id)
     today = format_attendance_date(get_kst_now().date())
-    today_users = attendance_data.get("today_order", {}).get(today, [])
+    today_users = guild_data.get("today_order", {}).get(today, [])
     if not today_users:
         await interaction.response.send_message("❌ 오늘 출석한 유저가 없습니다.", ephemeral=True)
         return
@@ -12832,18 +12995,23 @@ async def today_attendance(interaction: discord.Interaction):
 @bot.tree.command(name="출석생성", description="오늘 출석 버튼 생성")
 @app_commands.default_permissions(manage_guild=True)
 async def create_attendance(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
     refresh_attendance_data()
+    guild_data = get_attendance_guild_data(interaction.guild.id)
     today = format_attendance_date(get_kst_now().date())
-    attendance_data["today_order"].setdefault(today, [])
+    guild_data["today_order"].setdefault(today, [])
     save_attendance_data()
 
     embed = discord.Embed(
         title=f"📅 {today} 출석하기",
-        description=build_daily_attendance_description(interaction.guild, attendance_data["today_order"][today]),
+        description=build_daily_attendance_description(interaction.guild, guild_data["today_order"][today]),
         color=0x00FFCC,
     )
 
-    channel = bot.get_channel(ATTENDANCE_CHANNEL_ID)
+    channel = bot.get_channel(get_attendance_channel_id(interaction.guild.id))
     if not isinstance(channel, discord.TextChannel):
         await interaction.response.send_message("출석 채널을 찾지 못했습니다.", ephemeral=True)
         return
@@ -12880,7 +13048,8 @@ async def guest_check(interaction: discord.Interaction):
         return
 
     refresh_attendance_data()
-    guest_members = [member for member in interaction.guild.members if any(role.id == GUEST_ROLE_ID for role in member.roles)]
+    guest_role_id = get_guest_role_id(interaction.guild.id)
+    guest_members = [member for member in interaction.guild.members if any(role.id == guest_role_id for role in member.roles)]
     rows = []
     for member in guest_members:
         record = ensure_current_guest_has_record(member)
@@ -12908,13 +13077,15 @@ async def initialize_legacy_guests(interaction: discord.Interaction):
         return
 
     refresh_attendance_data()
-    guest_members = [member for member in interaction.guild.members if any(role.id == GUEST_ROLE_ID for role in member.roles)]
+    guild_data = get_attendance_guild_data(interaction.guild.id)
+    guest_role_id = get_guest_role_id(interaction.guild.id)
+    guest_members = [member for member in interaction.guild.members if any(role.id == guest_role_id for role in member.roles)]
     updated_count = 0
     for member in guest_members:
         initialize_guest_refresh_from_today(member)
         updated_count += 1
 
-    attendance_meta["legacy_guest_initialized_at"] = format_attendance_date(get_kst_now().date())
+    guild_data["meta"]["legacy_guest_initialized_at"] = format_attendance_date(get_kst_now().date())
     save_attendance_data()
     today = get_kst_now().date()
     await interaction.response.send_message(
@@ -15466,12 +15637,13 @@ async def on_member_update(before: discord.Member, after: discord.Member):
     before_is_spectator = is_spectator_member(before, guild_id)
     after_is_spectator = is_spectator_member(after, guild_id)
 
-    before_has_guest = GUEST_ROLE_ID in before_role_ids
-    after_has_guest = GUEST_ROLE_ID in after_role_ids
+    guest_role_id = get_guest_role_id(guild_id)
+    before_has_guest = guest_role_id in before_role_ids
+    after_has_guest = guest_role_id in after_role_ids
     if not before_has_guest and after_has_guest:
         refresh_attendance_data()
         today = get_kst_now().date()
-        record = ensure_guest_record(str(after.id), today=today)
+        record = ensure_guest_record(str(after.id), today=today, guild_id=guild_id)
         if not record.get("last_refresh"):
             set_guest_due_from_assignment(record, today)
             record["last_pre_due_dm"] = ""
@@ -15480,7 +15652,7 @@ async def on_member_update(before: discord.Member, after: discord.Member):
 
     if before_has_guest and not after_has_guest:
         refresh_attendance_data()
-        record = ensure_guest_record(str(after.id))
+        record = ensure_guest_record(str(after.id), guild_id=guild_id)
         record["legacy_initialized"] = False
         save_attendance_data()
 
@@ -16035,42 +16207,55 @@ async def attendance_daily_loop():
     now = get_kst_now()
     today = format_attendance_date(now.date())
 
-    if now.hour == 0 and now.minute == 0 and attendance_meta.get("last_auto_attendance_date") != today:
-        attendance_data["today_order"].setdefault(today, [])
-        attendance_meta["last_auto_attendance_date"] = today
-        save_attendance_data()
+    for guild in bot.guilds:
+        if guild.id != ATTENDANCE_GUILD_ID and get_guild_setting(guild.id, "attendance_channel_id") is None:
+            continue
 
-        attendance_channel = bot.get_channel(ATTENDANCE_CHANNEL_ID)
-        notice_channel = bot.get_channel(ATTENDANCE_MIDNIGHT_CHANNEL_ID)
+        guild_data = get_attendance_guild_data(guild.id)
+        guild_today_order = guild_data["today_order"]
+        guild_meta = guild_data["meta"]
 
-        attendance_embed = discord.Embed(
-            title=f"📅 {today} 출석하기",
-            description=build_daily_attendance_description(None, attendance_data["today_order"][today]),
-            color=0x00FFCC,
-        )
-        if isinstance(attendance_channel, discord.TextChannel):
-            await attendance_channel.send(
-                content="@here",
-                embed=attendance_embed,
-                view=DailyAttendanceView(),
-                allowed_mentions=discord.AllowedMentions(everyone=True),
+        if now.hour == 0 and now.minute == 0 and guild_meta.get("last_auto_attendance_date") != today:
+            guild_today_order.setdefault(today, [])
+            guild_meta["last_auto_attendance_date"] = today
+            save_attendance_data()
+
+            attendance_channel = bot.get_channel(get_attendance_channel_id(guild.id))
+            notice_channel = bot.get_channel(get_attendance_midnight_channel_id(guild.id))
+
+            attendance_embed = discord.Embed(
+                title=f"📅 {today} 출석하기",
+                description=build_daily_attendance_description(guild, guild_today_order[today]),
+                color=0x00FFCC,
             )
+            if isinstance(attendance_channel, discord.TextChannel):
+                await attendance_channel.send(
+                    content="@here",
+                    embed=attendance_embed,
+                    view=DailyAttendanceView(),
+                    allowed_mentions=discord.AllowedMentions(everyone=True),
+                )
 
-        notice_embed = discord.Embed(
-            title="🌙 출석 초기화 완료!",
-            description="🔥 오늘의 1등은 누구??\n\n지금 바로 출석하세요!!",
-            color=0x5865F2,
-        )
-        if isinstance(notice_channel, discord.TextChannel):
-            await notice_channel.send(
-                content="@here",
-                embed=notice_embed,
-                view=MoveToAttendanceView(),
-                allowed_mentions=discord.AllowedMentions(everyone=True),
+            notice_embed = discord.Embed(
+                title="🌙 출석 초기화 완료!",
+                description="🔥 오늘의 1등은 누구??\n\n지금 바로 출석하세요!!",
+                color=0x5865F2,
             )
+            if isinstance(notice_channel, discord.TextChannel):
+                await notice_channel.send(
+                    content="@here",
+                    embed=notice_embed,
+                    view=MoveToAttendanceView(guild.id),
+                    allowed_mentions=discord.AllowedMentions(everyone=True),
+                )
 
-    if now.hour >= 9 and attendance_meta.get("last_guest_check_date") != today:
-        await run_guest_checks()
+        has_guest_settings = (
+            guild.id == ATTENDANCE_GUILD_ID
+            or get_guild_setting(guild.id, "guest_role_id") is not None
+            or get_guild_setting(guild.id, "guest_alert_channel_id") is not None
+        )
+        if has_guest_settings and now.hour >= 9 and guild_meta.get("last_guest_check_date") != today:
+            await run_guest_checks(guild.id)
 
 
 @tasks.loop(minutes=1)
