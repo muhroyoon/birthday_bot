@@ -1063,30 +1063,49 @@ def get_guild_setting_role_id(guild_id: int, key: str):
         return None
 
 
-def get_attendance_channel_id(guild_id: int) -> int:
-    return get_guild_setting_channel_id(guild_id, "attendance_channel_id") or ATTENDANCE_CHANNEL_ID
+def use_attendance_default_for_guild(guild_id: int) -> bool:
+    return int(guild_id) == ATTENDANCE_GUILD_ID
 
 
-def get_attendance_midnight_channel_id(guild_id: int) -> int:
-    return get_guild_setting_channel_id(guild_id, "attendance_midnight_channel_id") or ATTENDANCE_MIDNIGHT_CHANNEL_ID
+def get_attendance_channel_id(guild_id: int) -> int | None:
+    value = get_guild_setting_channel_id(guild_id, "attendance_channel_id")
+    if value is not None:
+        return value
+    return ATTENDANCE_CHANNEL_ID if use_attendance_default_for_guild(guild_id) else None
 
 
-def get_guest_role_id(guild_id: int) -> int:
-    return get_guild_setting_role_id(guild_id, "guest_role_id") or GUEST_ROLE_ID
+def get_attendance_midnight_channel_id(guild_id: int) -> int | None:
+    value = get_guild_setting_channel_id(guild_id, "attendance_midnight_channel_id")
+    if value is not None:
+        return value
+    return ATTENDANCE_MIDNIGHT_CHANNEL_ID if use_attendance_default_for_guild(guild_id) else None
 
 
-def get_guest_alert_channel_id(guild_id: int) -> int:
-    return get_guild_setting_channel_id(guild_id, "guest_alert_channel_id") or GUEST_ALERT_CHANNEL_ID
+def get_guest_role_id(guild_id: int) -> int | None:
+    value = get_guild_setting_role_id(guild_id, "guest_role_id")
+    if value is not None:
+        return value
+    return GUEST_ROLE_ID if use_attendance_default_for_guild(guild_id) else None
 
 
-def get_guest_refresh_channel_id(guild_id: int) -> int:
-    return get_guild_setting_channel_id(guild_id, "guest_refresh_channel_id") or GUEST_REFRESH_CHANNEL_ID
+def get_guest_alert_channel_id(guild_id: int) -> int | None:
+    value = get_guild_setting_channel_id(guild_id, "guest_alert_channel_id")
+    if value is not None:
+        return value
+    return GUEST_ALERT_CHANNEL_ID if use_attendance_default_for_guild(guild_id) else None
+
+
+def get_guest_refresh_channel_id(guild_id: int) -> int | None:
+    value = get_guild_setting_channel_id(guild_id, "guest_refresh_channel_id")
+    if value is not None:
+        return value
+    return GUEST_REFRESH_CHANNEL_ID if use_attendance_default_for_guild(guild_id) else None
 
 
 def get_attendance_eligible_role_ids(guild_id: int) -> list[int]:
     value = get_guild_setting(guild_id, "attendance_eligible_role_ids")
     if not value:
-        return ATTENDANCE_ELIGIBLE_ROLE_IDS
+        return ATTENDANCE_ELIGIBLE_ROLE_IDS if use_attendance_default_for_guild(guild_id) else []
 
     role_ids = []
     for raw_role_id in value.split(","):
@@ -1094,15 +1113,21 @@ def get_attendance_eligible_role_ids(guild_id: int) -> list[int]:
             role_ids.append(int(raw_role_id.strip()))
         except ValueError:
             continue
-    return role_ids or ATTENDANCE_ELIGIBLE_ROLE_IDS
+    return role_ids or (ATTENDANCE_ELIGIBLE_ROLE_IDS if use_attendance_default_for_guild(guild_id) else [])
 
 
-def get_guest_refresh_url(guild_id: int) -> str:
-    return f"https://discord.com/channels/{guild_id}/{get_guest_refresh_channel_id(guild_id)}"
+def get_guest_refresh_url(guild_id: int) -> str | None:
+    channel_id = get_guest_refresh_channel_id(guild_id)
+    if channel_id is None:
+        return None
+    return f"https://discord.com/channels/{guild_id}/{channel_id}"
 
 
-def get_attendance_panel_url(guild_id: int) -> str:
-    return f"https://discord.com/channels/{guild_id}/{get_attendance_channel_id(guild_id)}"
+def get_attendance_panel_url(guild_id: int) -> str | None:
+    channel_id = get_attendance_channel_id(guild_id)
+    if channel_id is None:
+        return None
+    return f"https://discord.com/channels/{guild_id}/{channel_id}"
 
 
 def set_template(guild_id: int, template_name: str, content: str):
@@ -3404,7 +3429,12 @@ async def run_guest_checks(guild_id: int = ATTENDANCE_GUILD_ID):
     guild_data = get_attendance_guild_data(guild.id)
     guild_meta = guild_data["meta"]
     guest_role_id = get_guest_role_id(guild.id)
-    alert_channel = bot.get_channel(get_guest_alert_channel_id(guild.id))
+    if guest_role_id is None:
+        return
+
+    guest_alert_channel_id = get_guest_alert_channel_id(guild.id)
+    alert_channel = bot.get_channel(guest_alert_channel_id) if guest_alert_channel_id is not None else None
+    guest_refresh_url = get_guest_refresh_url(guild.id) or "게스트 갱신 채널 미설정"
     today = get_kst_now().date()
     today_str = format_attendance_date(today)
     guest_members = [member for member in guild.members if any(role.id == guest_role_id for role in member.roles)]
@@ -3421,7 +3451,7 @@ async def run_guest_checks(guild_id: int = ATTENDANCE_GUILD_ID):
                 member,
                 f"안내드립니다. GUEST 갱신 기간이 하루 남았습니다.\n"
                 f"다음 갱신 마감일은 {record['next_due']} 입니다.\n"
-                f"갱신하러 가기: {get_guest_refresh_url(guild.id)}",
+                f"갱신하러 가기: {guest_refresh_url}",
             )
             if sent:
                 record["last_pre_due_dm"] = record["next_due"]
@@ -3431,7 +3461,7 @@ async def run_guest_checks(guild_id: int = ATTENDANCE_GUILD_ID):
                 member,
                 f"안내드립니다. 오늘이 GUEST 갱신 마감일입니다.\n"
                 f"오늘 안에 갱신하기 버튼을 눌러 주세요. 마감일: {record['next_due']}\n"
-                f"갱신하러 가기: {get_guest_refresh_url(guild.id)}",
+                f"갱신하러 가기: {guest_refresh_url}",
             )
             if sent:
                 record["last_due_dm"] = record["next_due"]
@@ -9517,7 +9547,12 @@ class GuestRefreshView(discord.ui.View):
             await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
             return
 
-        if not any(role.id == get_guest_role_id(interaction.guild.id) for role in interaction.user.roles):
+        guest_role_id = get_guest_role_id(interaction.guild.id)
+        if guest_role_id is None:
+            await interaction.response.send_message("이 서버는 게스트 역할이 설정되지 않았습니다. `/세팅 출석기능`으로 먼저 설정해주세요.", ephemeral=True)
+            return
+
+        if not any(role.id == guest_role_id for role in interaction.user.roles):
             await interaction.response.send_message("❌ GUEST 역할이 있는 인원만 사용할 수 있습니다.", ephemeral=True)
             return
 
@@ -9548,7 +9583,7 @@ class GuestRefreshView(discord.ui.View):
         await interaction.response.send_message(
             f"✅ GUEST 기간 갱신이 완료되었습니다.\n"
             f"다음 갱신 마감일은 {record['next_due']} 입니다.\n"
-            f"갱신 채널: {get_guest_refresh_url(interaction.guild.id)}",
+            f"갱신 채널: {get_guest_refresh_url(interaction.guild.id) or '미설정'}",
             ephemeral=True,
         )
 
@@ -9556,11 +9591,14 @@ class GuestRefreshView(discord.ui.View):
 class MoveToAttendanceView(discord.ui.View):
     def __init__(self, guild_id: int = ATTENDANCE_GUILD_ID):
         super().__init__(timeout=None)
+        url = get_attendance_panel_url(guild_id)
+        if url is None:
+            return
         self.add_item(
             discord.ui.Button(
                 label="📍 출석하러 가기",
                 style=discord.ButtonStyle.link,
-                url=get_attendance_panel_url(guild_id),
+                url=url,
             )
         )
 
@@ -12999,6 +13037,15 @@ async def create_attendance(interaction: discord.Interaction):
         await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
         return
 
+    attendance_channel_id = get_attendance_channel_id(interaction.guild.id)
+    if attendance_channel_id is None:
+        await interaction.response.send_message(
+            "이 서버는 출석 채널이 설정되지 않았습니다.\n"
+            "`/세팅 출석기능 출석채널:#채널`로 먼저 설정해주세요.",
+            ephemeral=True,
+        )
+        return
+
     refresh_attendance_data()
     guild_data = get_attendance_guild_data(interaction.guild.id)
     today = format_attendance_date(get_kst_now().date())
@@ -13011,7 +13058,7 @@ async def create_attendance(interaction: discord.Interaction):
         color=0x00FFCC,
     )
 
-    channel = bot.get_channel(get_attendance_channel_id(interaction.guild.id))
+    channel = bot.get_channel(attendance_channel_id)
     if not isinstance(channel, discord.TextChannel):
         await interaction.response.send_message("출석 채널을 찾지 못했습니다.", ephemeral=True)
         return
@@ -13049,6 +13096,14 @@ async def guest_check(interaction: discord.Interaction):
 
     refresh_attendance_data()
     guest_role_id = get_guest_role_id(interaction.guild.id)
+    if guest_role_id is None:
+        await interaction.response.send_message(
+            "이 서버는 게스트 역할이 설정되지 않았습니다.\n"
+            "`/세팅 출석기능 게스트역할:@역할`로 먼저 설정해주세요.",
+            ephemeral=True,
+        )
+        return
+
     guest_members = [member for member in interaction.guild.members if any(role.id == guest_role_id for role in member.roles)]
     rows = []
     for member in guest_members:
@@ -13079,6 +13134,14 @@ async def initialize_legacy_guests(interaction: discord.Interaction):
     refresh_attendance_data()
     guild_data = get_attendance_guild_data(interaction.guild.id)
     guest_role_id = get_guest_role_id(interaction.guild.id)
+    if guest_role_id is None:
+        await interaction.response.send_message(
+            "이 서버는 게스트 역할이 설정되지 않았습니다.\n"
+            "`/세팅 출석기능 게스트역할:@역할`로 먼저 설정해주세요.",
+            ephemeral=True,
+        )
+        return
+
     guest_members = [member for member in interaction.guild.members if any(role.id == guest_role_id for role in member.roles)]
     updated_count = 0
     for member in guest_members:
@@ -15638,23 +15701,24 @@ async def on_member_update(before: discord.Member, after: discord.Member):
     after_is_spectator = is_spectator_member(after, guild_id)
 
     guest_role_id = get_guest_role_id(guild_id)
-    before_has_guest = guest_role_id in before_role_ids
-    after_has_guest = guest_role_id in after_role_ids
-    if not before_has_guest and after_has_guest:
-        refresh_attendance_data()
-        today = get_kst_now().date()
-        record = ensure_guest_record(str(after.id), today=today, guild_id=guild_id)
-        if not record.get("last_refresh"):
-            set_guest_due_from_assignment(record, today)
-            record["last_pre_due_dm"] = ""
-            record["last_due_dm"] = ""
-            save_attendance_data()
+    if guest_role_id is not None:
+        before_has_guest = guest_role_id in before_role_ids
+        after_has_guest = guest_role_id in after_role_ids
+        if not before_has_guest and after_has_guest:
+            refresh_attendance_data()
+            today = get_kst_now().date()
+            record = ensure_guest_record(str(after.id), today=today, guild_id=guild_id)
+            if not record.get("last_refresh"):
+                set_guest_due_from_assignment(record, today)
+                record["last_pre_due_dm"] = ""
+                record["last_due_dm"] = ""
+                save_attendance_data()
 
-    if before_has_guest and not after_has_guest:
-        refresh_attendance_data()
-        record = ensure_guest_record(str(after.id), guild_id=guild_id)
-        record["legacy_initialized"] = False
-        save_attendance_data()
+        if before_has_guest and not after_has_guest:
+            refresh_attendance_data()
+            record = ensure_guest_record(str(after.id), guild_id=guild_id)
+            record["legacy_initialized"] = False
+            save_attendance_data()
 
     new_member_role_id = get_guild_setting_role_id(guild_id, "new_member_role_id")
     if new_member_role_id is not None:
@@ -16220,8 +16284,10 @@ async def attendance_daily_loop():
             guild_meta["last_auto_attendance_date"] = today
             save_attendance_data()
 
-            attendance_channel = bot.get_channel(get_attendance_channel_id(guild.id))
-            notice_channel = bot.get_channel(get_attendance_midnight_channel_id(guild.id))
+            attendance_channel_id = get_attendance_channel_id(guild.id)
+            notice_channel_id = get_attendance_midnight_channel_id(guild.id)
+            attendance_channel = bot.get_channel(attendance_channel_id) if attendance_channel_id is not None else None
+            notice_channel = bot.get_channel(notice_channel_id) if notice_channel_id is not None else None
 
             attendance_embed = discord.Embed(
                 title=f"📅 {today} 출석하기",
