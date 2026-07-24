@@ -12,7 +12,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 from urllib.parse import quote
-from urllib.request import Request, urlopen
 
 import discord
 import aiohttp
@@ -6676,25 +6675,7 @@ def format_seotda_hand(cards: list[tuple[int, bool]]) -> str:
 
 
 SEOTDA_CARD_ASSET_DIR = Path(__file__).resolve().parent / "assets" / "sutda_cards"
-SEOTDA_CARD_DOWNLOAD_DIR = SEOTDA_CARD_ASSET_DIR / "downloaded"
 SEOTDA_TABLE_ATTACHMENT = "seotda_table.png"
-SEOTDA_CARD_DOWNLOAD_FAILED_KEYS: set[str] = set()
-SEOTDA_CARD_REMOTE_FILES = {
-    "back": "Hanafuda blank card.svg",
-    "m01_kwang": "Hwatu January Hikari.svg",
-    "m01_normal": "Hwatu January Kasu 1.svg",
-    "m02_normal": "Hwatu February Kasu 1.svg",
-    "m03_kwang": "Hwatu March Hikari.svg",
-    "m03_normal": "Hwatu March Kasu 1.svg",
-    "m04_normal": "Hwatu April Kasu 1.svg",
-    "m05_normal": "Hwatu May Kasu 1.svg",
-    "m06_normal": "Hwatu June Kasu 1.svg",
-    "m07_normal": "Hwatu July Kasu 1.svg",
-    "m08_kwang": "Hwatu August Hikari.svg",
-    "m08_normal": "Hwatu August Kasu 1.svg",
-    "m09_normal": "Hwatu September Kasu 1.svg",
-    "m10_normal": "Hwatu October Kasu 1.svg",
-}
 
 
 def get_seotda_card_key(card: tuple[int, bool] | None, hidden: bool = False) -> str:
@@ -6708,51 +6689,6 @@ def get_seotda_card_key(card: tuple[int, bool] | None, hidden: bool = False) -> 
 
 def get_seotda_card_asset_path(card: tuple[int, bool] | None, hidden: bool = False) -> Path:
     return SEOTDA_CARD_ASSET_DIR / f"{get_seotda_card_key(card, hidden)}.png"
-
-
-def get_seotda_downloaded_card_path(card_key: str) -> Path:
-    return SEOTDA_CARD_DOWNLOAD_DIR / f"{card_key}.png"
-
-
-def download_seotda_card_image(card_key: str) -> Path | None:
-    if card_key in SEOTDA_CARD_DOWNLOAD_FAILED_KEYS:
-        return None
-
-    remote_file = SEOTDA_CARD_REMOTE_FILES.get(card_key)
-    if remote_file is None:
-        return None
-
-    SEOTDA_CARD_DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    target_path = get_seotda_downloaded_card_path(card_key)
-    if target_path.exists():
-        return target_path
-
-    url = f"https://commons.wikimedia.org/wiki/Special:Redirect/file/{quote(remote_file)}?width=500"
-    request = Request(
-        url,
-        headers={
-            "User-Agent": "MariBot/1.0 Discord bot asset cache (Wikimedia Commons CC BY-SA assets)",
-        },
-    )
-    temp_path = target_path.with_suffix(".tmp")
-    try:
-        with urlopen(request, timeout=3) as response:
-            temp_path.write_bytes(response.read())
-
-        # Validate that Wikimedia returned an actual image instead of an HTML error page.
-        with Image.open(temp_path) as image:
-            image.verify()
-        temp_path.replace(target_path)
-        return target_path
-    except Exception as e:
-        try:
-            if temp_path.exists():
-                temp_path.unlink()
-        except OSError:
-            pass
-        SEOTDA_CARD_DOWNLOAD_FAILED_KEYS.add(card_key)
-        print(f"섯다 카드 이미지 다운로드 실패 ({card_key}): {type(e).__name__}: {e}")
-        return None
 
 
 def get_seotda_image_font(size: int, bold: bool = False):
@@ -6770,12 +6706,43 @@ def get_seotda_image_font(size: int, bold: bool = False):
     return ImageFont.load_default()
 
 
+def create_fallback_seotda_card_image(card: tuple[int, bool] | None, hidden: bool = False) -> Image.Image:
+    width, height = 220, 340
+    image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image, "RGBA")
+    draw.rounded_rectangle((8, 8, width - 8, height - 8), radius=20, fill=(248, 242, 222), outline=(28, 24, 22), width=5)
+
+    if hidden or card is None:
+        draw.rounded_rectangle((24, 24, width - 24, height - 24), radius=14, fill=(145, 26, 28), outline=(238, 204, 110), width=4)
+        for y in range(48, height - 42, 30):
+            draw.line((42, y, width - 42, y + 18), fill=(215, 68, 58), width=5)
+            draw.line((42, y + 18, width - 42, y), fill=(82, 16, 18), width=3)
+        draw.text((width // 2, height // 2 - 18), "MARIBOT", fill=(255, 224, 130), font=get_seotda_image_font(22, True), anchor="mm")
+        draw.text((width // 2, height // 2 + 18), "SUTDA", fill=(255, 248, 210), font=get_seotda_image_font(32, True), anchor="mm")
+        return image
+
+    month, is_kwang = card
+    draw.rounded_rectangle((24, 24, width - 24, height - 24), radius=14, fill=(210, 20, 30), outline=(15, 15, 15), width=3)
+    draw.ellipse((width - 96, 42, width + 46, 184), fill=(245, 245, 238))
+    draw.polygon([(45, 265), (95, 115), (145, 265)], fill=(10, 10, 10))
+    draw.arc((62, 116, 206, 270), 198, 340, fill=(245, 224, 50), width=12)
+    label = f"{month}{'광' if is_kwang else '월'}"
+    draw.rounded_rectangle((42, height - 72, width - 42, height - 32), radius=8, fill=(255, 248, 225))
+    draw.text((width // 2, height - 53), label, fill=(24, 24, 24), font=get_seotda_image_font(30, True), anchor="mm")
+    if is_kwang:
+        draw.ellipse((32, height - 92, 82, height - 42), fill=(245, 245, 238))
+        draw.text((57, height - 67), "光", fill=(185, 24, 32), font=get_seotda_image_font(28, True), anchor="mm")
+    return image
+
+
 def load_seotda_card_image(card: tuple[int, bool] | None, hidden: bool = False) -> Image.Image:
-    card_key = get_seotda_card_key(card, hidden)
-    path = get_seotda_downloaded_card_path(card_key)
-    if not path.exists():
-        path = download_seotda_card_image(card_key) or get_seotda_card_asset_path(card, hidden)
-    return Image.open(path).convert("RGBA")
+    path = get_seotda_card_asset_path(card, hidden)
+    if path.exists():
+        return Image.open(path).convert("RGBA")
+
+    print(f"섯다 카드 이미지 파일 없음: {path}")
+    return create_fallback_seotda_card_image(card, hidden)
+
 
 
 def create_seotda_table_image(
@@ -6783,45 +6750,32 @@ def create_seotda_table_image(
     opponent_cards: list[tuple[int, bool]],
     reveal_count: int,
 ) -> bytes:
-    width, height = 920, 480
-    canvas = Image.new("RGBA", (width, height), (15, 17, 24, 255))
-    draw = ImageDraw.Draw(canvas, "RGBA")
+    card_size = (132, 204)
+    gap = 12
+    pair_gap = 34
+    padding = 18
+    width = padding * 2 + card_size[0] * 4 + gap * 2 + pair_gap
+    height = padding * 2 + card_size[1]
+    canvas = Image.new("RGBA", (width, height), (43, 45, 54, 255))
 
-    for y in range(height):
-        shade = 18 + int(y / height * 28)
-        draw.line((0, y, width, y), fill=(shade, shade + 2, shade + 8, 255))
+    cards_to_draw = [
+        (challenger_cards[0], False),
+        (challenger_cards[1], reveal_count < 2),
+        (opponent_cards[0], False),
+        (opponent_cards[1], reveal_count < 2),
+    ]
+    x_positions = [
+        padding,
+        padding + card_size[0] + gap,
+        padding + card_size[0] * 2 + gap + pair_gap,
+        padding + card_size[0] * 3 + gap * 2 + pair_gap,
+    ]
 
-    draw.rounded_rectangle((26, 24, width - 26, height - 24), radius=28, fill=(8, 10, 15, 205), outline=(241, 196, 15, 180), width=3)
-    draw.rectangle((48, 76, width - 48, 84), fill=(241, 196, 15, 255))
-    draw.text((58, 36), "MARIBOT SUTDA", fill=(245, 245, 245), font=get_seotda_image_font(34, True))
-    draw.text((width - 58, 38), "1ST BETTING ROUND" if reveal_count < 2 else "FINAL REVEAL", fill=(241, 196, 15), font=get_seotda_image_font(22, True), anchor="ra")
-
-    card_size = (154, 238)
-    slots = {
-        "challenger": [(138, 156), (312, 156)],
-        "opponent": [(628, 156), (454, 156)],
-    }
-
-    draw.text((225, 116), "PLAYER", fill=(241, 196, 15), font=get_seotda_image_font(28, True), anchor="mm")
-    draw.text((695, 116), "OPPONENT", fill=(241, 196, 15), font=get_seotda_image_font(28, True), anchor="mm")
-    draw.text((width // 2, 250), "VS", fill=(255, 255, 255, 235), font=get_seotda_image_font(42, True), anchor="mm")
-
-    for index, card in enumerate(challenger_cards):
-        hidden = index >= reveal_count
-        card_image = load_seotda_card_image(card, hidden=hidden).resize(card_size, Image.Resampling.LANCZOS)
-        canvas.alpha_composite(card_image, slots["challenger"][index])
-
-    for index, card in enumerate(opponent_cards):
-        hidden = index >= reveal_count
-        card_image = load_seotda_card_image(card, hidden=hidden).resize(card_size, Image.Resampling.LANCZOS)
-        canvas.alpha_composite(card_image, slots["opponent"][index])
-
-    if reveal_count < 2:
-        draw.rounded_rectangle((246, 410, 674, 444), radius=12, fill=(241, 196, 15, 230))
-        draw.text((width // 2, 415), "SECOND CARD LOCKED UNTIL BOTH PLAYERS BET", fill=(12, 14, 18), font=get_seotda_image_font(18, True), anchor="ma")
-    else:
-        draw.rounded_rectangle((312, 410, 608, 444), radius=12, fill=(241, 196, 15, 230))
-        draw.text((width // 2, 415), "SHOWDOWN COMPLETE", fill=(12, 14, 18), font=get_seotda_image_font(20, True), anchor="ma")
+    for x, (card, hidden) in zip(x_positions, cards_to_draw):
+        card_image = load_seotda_card_image(card, hidden=hidden)
+        card_image.thumbnail(card_size, Image.Resampling.LANCZOS)
+        y = padding + (card_size[1] - card_image.height) // 2
+        canvas.alpha_composite(card_image, (x + (card_size[0] - card_image.width) // 2, y))
 
     output = io.BytesIO()
     canvas.convert("RGB").save(output, format="PNG", optimize=True)
