@@ -7,12 +7,16 @@ import shutil
 import base64
 import re
 import json
+import io
 from datetime import datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 from urllib.parse import quote
+from urllib.request import Request, urlopen
 
 import discord
 import aiohttp
+from PIL import Image, ImageDraw, ImageFont
 from discord import app_commands
 from discord.ext import commands, tasks
 
@@ -6671,6 +6675,170 @@ def format_seotda_hand(cards: list[tuple[int, bool]]) -> str:
     return " / ".join(format_seotda_card(card) for card in cards)
 
 
+SEOTDA_CARD_ASSET_DIR = Path(__file__).resolve().parent / "assets" / "sutda_cards"
+SEOTDA_CARD_DOWNLOAD_DIR = SEOTDA_CARD_ASSET_DIR / "downloaded"
+SEOTDA_TABLE_ATTACHMENT = "seotda_table.png"
+SEOTDA_CARD_DOWNLOAD_FAILED_KEYS: set[str] = set()
+SEOTDA_CARD_REMOTE_FILES = {
+    "back": "Hanafuda blank card.svg",
+    "m01_kwang": "Hwatu January Hikari.svg",
+    "m01_normal": "Hwatu January Kasu 1.svg",
+    "m02_normal": "Hwatu February Kasu 1.svg",
+    "m03_kwang": "Hwatu March Hikari.svg",
+    "m03_normal": "Hwatu March Kasu 1.svg",
+    "m04_normal": "Hwatu April Kasu 1.svg",
+    "m05_normal": "Hwatu May Kasu 1.svg",
+    "m06_normal": "Hwatu June Kasu 1.svg",
+    "m07_normal": "Hwatu July Kasu 1.svg",
+    "m08_kwang": "Hwatu August Hikari.svg",
+    "m08_normal": "Hwatu August Kasu 1.svg",
+    "m09_normal": "Hwatu September Kasu 1.svg",
+    "m10_normal": "Hwatu October Kasu 1.svg",
+}
+
+
+def get_seotda_card_key(card: tuple[int, bool] | None, hidden: bool = False) -> str:
+    if hidden or card is None:
+        return "back"
+
+    month, is_kwang = card
+    suffix = "kwang" if is_kwang else "normal"
+    return f"m{month:02d}_{suffix}"
+
+
+def get_seotda_card_asset_path(card: tuple[int, bool] | None, hidden: bool = False) -> Path:
+    return SEOTDA_CARD_ASSET_DIR / f"{get_seotda_card_key(card, hidden)}.png"
+
+
+def get_seotda_downloaded_card_path(card_key: str) -> Path:
+    return SEOTDA_CARD_DOWNLOAD_DIR / f"{card_key}.png"
+
+
+def download_seotda_card_image(card_key: str) -> Path | None:
+    if card_key in SEOTDA_CARD_DOWNLOAD_FAILED_KEYS:
+        return None
+
+    remote_file = SEOTDA_CARD_REMOTE_FILES.get(card_key)
+    if remote_file is None:
+        return None
+
+    SEOTDA_CARD_DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    target_path = get_seotda_downloaded_card_path(card_key)
+    if target_path.exists():
+        return target_path
+
+    url = f"https://commons.wikimedia.org/wiki/Special:Redirect/file/{quote(remote_file)}?width=500"
+    request = Request(
+        url,
+        headers={
+            "User-Agent": "MariBot/1.0 Discord bot asset cache (Wikimedia Commons CC BY-SA assets)",
+        },
+    )
+    temp_path = target_path.with_suffix(".tmp")
+    try:
+        with urlopen(request, timeout=3) as response:
+            temp_path.write_bytes(response.read())
+
+        # Validate that Wikimedia returned an actual image instead of an HTML error page.
+        with Image.open(temp_path) as image:
+            image.verify()
+        temp_path.replace(target_path)
+        return target_path
+    except Exception as e:
+        try:
+            if temp_path.exists():
+                temp_path.unlink()
+        except OSError:
+            pass
+        SEOTDA_CARD_DOWNLOAD_FAILED_KEYS.add(card_key)
+        print(f"섯다 카드 이미지 다운로드 실패 ({card_key}): {type(e).__name__}: {e}")
+        return None
+
+
+def get_seotda_image_font(size: int, bold: bool = False):
+    candidates = [
+        "C:/Windows/Fonts/arialbd.ttf" if bold else "C:/Windows/Fonts/arial.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+    ]
+    for path in candidates:
+        try:
+            if path and os.path.exists(path):
+                return ImageFont.truetype(path, size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def load_seotda_card_image(card: tuple[int, bool] | None, hidden: bool = False) -> Image.Image:
+    card_key = get_seotda_card_key(card, hidden)
+    path = get_seotda_downloaded_card_path(card_key)
+    if not path.exists():
+        path = download_seotda_card_image(card_key) or get_seotda_card_asset_path(card, hidden)
+    return Image.open(path).convert("RGBA")
+
+
+def create_seotda_table_image(
+    challenger_cards: list[tuple[int, bool]],
+    opponent_cards: list[tuple[int, bool]],
+    reveal_count: int,
+) -> bytes:
+    width, height = 920, 480
+    canvas = Image.new("RGBA", (width, height), (15, 17, 24, 255))
+    draw = ImageDraw.Draw(canvas, "RGBA")
+
+    for y in range(height):
+        shade = 18 + int(y / height * 28)
+        draw.line((0, y, width, y), fill=(shade, shade + 2, shade + 8, 255))
+
+    draw.rounded_rectangle((26, 24, width - 26, height - 24), radius=28, fill=(8, 10, 15, 205), outline=(241, 196, 15, 180), width=3)
+    draw.rectangle((48, 76, width - 48, 84), fill=(241, 196, 15, 255))
+    draw.text((58, 36), "MARIBOT SUTDA", fill=(245, 245, 245), font=get_seotda_image_font(34, True))
+    draw.text((width - 58, 38), "1ST BETTING ROUND" if reveal_count < 2 else "FINAL REVEAL", fill=(241, 196, 15), font=get_seotda_image_font(22, True), anchor="ra")
+
+    card_size = (154, 238)
+    slots = {
+        "challenger": [(138, 156), (312, 156)],
+        "opponent": [(628, 156), (454, 156)],
+    }
+
+    draw.text((225, 116), "PLAYER", fill=(241, 196, 15), font=get_seotda_image_font(28, True), anchor="mm")
+    draw.text((695, 116), "OPPONENT", fill=(241, 196, 15), font=get_seotda_image_font(28, True), anchor="mm")
+    draw.text((width // 2, 250), "VS", fill=(255, 255, 255, 235), font=get_seotda_image_font(42, True), anchor="mm")
+
+    for index, card in enumerate(challenger_cards):
+        hidden = index >= reveal_count
+        card_image = load_seotda_card_image(card, hidden=hidden).resize(card_size, Image.Resampling.LANCZOS)
+        canvas.alpha_composite(card_image, slots["challenger"][index])
+
+    for index, card in enumerate(opponent_cards):
+        hidden = index >= reveal_count
+        card_image = load_seotda_card_image(card, hidden=hidden).resize(card_size, Image.Resampling.LANCZOS)
+        canvas.alpha_composite(card_image, slots["opponent"][index])
+
+    if reveal_count < 2:
+        draw.rounded_rectangle((246, 410, 674, 444), radius=12, fill=(241, 196, 15, 230))
+        draw.text((width // 2, 415), "SECOND CARD LOCKED UNTIL BOTH PLAYERS BET", fill=(12, 14, 18), font=get_seotda_image_font(18, True), anchor="ma")
+    else:
+        draw.rounded_rectangle((312, 410, 608, 444), radius=12, fill=(241, 196, 15, 230))
+        draw.text((width // 2, 415), "SHOWDOWN COMPLETE", fill=(12, 14, 18), font=get_seotda_image_font(20, True), anchor="ma")
+
+    output = io.BytesIO()
+    canvas.convert("RGB").save(output, format="PNG", optimize=True)
+    return output.getvalue()
+
+
+def build_seotda_table_file(
+    challenger_cards: list[tuple[int, bool]],
+    opponent_cards: list[tuple[int, bool]],
+    reveal_count: int,
+) -> discord.File:
+    return discord.File(
+        io.BytesIO(create_seotda_table_image(challenger_cards, opponent_cards, reveal_count)),
+        filename=SEOTDA_TABLE_ATTACHMENT,
+    )
+
+
 def draw_seotda_hands():
     drawn_cards = random.sample(create_seotda_deck(), 4)
     return drawn_cards[:2], drawn_cards[2:]
@@ -6723,6 +6891,7 @@ def build_seotda_result_embed(
         inline=False,
     )
     embed.add_field(name="판돈", value=f"`{format_money(amount)}`", inline=False)
+    embed.set_image(url=f"attachment://{SEOTDA_TABLE_ATTACHMENT}")
     return embed
 
 
@@ -6774,6 +6943,7 @@ def build_seotda_progress_embed(
         ),
         inline=False,
     )
+    embed.set_image(url=f"attachment://{SEOTDA_TABLE_ATTACHMENT}")
     return embed
 
 
@@ -8598,8 +8768,9 @@ class SeotdaResultView(discord.ui.View):
             add_balance(challenger.id, -self.next_amount)
             match_view = SeotdaMatchView(self.guild_id, self.winner_id, None, self.next_amount)
             embed = match_view.build_embed(interaction.guild, interaction.client.user)
+            file = match_view.build_table_file(reveal_count=1)
             embed.add_field(name="상대", value="봇", inline=False)
-            await interaction.response.edit_message(embed=embed, view=match_view)
+            await interaction.response.edit_message(embed=embed, attachments=[file], view=match_view)
             return
 
         requester_id = self.winner_id
@@ -8631,6 +8802,7 @@ class SeotdaResultView(discord.ui.View):
         embed.set_footer(text="상대방만 수락 또는 거절할 수 있습니다.")
         await interaction.response.edit_message(
             embed=embed,
+            attachments=[],
             view=SeotdaChallengeView(requester_id, target_id, self.next_amount),
         )
 
@@ -8703,6 +8875,9 @@ class SeotdaMatchView(discord.ui.View):
             self.opponent_action,
         )
 
+    def build_table_file(self, reveal_count: int) -> discord.File:
+        return build_seotda_table_file(self.challenger_cards, self.opponent_cards, reveal_count)
+
     def _bot_should_bet(self) -> bool:
         return True
 
@@ -8761,9 +8936,11 @@ class SeotdaMatchView(discord.ui.View):
                 color=0x95A5A6,
             )
             embed.add_field(name="판돈", value=f"`{format_money(self.pot_amount)}`", inline=False)
+            embed.set_image(url=f"attachment://{SEOTDA_TABLE_ATTACHMENT}")
+            file = self.build_table_file(reveal_count=1)
             add_game_history(interaction.guild.id, "섯다", f"{challenger.display_name} vs {opponent.display_name if opponent else '봇'} / 양쪽 다이 무승부")
             result_view = SeotdaResultView(self.guild_id, self.challenger_id, self.opponent_id, None, None)
-            await interaction.response.edit_message(embed=embed, view=result_view)
+            await interaction.response.edit_message(embed=embed, attachments=[file], view=result_view)
             return
 
         if self.challenger_action == "die" and self.opponent_action == "bet":
@@ -8779,10 +8956,12 @@ class SeotdaMatchView(discord.ui.View):
                 color=0x3498DB,
             )
             embed.add_field(name="판돈", value=f"`{format_money(self.pot_amount)}`", inline=False)
+            embed.set_image(url=f"attachment://{SEOTDA_TABLE_ATTACHMENT}")
+            file = self.build_table_file(reveal_count=1)
             add_game_history(interaction.guild.id, "섯다", f"{challenger.display_name} vs {opponent.display_name if opponent else '봇'} / 다이 패배")
             next_amount = self.pot_amount if winner_id is not None else None
             result_view = SeotdaResultView(self.guild_id, self.challenger_id, self.opponent_id, next_amount, winner_id)
-            await interaction.response.edit_message(embed=embed, view=result_view)
+            await interaction.response.edit_message(embed=embed, attachments=[file], view=result_view)
             return
 
         if self.challenger_action == "bet" and self.opponent_action == "die":
@@ -8793,9 +8972,11 @@ class SeotdaMatchView(discord.ui.View):
                 color=0x2ECC71,
             )
             embed.add_field(name="판돈", value=f"`{format_money(self.pot_amount)}`", inline=False)
+            embed.set_image(url=f"attachment://{SEOTDA_TABLE_ATTACHMENT}")
+            file = self.build_table_file(reveal_count=1)
             add_game_history(interaction.guild.id, "섯다", f"{challenger.display_name} vs {opponent.display_name if opponent else '봇'} / 다이 승리")
             result_view = SeotdaResultView(self.guild_id, self.challenger_id, self.opponent_id, self.pot_amount, self.challenger_id)
-            await interaction.response.edit_message(embed=embed, view=result_view)
+            await interaction.response.edit_message(embed=embed, attachments=[file], view=result_view)
             return
 
         self._settle_all_in_difference()
@@ -8840,7 +9021,8 @@ class SeotdaMatchView(discord.ui.View):
         add_game_history(interaction.guild.id, "섯다", history_text)
         next_amount = self.pot_amount if winner_id is not None else None
         result_view = SeotdaResultView(self.guild_id, self.challenger_id, self.opponent_id, next_amount, winner_id)
-        await interaction.response.edit_message(embed=embed, view=result_view)
+        file = self.build_table_file(reveal_count=2)
+        await interaction.response.edit_message(embed=embed, attachments=[file], view=result_view)
 
     async def _handle_choice(self, interaction: discord.Interaction, action: str):
         if self.resolved:
@@ -8875,7 +9057,8 @@ class SeotdaMatchView(discord.ui.View):
             return
 
         embed = self.build_embed(interaction.guild, interaction.client.user)
-        await interaction.response.edit_message(embed=embed, view=self)
+        file = self.build_table_file(reveal_count=1)
+        await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
 
     @discord.ui.button(label="배팅", style=discord.ButtonStyle.success)
     async def bet(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -8925,7 +9108,8 @@ class SeotdaChallengeView(discord.ui.View):
 
         match_view = SeotdaMatchView(interaction.guild.id, self.challenger_id, self.opponent_id, self.amount)
         embed = match_view.build_embed(interaction.guild, interaction.client.user)
-        await interaction.response.edit_message(embed=embed, view=match_view)
+        file = match_view.build_table_file(reveal_count=1)
+        await interaction.response.edit_message(embed=embed, attachments=[file], view=match_view)
 
     @discord.ui.button(label="거절", style=discord.ButtonStyle.danger)
     async def decline(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -15096,7 +15280,8 @@ async def seotda(interaction: discord.Interaction, amount: int, member: discord.
         match_view = SeotdaMatchView(interaction.guild.id, interaction.user.id, None, amount)
         embed = match_view.build_embed(interaction.guild, interaction.client.user)
         embed.add_field(name="상대", value="봇", inline=False)
-        await interaction.response.send_message(embed=embed, view=match_view)
+        file = match_view.build_table_file(reveal_count=1)
+        await interaction.response.send_message(embed=embed, file=file, view=match_view)
         return
 
     if member.bot:
