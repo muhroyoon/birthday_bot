@@ -7,12 +7,14 @@ import shutil
 import base64
 import re
 import json
+import io
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from urllib.parse import quote
 
 import discord
 import aiohttp
+from PIL import Image, ImageDraw, ImageFont
 from discord import app_commands
 from discord.ext import commands, tasks
 
@@ -82,6 +84,7 @@ def parse_date_range(start_date: str | None, end_date: str | None, *, default_da
 TOKEN = os.getenv("TOKEN")
 PUBG_API_KEY = os.getenv("PUBG_API_KEY")
 PUBG_DEFAULT_PLATFORM = os.getenv("PUBG_DEFAULT_PLATFORM", "steam").strip() or "steam"
+PUBG_STATS_RECENT_MATCH_LIMIT = 3
 
 # ============================================================
 # 전역 설정
@@ -335,6 +338,7 @@ playlist_failed_tracks: dict[int, list[dict]] = {}
 playlist_last_youtube_request_at: dict[int, float] = {}
 pubg_api_lock = asyncio.Lock()
 pubg_last_request_at = 0.0
+pubg_current_season_cache: dict[str, dict] = {}
 
 # ============================================================
 # 데이터베이스 초기화
@@ -2686,6 +2690,15 @@ async def pubg_api_get(http_session: aiohttp.ClientSession, platform: str, path:
             return await response.json()
 
 
+async def pubg_api_get_optional(http_session: aiohttp.ClientSession, platform: str, path: str) -> dict:
+    try:
+        return await pubg_api_get(http_session, platform, path)
+    except RuntimeError as e:
+        if "PUBG API 오류 404" in str(e):
+            return {"data": {"attributes": {}}}
+        raise
+
+
 async def fetch_pubg_players(http_session: aiohttp.ClientSession, platform: str, names: list[str]) -> dict[str, dict]:
     result = {}
     for start in range(0, len(names), 10):
@@ -2711,6 +2724,371 @@ async def fetch_pubg_players(http_session: aiohttp.ClientSession, platform: str,
 
 async def fetch_pubg_match(http_session: aiohttp.ClientSession, platform: str, match_id: str) -> dict:
     return await pubg_api_get(http_session, platform, f"/matches/{match_id}")
+
+
+PUBG_STATS_MODE_ORDER = ["solo-fpp", "duo-fpp", "squad-fpp"]
+PUBG_STATS_MODE_LABELS = {
+    "solo": "SOLO",
+    "solo-fpp": "SOLO FPP",
+    "duo": "DUO",
+    "duo-fpp": "DUO FPP",
+    "squad": "SQUAD",
+    "squad-fpp": "SQUAD FPP",
+}
+
+
+def pubg_number(value, default=0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def pubg_int(value, default=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def pubg_avg(total, count):
+    count = pubg_number(count)
+    return pubg_number(total) / count if count > 0 else 0
+
+
+def format_pubg_decimal(value, digits=1):
+    return f"{pubg_number(value):.{digits}f}"
+
+
+def format_pubg_time(seconds):
+    seconds = int(pubg_number(seconds))
+    minutes = seconds // 60
+    remain = seconds % 60
+    if minutes >= 60:
+        return f"{minutes // 60}h {minutes % 60}m"
+    return f"{minutes}m {remain}s"
+
+
+def format_pubg_map_name(map_name: str | None) -> str:
+    if not map_name:
+        return "UNKNOWN"
+    mapping = {
+        "Baltic_Main": "ERANGEL",
+        "Desert_Main": "MIRAMAR",
+        "Savage_Main": "SANHOK",
+        "DihorOtok_Main": "VIKENDI",
+        "Tiger_Main": "TAEGO",
+        "Neon_Main": "DESTON",
+        "Kiki_Main": "DESTON",
+        "Chimera_Main": "PARAMO",
+        "Summerland_Main": "KARAKIN",
+        "Heaven_Main": "HAVEN",
+        "Rondo_Main": "RONDO",
+    }
+    return mapping.get(map_name, map_name.replace("_Main", "").upper())
+
+
+async def fetch_pubg_current_season_id(http_session: aiohttp.ClientSession, platform: str) -> str:
+    cached = pubg_current_season_cache.get(platform)
+    now = get_kst_now()
+    if cached and now - cached["fetched_at"] < timedelta(hours=12):
+        return cached["season_id"]
+
+    data = await pubg_api_get(http_session, platform, "/seasons")
+    seasons = data.get("data", [])
+    current = next(
+        (
+            season
+            for season in seasons
+            if season.get("attributes", {}).get("isCurrentSeason")
+            and not season.get("attributes", {}).get("isOffseason")
+        ),
+        None,
+    )
+    if current is None:
+        current = next((season for season in seasons if season.get("attributes", {}).get("isCurrentSeason")), None)
+    if current is None or not current.get("id"):
+        raise RuntimeError("현재 PUBG 시즌 정보를 찾지 못했습니다.")
+
+    pubg_current_season_cache[platform] = {"season_id": current["id"], "fetched_at": now}
+    return current["id"]
+
+
+async def fetch_pubg_season_stats(http_session: aiohttp.ClientSession, platform: str, account_id: str, season_id: str) -> dict:
+    return await pubg_api_get_optional(http_session, platform, f"/players/{account_id}/seasons/{season_id}")
+
+
+async def fetch_pubg_ranked_stats(http_session: aiohttp.ClientSession, platform: str, account_id: str, season_id: str) -> dict:
+    return await pubg_api_get_optional(http_session, platform, f"/players/{account_id}/seasons/{season_id}/ranked")
+
+
+def get_pubg_game_mode_stats(stats_data: dict, ranked: bool = False) -> dict:
+    attributes = stats_data.get("data", {}).get("attributes", {})
+    key = "rankedGameModeStats" if ranked else "gameModeStats"
+    return attributes.get(key, {}) or {}
+
+
+def get_pubg_mode_stats(game_mode_stats: dict, mode: str):
+    if mode in game_mode_stats:
+        return game_mode_stats[mode]
+    if mode.endswith("-fpp"):
+        return game_mode_stats.get(mode.replace("-fpp", ""))
+    return {}
+
+
+def summarize_pubg_stats(stats: dict) -> dict:
+    rounds = pubg_int(stats.get("roundsPlayed"))
+    wins = pubg_int(stats.get("wins"))
+    kills = pubg_int(stats.get("kills"))
+    deaths = pubg_int(stats.get("deaths"))
+    assists = pubg_int(stats.get("assists"))
+    damage = pubg_number(stats.get("damageDealt"))
+    top10s = pubg_int(stats.get("top10s"))
+    time_survived = pubg_number(stats.get("timeSurvived"))
+    return {
+        "rounds": rounds,
+        "wins": wins,
+        "top10s": top10s,
+        "kills": kills,
+        "deaths": deaths,
+        "assists": assists,
+        "damage": damage,
+        "avg_damage": pubg_avg(damage, rounds),
+        "kd": kills / deaths if deaths > 0 else float(kills),
+        "kda": (kills + assists) / deaths if deaths > 0 else float(kills + assists),
+        "win_rate": (wins / rounds * 100) if rounds > 0 else 0,
+        "top10_rate": (top10s / rounds * 100) if rounds > 0 else 0,
+        "avg_survival": pubg_avg(time_survived, rounds),
+        "longest_kill": pubg_number(stats.get("longestKill")),
+        "headshot_kills": pubg_int(stats.get("headshotKills")),
+        "dBNOs": pubg_int(stats.get("dBNOs")),
+        "rank_points": pubg_int(stats.get("currentRankPoint") or stats.get("rankPoints")),
+        "tier": stats.get("currentTier") or {},
+    }
+
+
+def pick_main_pubg_mode(game_mode_stats: dict) -> str:
+    candidates = ["squad-fpp", "squad", "duo-fpp", "duo", "solo-fpp", "solo"]
+    return max(candidates, key=lambda mode: summarize_pubg_stats(get_pubg_mode_stats(game_mode_stats, mode))["rounds"])
+
+
+def extract_recent_pubg_match_row(match_data: dict, player_name: str) -> dict | None:
+    match_attributes = match_data.get("data", {}).get("attributes", {})
+    target_stats = None
+    for item in match_data.get("included", []):
+        if item.get("type") != "participant":
+            continue
+        stats = item.get("attributes", {}).get("stats", {})
+        if str(stats.get("name", "")).lower() == player_name.lower():
+            target_stats = stats
+            break
+    if target_stats is None:
+        return None
+
+    return {
+        "map": format_pubg_map_name(match_attributes.get("mapName")),
+        "mode": PUBG_STATS_MODE_LABELS.get(match_attributes.get("gameMode"), str(match_attributes.get("gameMode", "UNKNOWN")).upper()),
+        "created_at": parse_pubg_created_at(match_attributes.get("createdAt")),
+        "rank": pubg_int(target_stats.get("winPlace")),
+        "kills": pubg_int(target_stats.get("kills")),
+        "damage": pubg_number(target_stats.get("damageDealt")),
+        "survival": pubg_number(target_stats.get("timeSurvived")),
+    }
+
+
+async def fetch_recent_pubg_match_rows(http_session: aiohttp.ClientSession, platform: str, player_name: str, match_ids: list[str], limit: int = PUBG_STATS_RECENT_MATCH_LIMIT) -> list[dict]:
+    rows = []
+    for match_id in match_ids[: max(limit * 2, limit)]:
+        try:
+            match_data = await fetch_pubg_match(http_session, platform, match_id)
+        except RuntimeError:
+            continue
+        row = extract_recent_pubg_match_row(match_data, player_name)
+        if row is not None:
+            rows.append(row)
+        if len(rows) >= limit:
+            break
+    return rows
+
+
+def get_pubg_font(size: int, bold: bool = False):
+    candidates = [
+        "C:/Windows/Fonts/arialbd.ttf" if bold else "C:/Windows/Fonts/arial.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+    ]
+    for path in candidates:
+        try:
+            if path and os.path.exists(path):
+                return ImageFont.truetype(path, size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def draw_pubg_text(draw: ImageDraw.ImageDraw, xy, text: str, size: int, fill, bold: bool = False, anchor: str | None = None):
+    draw.text(xy, str(text), font=get_pubg_font(size, bold), fill=fill, anchor=anchor)
+
+
+def draw_pubg_metric(draw: ImageDraw.ImageDraw, x: int, y: int, label: str, value: str):
+    draw_pubg_text(draw, (x, y), label, 23, (246, 190, 38), True)
+    draw_pubg_text(draw, (x, y + 34), value, 48, (245, 245, 245), True)
+
+
+def create_pubg_stats_card(player_name: str, season_id: str, mode: str, normal_stats_data: dict | None, ranked_stats_data: dict | None, recent_rows: list[dict]) -> bytes:
+    width, height = 1200, 675
+    image = Image.new("RGB", (width, height), (13, 15, 18))
+    draw = ImageDraw.Draw(image, "RGBA")
+
+    for y in range(height):
+        shade = int(18 + (y / height) * 24)
+        draw.line((0, y, width, y), fill=(shade, shade, shade + 4, 255))
+    draw.rectangle((0, 0, width, 78), fill=(15, 15, 16, 230))
+    draw.rectangle((0, 72, width, 80), fill=(244, 183, 24, 255))
+    draw.rectangle((0, height - 42, width, height), fill=(6, 7, 9, 230))
+
+    for i in range(20):
+        x = random.randint(0, width)
+        y = random.randint(80, height - 60)
+        draw.ellipse((x, y, x + 2, y + 2), fill=(255, 160, 24, 95))
+
+    tab_label = "NORMAL SEASON" if mode == "normal" else "RANKED SEASON"
+    draw_pubg_text(draw, (52, 30), player_name.upper(), 54, (245, 245, 245), True)
+    draw_pubg_text(draw, (52, 96), tab_label, 30, (244, 183, 24), True)
+    draw_pubg_text(draw, (52, 130), f"SEASON  {season_id}", 18, (160, 165, 175), False)
+    draw_pubg_text(draw, (1145, 42), "MARIBOT", 25, (244, 183, 24), True, anchor="ra")
+
+    if mode == "ranked":
+        game_mode_stats = get_pubg_game_mode_stats(ranked_stats_data or {}, ranked=True)
+    else:
+        game_mode_stats = get_pubg_game_mode_stats(normal_stats_data or {}, ranked=False)
+
+    main_mode = pick_main_pubg_mode(game_mode_stats)
+    main_summary = summarize_pubg_stats(get_pubg_mode_stats(game_mode_stats, main_mode))
+
+    card_y = 170
+    panel_w = 338
+    gap = 34
+    start_x = 52
+    display_modes = ["solo-fpp", "duo-fpp", "squad-fpp"] if mode == "normal" else ["squad-fpp", "duo-fpp", "solo-fpp"]
+    for index, game_mode in enumerate(display_modes):
+        x = start_x + index * (panel_w + gap)
+        stats = summarize_pubg_stats(get_pubg_mode_stats(game_mode_stats, game_mode))
+        active = game_mode == main_mode
+        border = (244, 183, 24, 255) if active else (110, 114, 122, 220)
+        draw.rounded_rectangle((x, card_y, x + panel_w, card_y + 160), radius=18, fill=(18, 20, 24, 210), outline=border, width=3)
+        draw_pubg_text(draw, (x + panel_w // 2, card_y + 25), PUBG_STATS_MODE_LABELS[game_mode], 28, (244, 183, 24) if active else (220, 220, 220), True, anchor="ma")
+        draw_pubg_text(draw, (x + 28, card_y + 70), f"{stats['wins']}W / {stats['rounds']} MATCHES", 23, (245, 245, 245), True)
+        draw_pubg_text(draw, (x + 28, card_y + 105), f"KDA {format_pubg_decimal(stats['kda'], 2)}", 22, (244, 183, 24), True)
+        draw_pubg_text(draw, (x + 190, card_y + 105), f"DMG {format_pubg_decimal(stats['avg_damage'], 0)}", 22, (244, 183, 24), True)
+
+    draw.rounded_rectangle((52, 365, 642, 605), radius=18, fill=(18, 20, 24, 220), outline=(95, 98, 105, 240), width=2)
+    draw.rectangle((72, 385, 292, 425), fill=(244, 183, 24, 235))
+    draw_pubg_text(draw, (92, 392), "SEASON AVG", 28, (16, 17, 19), True)
+    draw_pubg_text(draw, (76, 446), f"MAIN MODE  {PUBG_STATS_MODE_LABELS.get(main_mode, main_mode.upper())}", 20, (170, 175, 184), True)
+    draw_pubg_metric(draw, 82, 490, "KDA", format_pubg_decimal(main_summary["kda"], 2))
+    draw_pubg_metric(draw, 205, 490, "AVG DMG", format_pubg_decimal(main_summary["avg_damage"], 0))
+    draw_pubg_metric(draw, 378, 490, "WIN", f"{format_pubg_decimal(main_summary['win_rate'], 1)}%")
+    draw_pubg_metric(draw, 510, 490, "MATCHES", str(main_summary["rounds"]))
+
+    draw.rounded_rectangle((680, 365, 1148, 605), radius=18, fill=(18, 20, 24, 220), outline=(95, 98, 105, 240), width=2)
+    draw.rectangle((700, 385, 930, 425), fill=(244, 183, 24, 235))
+    draw_pubg_text(draw, (720, 392), "RECENT MATCHES", 26, (16, 17, 19), True)
+    if recent_rows:
+        for index, row in enumerate(recent_rows[:3], start=1):
+            y = 452 + (index - 1) * 46
+            color = (90, 205, 82, 255) if row["rank"] == 1 else ((244, 183, 24, 255) if row["rank"] <= 10 else (230, 80, 55, 255))
+            draw.rounded_rectangle((704, y - 10, 1126, y + 31), radius=8, fill=(30, 32, 36, 230))
+            draw_pubg_text(draw, (725, y), f"#{row['rank']}", 27, color, True)
+            draw_pubg_text(draw, (820, y + 2), f"{row['kills']}K", 24, (245, 245, 245), True)
+            draw_pubg_text(draw, (910, y + 2), f"{format_pubg_decimal(row['damage'], 0)} DMG", 24, (245, 245, 245), True)
+            draw_pubg_text(draw, (1108, y + 4), row["map"][:12], 17, (160, 165, 175), False, anchor="ra")
+    else:
+        draw_pubg_text(draw, (725, 480), "NO RECENT MATCH DATA", 28, (190, 195, 205), True)
+
+    if mode == "ranked":
+        tier = main_summary.get("tier") or {}
+        tier_text = f"{tier.get('tier', 'UNRANKED')} {tier.get('subTier', '')}".strip()
+        draw.rounded_rectangle((52, 615, 1148, 650), radius=10, fill=(244, 183, 24, 210))
+        draw_pubg_text(draw, (72, 622), f"RANK  {tier_text}   RP {main_summary['rank_points']}   LONGEST {format_pubg_decimal(main_summary['longest_kill'], 0)}m", 22, (18, 20, 24), True)
+    else:
+        draw.rounded_rectangle((52, 615, 1148, 650), radius=10, fill=(244, 183, 24, 210))
+        draw_pubg_text(draw, (72, 622), f"TOP10 {format_pubg_decimal(main_summary['top10_rate'], 1)}%   AVG SURVIVAL {format_pubg_time(main_summary['avg_survival'])}   LONGEST {format_pubg_decimal(main_summary['longest_kill'], 0)}m", 22, (18, 20, 24), True)
+
+    output = io.BytesIO()
+    image.save(output, format="PNG")
+    return output.getvalue()
+
+
+def build_pubg_stats_embed(player_name: str, mode: str) -> discord.Embed:
+    label = "일반" if mode == "normal" else "경쟁"
+    embed = discord.Embed(
+        title=f"🔫 {player_name}님의 PUBG {label} 전적",
+        description="이번 시즌 평균을 중심으로 최근 경기 결과를 함께 보여줍니다.",
+        color=0xF1C40F if mode == "normal" else 0xE67E22,
+    )
+    embed.set_image(url="attachment://pubg_stats.png")
+    embed.set_footer(text="PUBG API 기준으로 조회됩니다. 최근 경기는 API 제공 범위 내에서 표시됩니다.")
+    return embed
+
+
+def build_pubg_stats_file(image_bytes: bytes) -> discord.File:
+    return discord.File(io.BytesIO(image_bytes), filename="pubg_stats.png")
+
+
+class PubgStatsView(discord.ui.View):
+    def __init__(self, player_name: str, account_id: str, platform: str, season_id: str, normal_stats_data: dict, recent_rows: list[dict]):
+        super().__init__(timeout=180)
+        self.player_name = player_name
+        self.account_id = account_id
+        self.platform = platform
+        self.season_id = season_id
+        self.normal_stats_data = normal_stats_data
+        self.ranked_stats_data = None
+        self.recent_rows = recent_rows
+
+    async def build_response_assets(self, mode: str):
+        if mode == "ranked" and self.ranked_stats_data is None:
+            async with aiohttp.ClientSession() as http_session:
+                self.ranked_stats_data = await fetch_pubg_ranked_stats(
+                    http_session,
+                    self.platform,
+                    self.account_id,
+                    self.season_id,
+                )
+
+        image_bytes = create_pubg_stats_card(
+            self.player_name,
+            self.season_id,
+            mode,
+            self.normal_stats_data,
+            self.ranked_stats_data,
+            self.recent_rows,
+        )
+        return build_pubg_stats_embed(self.player_name, mode), build_pubg_stats_file(image_bytes)
+
+    async def switch_mode(self, interaction: discord.Interaction, mode: str):
+        await interaction.response.defer()
+        try:
+            embed, file = await self.build_response_assets(mode)
+        except RuntimeError as e:
+            await interaction.followup.send(f"전적 조회 중 오류가 발생했습니다: {e}", ephemeral=True)
+            return
+
+        for item in self.children:
+            if isinstance(item, discord.ui.Button):
+                item.disabled = item.custom_id == f"pubg_stats_{mode}"
+
+        if interaction.message is not None:
+            await interaction.message.edit(embed=embed, attachments=[file], view=self)
+
+    @discord.ui.button(label="일반", style=discord.ButtonStyle.success, custom_id="pubg_stats_normal", disabled=True)
+    async def normal(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.switch_mode(interaction, "normal")
+
+    @discord.ui.button(label="경쟁", style=discord.ButtonStyle.primary, custom_id="pubg_stats_ranked")
+    async def ranked(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.switch_mode(interaction, "ranked")
 
 
 def calculate_kill_bet_match_scores(session: dict, match_data: dict) -> tuple[list[dict], str] | None:
@@ -15332,7 +15710,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
     general_embed.add_field(
         name="👥 구인 / 팀 / 기타",
         value=(
-            "`/구인`, `/종겜구인`, `/팀`, `/팀섞기로그`, `/음성로그`, `/끼리끼리조회`, `/시간설정패널`\n"
+            "`/구인`, `/종겜구인`, `/전적`, `/팀`, `/팀섞기로그`, `/음성로그`, `/끼리끼리조회`, `/시간설정패널`\n"
             "`/등업패널`, `/규칙버튼`, `/닉네임패널생성`"
         ),
         inline=False,
@@ -15421,6 +15799,50 @@ async def remove_labor_gacha_ticket(interaction: discord.Interaction, member: di
         f"이전 보유 수량: `{before_count}장`\n"
         f"현재 보유 수량: `{current_count}장`",
         ephemeral=False,
+    )
+
+
+@bot.tree.command(name="전적", description="PUBG 이번 시즌 평균과 최근 경기 결과를 카드로 조회합니다.")
+@app_commands.rename(nickname="닉네임")
+@app_commands.describe(nickname="조회할 PUBG 닉네임")
+async def pubg_stats_command(interaction: discord.Interaction, nickname: str):
+    if not PUBG_API_KEY:
+        await interaction.response.send_message("PUBG_API_KEY가 설정되어 있지 않아 전적을 조회할 수 없습니다.", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+    platform = PUBG_DEFAULT_PLATFORM
+    nickname = nickname.strip()
+    if not nickname:
+        await interaction.followup.send("조회할 PUBG 닉네임을 입력해주세요.", ephemeral=True)
+        return
+
+    try:
+        async with aiohttp.ClientSession() as http_session:
+            players = await fetch_pubg_players(http_session, platform, [nickname])
+            player = players.get(nickname.lower())
+            if player is None:
+                await interaction.followup.send(f"`{nickname}` 닉네임을 찾지 못했습니다.", ephemeral=True)
+                return
+
+            season_id = await fetch_pubg_current_season_id(http_session, platform)
+            normal_stats_data = await fetch_pubg_season_stats(http_session, platform, player["account_id"], season_id)
+            recent_rows = await fetch_recent_pubg_match_rows(
+                http_session,
+                platform,
+                player["name"],
+                player["matches"],
+            )
+    except RuntimeError as e:
+        await interaction.followup.send(f"전적 조회 중 오류가 발생했습니다: {e}", ephemeral=True)
+        return
+
+    view = PubgStatsView(player["name"], player["account_id"], platform, season_id, normal_stats_data, recent_rows)
+    image_bytes = create_pubg_stats_card(player["name"], season_id, "normal", normal_stats_data, None, recent_rows)
+    await interaction.followup.send(
+        embed=build_pubg_stats_embed(player["name"], "normal"),
+        file=build_pubg_stats_file(image_bytes),
+        view=view,
     )
 
 
