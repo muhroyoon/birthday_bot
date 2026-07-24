@@ -2845,6 +2845,7 @@ def summarize_pubg_stats(stats: dict) -> dict:
     damage = pubg_number(stats.get("damageDealt"))
     top10s = pubg_int(stats.get("top10s"))
     time_survived = pubg_number(stats.get("timeSurvived"))
+    estimated_deaths = deaths if deaths > 0 else max(rounds - wins, 0)
     return {
         "rounds": rounds,
         "wins": wins,
@@ -2854,8 +2855,8 @@ def summarize_pubg_stats(stats: dict) -> dict:
         "assists": assists,
         "damage": damage,
         "avg_damage": pubg_avg(damage, rounds),
-        "kd": kills / deaths if deaths > 0 else float(kills),
-        "kda": (kills + assists) / deaths if deaths > 0 else float(kills + assists),
+        "kd": kills / estimated_deaths if estimated_deaths > 0 else 0,
+        "kda": (kills + assists) / estimated_deaths if estimated_deaths > 0 else 0,
         "win_rate": (wins / rounds * 100) if rounds > 0 else 0,
         "top10_rate": (top10s / rounds * 100) if rounds > 0 else 0,
         "avg_survival": pubg_avg(time_survived, rounds),
@@ -2935,28 +2936,44 @@ def draw_pubg_metric(draw: ImageDraw.ImageDraw, x: int, y: int, label: str, valu
     draw_pubg_text(draw, (x, y + 34), value, 48, (245, 245, 245), True)
 
 
+def draw_pubg_metric_box(draw: ImageDraw.ImageDraw, box, label: str, value: str, accent=(244, 183, 24)):
+    x1, y1, x2, y2 = box
+    draw.rounded_rectangle(box, radius=16, fill=(21, 23, 29, 230), outline=(68, 72, 82, 230), width=2)
+    draw.rectangle((x1, y1, x1 + 6, y2), fill=accent + (255,))
+    draw_pubg_text(draw, (x1 + 24, y1 + 18), label, 24, accent, True)
+    draw_pubg_text(draw, (x1 + 24, y1 + 58), value, 46, (246, 247, 250), True)
+
+
 def create_pubg_stats_card(player_name: str, season_id: str, mode: str, normal_stats_data: dict | None, ranked_stats_data: dict | None, recent_rows: list[dict]) -> bytes:
-    width, height = 1200, 675
-    image = Image.new("RGB", (width, height), (13, 15, 18))
+    width, height = 1600, 900
+    image = Image.new("RGB", (width, height), (10, 11, 15))
     draw = ImageDraw.Draw(image, "RGBA")
 
     for y in range(height):
-        shade = int(18 + (y / height) * 24)
-        draw.line((0, y, width, y), fill=(shade, shade, shade + 4, 255))
-    draw.rectangle((0, 0, width, 78), fill=(15, 15, 16, 230))
-    draw.rectangle((0, 72, width, 80), fill=(244, 183, 24, 255))
-    draw.rectangle((0, height - 42, width, height), fill=(6, 7, 9, 230))
+        shade = int(13 + (y / height) * 22)
+        draw.line((0, y, width, y), fill=(shade, shade + 1, shade + 7, 255))
 
-    for i in range(20):
+    # Subtle battleground-style atmosphere without requiring external assets.
+    draw.polygon([(0, 760), (250, 570), (510, 760)], fill=(21, 24, 29, 185))
+    draw.polygon([(280, 760), (620, 470), (970, 760)], fill=(27, 30, 34, 160))
+    draw.polygon([(820, 760), (1180, 520), (1600, 760)], fill=(22, 25, 31, 170))
+    for x in range(0, width, 110):
+        draw.line((x, 120, x + 260, height), fill=(255, 183, 24, 14), width=1)
+    for i in range(90):
         x = random.randint(0, width)
-        y = random.randint(80, height - 60)
-        draw.ellipse((x, y, x + 2, y + 2), fill=(255, 160, 24, 95))
+        y = random.randint(90, height - 80)
+        radius = random.choice([1, 1, 2])
+        draw.ellipse((x, y, x + radius, y + radius), fill=(255, 170, 24, random.randint(35, 110)))
+
+    draw.rounded_rectangle((38, 36, width - 38, height - 36), radius=28, fill=(10, 12, 17, 130), outline=(86, 91, 104, 170), width=2)
+    draw.rectangle((38, 144, width - 38, 154), fill=(244, 183, 24, 255))
 
     tab_label = "NORMAL SEASON" if mode == "normal" else "RANKED SEASON"
-    draw_pubg_text(draw, (52, 30), player_name.upper(), 54, (245, 245, 245), True)
-    draw_pubg_text(draw, (52, 96), tab_label, 30, (244, 183, 24), True)
-    draw_pubg_text(draw, (52, 130), f"SEASON  {season_id}", 18, (160, 165, 175), False)
-    draw_pubg_text(draw, (1145, 42), "MARIBOT", 25, (244, 183, 24), True, anchor="ra")
+    season_text = season_id.replace("division.bro.official.", "").upper()
+    draw_pubg_text(draw, (80, 68), player_name.upper(), 72, (248, 248, 250), True)
+    draw_pubg_text(draw, (80, 172), tab_label, 38, (244, 183, 24), True)
+    draw_pubg_text(draw, (80, 216), f"SEASON  {season_text}", 24, (176, 182, 194), False)
+    draw_pubg_text(draw, (1515, 82), "MARIBOT", 34, (244, 183, 24), True, anchor="ra")
 
     if mode == "ranked":
         game_mode_stats = get_pubg_game_mode_stats(ranked_stats_data or {}, ranked=True)
@@ -2966,54 +2983,60 @@ def create_pubg_stats_card(player_name: str, season_id: str, mode: str, normal_s
     main_mode = pick_main_pubg_mode(game_mode_stats)
     main_summary = summarize_pubg_stats(get_pubg_mode_stats(game_mode_stats, main_mode))
 
-    card_y = 170
-    panel_w = 338
-    gap = 34
-    start_x = 52
-    display_modes = ["solo-fpp", "duo-fpp", "squad-fpp"] if mode == "normal" else ["squad-fpp", "duo-fpp", "solo-fpp"]
+    card_y = 275
+    panel_w = 460
+    panel_h = 176
+    gap = 45
+    start_x = 80
+    display_modes = ["solo", "duo", "squad"] if mode == "normal" else ["squad", "duo", "solo"]
     for index, game_mode in enumerate(display_modes):
         x = start_x + index * (panel_w + gap)
         stats = summarize_pubg_stats(get_pubg_mode_stats(game_mode_stats, game_mode))
-        active = game_mode == main_mode
+        active = game_mode == main_mode or f"{game_mode}-fpp" == main_mode
         border = (244, 183, 24, 255) if active else (110, 114, 122, 220)
-        draw.rounded_rectangle((x, card_y, x + panel_w, card_y + 160), radius=18, fill=(18, 20, 24, 210), outline=border, width=3)
-        draw_pubg_text(draw, (x + panel_w // 2, card_y + 25), PUBG_STATS_MODE_LABELS[game_mode], 28, (244, 183, 24) if active else (220, 220, 220), True, anchor="ma")
-        draw_pubg_text(draw, (x + 28, card_y + 70), f"{stats['wins']}W / {stats['rounds']} MATCHES", 23, (245, 245, 245), True)
-        draw_pubg_text(draw, (x + 28, card_y + 105), f"KDA {format_pubg_decimal(stats['kda'], 2)}", 22, (244, 183, 24), True)
-        draw_pubg_text(draw, (x + 190, card_y + 105), f"DMG {format_pubg_decimal(stats['avg_damage'], 0)}", 22, (244, 183, 24), True)
+        draw.rounded_rectangle((x, card_y, x + panel_w, card_y + panel_h), radius=24, fill=(19, 22, 28, 225), outline=border, width=4)
+        draw.rectangle((x + 28, card_y + 70, x + panel_w - 28, card_y + 82), fill=(244, 183, 24, 220) if active else (90, 94, 104, 170))
+        draw_pubg_text(draw, (x + panel_w // 2, card_y + 28), PUBG_STATS_MODE_LABELS[game_mode], 34, (244, 183, 24) if active else (226, 228, 234), True, anchor="ma")
+        draw_pubg_text(draw, (x + 36, card_y + 95), f"{stats['wins']}W  /  {stats['rounds']} MATCHES", 30, (248, 248, 250), True)
+        draw_pubg_text(draw, (x + 36, card_y + 135), f"KDA {format_pubg_decimal(stats['kda'], 2)}", 25, (244, 183, 24), True)
+        draw_pubg_text(draw, (x + 250, card_y + 135), f"AVG DMG {format_pubg_decimal(stats['avg_damage'], 0)}", 25, (244, 183, 24), True)
 
-    draw.rounded_rectangle((52, 365, 642, 605), radius=18, fill=(18, 20, 24, 220), outline=(95, 98, 105, 240), width=2)
-    draw.rectangle((72, 385, 292, 425), fill=(244, 183, 24, 235))
-    draw_pubg_text(draw, (92, 392), "SEASON AVG", 28, (16, 17, 19), True)
-    draw_pubg_text(draw, (76, 446), f"MAIN MODE  {PUBG_STATS_MODE_LABELS.get(main_mode, main_mode.upper())}", 20, (170, 175, 184), True)
-    draw_pubg_metric(draw, 82, 490, "KDA", format_pubg_decimal(main_summary["kda"], 2))
-    draw_pubg_metric(draw, 205, 490, "AVG DMG", format_pubg_decimal(main_summary["avg_damage"], 0))
-    draw_pubg_metric(draw, 378, 490, "WIN", f"{format_pubg_decimal(main_summary['win_rate'], 1)}%")
-    draw_pubg_metric(draw, 510, 490, "MATCHES", str(main_summary["rounds"]))
+    left_box = (80, 505, 870, 802)
+    right_box = (920, 505, 1520, 802)
+    draw.rounded_rectangle(left_box, radius=24, fill=(16, 18, 24, 235), outline=(89, 94, 106, 230), width=2)
+    draw.rounded_rectangle(right_box, radius=24, fill=(16, 18, 24, 235), outline=(89, 94, 106, 230), width=2)
+    draw.rectangle((110, 535, 405, 590), fill=(244, 183, 24, 240))
+    draw_pubg_text(draw, (135, 546), "SEASON AVG", 38, (13, 15, 18), True)
+    draw_pubg_text(draw, (112, 614), f"MAIN MODE  {PUBG_STATS_MODE_LABELS.get(main_mode, main_mode.upper())}", 25, (176, 182, 194), True)
 
-    draw.rounded_rectangle((680, 365, 1148, 605), radius=18, fill=(18, 20, 24, 220), outline=(95, 98, 105, 240), width=2)
-    draw.rectangle((700, 385, 930, 425), fill=(244, 183, 24, 235))
-    draw_pubg_text(draw, (720, 392), "RECENT MATCHES", 26, (16, 17, 19), True)
+    draw_pubg_metric_box(draw, (112, 655, 278, 768), "KDA", format_pubg_decimal(main_summary["kda"], 2))
+    draw_pubg_metric_box(draw, (300, 655, 484, 768), "AVG DMG", format_pubg_decimal(main_summary["avg_damage"], 0))
+    draw_pubg_metric_box(draw, (506, 655, 666, 768), "WIN", f"{format_pubg_decimal(main_summary['win_rate'], 1)}%")
+    draw_pubg_metric_box(draw, (688, 655, 838, 768), "MATCHES", str(main_summary["rounds"]))
+
+    draw.rectangle((950, 535, 1290, 590), fill=(244, 183, 24, 240))
+    draw_pubg_text(draw, (975, 546), "RECENT MATCHES", 36, (13, 15, 18), True)
     if recent_rows:
         for index, row in enumerate(recent_rows[:3], start=1):
-            y = 452 + (index - 1) * 46
+            y = 630 + (index - 1) * 58
             color = (90, 205, 82, 255) if row["rank"] == 1 else ((244, 183, 24, 255) if row["rank"] <= 10 else (230, 80, 55, 255))
-            draw.rounded_rectangle((704, y - 10, 1126, y + 31), radius=8, fill=(30, 32, 36, 230))
-            draw_pubg_text(draw, (725, y), f"#{row['rank']}", 27, color, True)
-            draw_pubg_text(draw, (820, y + 2), f"{row['kills']}K", 24, (245, 245, 245), True)
-            draw_pubg_text(draw, (910, y + 2), f"{format_pubg_decimal(row['damage'], 0)} DMG", 24, (245, 245, 245), True)
-            draw_pubg_text(draw, (1108, y + 4), row["map"][:12], 17, (160, 165, 175), False, anchor="ra")
+            draw.rounded_rectangle((950, y - 16, 1488, y + 36), radius=12, fill=(28, 31, 38, 245))
+            draw_pubg_text(draw, (980, y - 5), f"#{row['rank']}", 35, color, True)
+            draw_pubg_text(draw, (1110, y), f"{row['kills']}K", 29, (248, 248, 250), True)
+            draw_pubg_text(draw, (1210, y), f"{format_pubg_decimal(row['damage'], 0)} DMG", 29, (248, 248, 250), True)
+            draw_pubg_text(draw, (1468, y + 3), row["map"][:12], 21, (176, 182, 194), False, anchor="ra")
     else:
-        draw_pubg_text(draw, (725, 480), "NO RECENT MATCH DATA", 28, (190, 195, 205), True)
+        draw_pubg_text(draw, (975, 650), "NO RECENT MATCH DATA", 34, (190, 195, 205), True)
 
+    footer_y = 830
     if mode == "ranked":
         tier = main_summary.get("tier") or {}
         tier_text = f"{tier.get('tier', 'UNRANKED')} {tier.get('subTier', '')}".strip()
-        draw.rounded_rectangle((52, 615, 1148, 650), radius=10, fill=(244, 183, 24, 210))
-        draw_pubg_text(draw, (72, 622), f"RANK  {tier_text}   RP {main_summary['rank_points']}   LONGEST {format_pubg_decimal(main_summary['longest_kill'], 0)}m", 22, (18, 20, 24), True)
+        footer = f"RANK  {tier_text}    RP {main_summary['rank_points']}    LONGEST {format_pubg_decimal(main_summary['longest_kill'], 0)}m"
     else:
-        draw.rounded_rectangle((52, 615, 1148, 650), radius=10, fill=(244, 183, 24, 210))
-        draw_pubg_text(draw, (72, 622), f"TOP10 {format_pubg_decimal(main_summary['top10_rate'], 1)}%   AVG SURVIVAL {format_pubg_time(main_summary['avg_survival'])}   LONGEST {format_pubg_decimal(main_summary['longest_kill'], 0)}m", 22, (18, 20, 24), True)
+        footer = f"TOP10 {format_pubg_decimal(main_summary['top10_rate'], 1)}%    AVG SURVIVAL {format_pubg_time(main_summary['avg_survival'])}    LONGEST {format_pubg_decimal(main_summary['longest_kill'], 0)}m"
+    draw.rounded_rectangle((80, footer_y, 1520, 872), radius=14, fill=(244, 183, 24, 225))
+    draw_pubg_text(draw, (110, footer_y + 8), footer, 27, (13, 15, 18), True)
 
     output = io.BytesIO()
     image.save(output, format="PNG")
