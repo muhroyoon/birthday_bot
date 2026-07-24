@@ -231,6 +231,9 @@ BACCARAT_OUTCOMES = [
     {"name": "타이", "weight": 952, "multiplier": 10.50},
 ]
 BACCARAT_CARD_VALUES = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+PLAYING_CARD_SUITS = ["S", "H", "D", "C"]
+PLAYING_CARD_ASSET_DIR = Path(__file__).resolve().parent / "assets" / "playing_cards"
+PLAYING_CARD_ATTACHMENT = "playing_cards.png"
 
 LOAN_GRADE_LIMITS = {
     level: level * CREDIT_LEVEL_LIMIT_STEP
@@ -6577,7 +6580,7 @@ GAME_LABELS = {
     "블랙잭": "블랙잭",
     "경마": "경마",
     "숫자야구": "숫자야구",
-    "몬티홀": "몬티홀",
+    "가위바위보": "가위바위보",
     "지뢰찾기": "지뢰찾기",
     "섯다": "섯다",
     "몰빵게임": "몰빵게임",
@@ -7265,15 +7268,105 @@ class CoinFlipView(discord.ui.View):
 
 
 def draw_baccarat_card() -> str:
-    return random.choice(BACCARAT_CARD_VALUES)
+    return draw_playing_card()
+
+
+def get_playing_card_rank(card: str) -> str:
+    if len(card) > 1 and card[-1] in PLAYING_CARD_SUITS:
+        return card[:-1]
+    return card
+
+
+def draw_playing_card() -> str:
+    return f"{random.choice(BACCARAT_CARD_VALUES)}{random.choice(PLAYING_CARD_SUITS)}"
+
+
+def format_playing_card(card: str) -> str:
+    rank = get_playing_card_rank(card)
+    suit = card[-1] if len(card) > 1 and card[-1] in PLAYING_CARD_SUITS else ""
+    suit_text = {
+        "S": "♠",
+        "H": "♥",
+        "D": "♦",
+        "C": "♣",
+    }.get(suit, "")
+    return f"{rank}{suit_text}"
+
+
+def get_playing_card_asset_path(card: str | None, hidden: bool = False) -> Path:
+    if hidden or card is None:
+        return PLAYING_CARD_ASSET_DIR / "Card-back.png"
+    return PLAYING_CARD_ASSET_DIR / f"{card}.png"
+
+
+def create_fallback_playing_card_image(card: str | None, hidden: bool = False) -> Image.Image:
+    width, height = 220, 320
+    image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image, "RGBA")
+    draw.rounded_rectangle((8, 8, width - 8, height - 8), radius=18, fill=(248, 248, 245), outline=(22, 24, 28), width=4)
+    if hidden or card is None:
+        draw.rounded_rectangle((26, 26, width - 26, height - 26), radius=12, fill=(38, 80, 150), outline=(220, 230, 255), width=3)
+        draw.text((width // 2, height // 2 - 14), "MARIBOT", fill=(245, 245, 245), font=get_seotda_image_font(24, True), anchor="mm")
+        draw.text((width // 2, height // 2 + 20), "CARD", fill=(245, 245, 245), font=get_seotda_image_font(32, True), anchor="mm")
+        return image
+
+    text = format_playing_card(card)
+    is_red = card[-1] in {"H", "D"} if len(card) > 1 else False
+    color = (210, 34, 45) if is_red else (20, 22, 28)
+    draw.text((width // 2, height // 2), text, fill=color, font=get_seotda_image_font(64, True), anchor="mm")
+    draw.text((28, 30), text, fill=color, font=get_seotda_image_font(26, True))
+    draw.text((width - 28, height - 30), text, fill=color, font=get_seotda_image_font(26, True), anchor="rb")
+    return image
+
+
+def load_playing_card_image(card: str | None, hidden: bool = False) -> Image.Image:
+    path = get_playing_card_asset_path(card, hidden)
+    if path.exists():
+        return Image.open(path).convert("RGBA")
+
+    print(f"트럼프카드 이미지 파일 없음: {path}")
+    return create_fallback_playing_card_image(card, hidden)
+
+
+def create_playing_cards_table_image(rows: list[list[tuple[str | None, bool]]]) -> bytes:
+    card_size = (106, 154)
+    gap = 10
+    row_gap = 18
+    padding = 16
+    max_cards = max((len(row) for row in rows), default=1)
+    width = padding * 2 + max_cards * card_size[0] + max(max_cards - 1, 0) * gap
+    height = padding * 2 + len(rows) * card_size[1] + max(len(rows) - 1, 0) * row_gap
+    canvas = Image.new("RGBA", (width, height), (43, 45, 54, 255))
+
+    for row_index, row in enumerate(rows):
+        row_width = len(row) * card_size[0] + max(len(row) - 1, 0) * gap
+        start_x = (width - row_width) // 2
+        y = padding + row_index * (card_size[1] + row_gap)
+        for card_index, (card, hidden) in enumerate(row):
+            card_image = load_playing_card_image(card, hidden=hidden)
+            card_image.thumbnail(card_size, Image.Resampling.LANCZOS)
+            x = start_x + card_index * (card_size[0] + gap) + (card_size[0] - card_image.width) // 2
+            canvas.alpha_composite(card_image, (x, y + (card_size[1] - card_image.height) // 2))
+
+    output = io.BytesIO()
+    canvas.convert("RGB").save(output, format="PNG", optimize=True)
+    return output.getvalue()
+
+
+def build_playing_cards_file(rows: list[list[tuple[str | None, bool]]]) -> discord.File:
+    return discord.File(
+        io.BytesIO(create_playing_cards_table_image(rows)),
+        filename=PLAYING_CARD_ATTACHMENT,
+    )
 
 
 def baccarat_card_value(card: str) -> int:
-    if card == "A":
+    rank = get_playing_card_rank(card)
+    if rank == "A":
         return 1
-    if card in {"10", "J", "Q", "K"}:
+    if rank in {"10", "J", "Q", "K"}:
         return 0
-    return int(card)
+    return int(rank)
 
 
 def baccarat_hand_value(cards: list[str]) -> int:
@@ -7281,7 +7374,7 @@ def baccarat_hand_value(cards: list[str]) -> int:
 
 
 def format_baccarat_cards(cards: list[str]) -> str:
-    return " ".join(f"`{card}`" for card in cards)
+    return " ".join(f"`{format_playing_card(card)}`" for card in cards)
 
 
 def draw_baccarat_showdown(target_result: str) -> tuple[list[str], list[str], int, int]:
@@ -7303,10 +7396,10 @@ def draw_baccarat_showdown(target_result: str) -> tuple[list[str], list[str], in
 
     # 매우 드문 경우에도 결과 화면이 비지 않도록 안전한 기본 패를 사용합니다.
     if target_result == "플레이어":
-        return ["9", "K"], ["7", "Q"], 9, 7
+        return ["9S", "KC"], ["7H", "QD"], 9, 7
     if target_result == "뱅커":
-        return ["7", "Q"], ["9", "K"], 7, 9
-    return ["8", "K"], ["8", "Q"], 8, 8
+        return ["7H", "QD"], ["9S", "KC"], 7, 9
+    return ["8S", "KC"], ["8H", "QD"], 8, 8
 
 
 class BaccaratView(discord.ui.View):
@@ -7379,13 +7472,18 @@ class BaccaratView(discord.ui.View):
             value=f"{format_baccarat_cards(banker_cards)}\n합계: **{banker_score}**",
             inline=True,
         )
+        embed.set_image(url=f"attachment://{PLAYING_CARD_ATTACHMENT}")
         embed.add_field(name="현재 잔액", value=format_money(get_balance(self.user_id)), inline=False)
         add_game_history(
             self.guild_id,
             "바카라",
             f"{interaction.user.display_name} - 선택:{choice} / 결과:{result} / {'승리' if win else '원금 반환' if push else '패배'}",
         )
-        await interaction.response.edit_message(embed=embed, view=self)
+        file = build_playing_cards_file([
+            [(card, False) for card in player_cards],
+            [(card, False) for card in banker_cards],
+        ])
+        await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
 
     async def on_timeout(self):
         if self.resolved:
@@ -7408,170 +7506,247 @@ class BaccaratView(discord.ui.View):
         await self.finish(interaction, "타이")
 
 
-class MontyHallView(discord.ui.View):
-    def __init__(self, guild_id: int, user_id: int, bet_amount: int):
+class RockPaperScissorsMatchView(discord.ui.View):
+    WIN_RULES = {
+        "가위": "보",
+        "바위": "가위",
+        "보": "바위",
+    }
+
+    def __init__(self, guild_id: int, challenger_id: int, opponent_id: int | None, bet_amount: int):
         super().__init__(timeout=60)
         self.guild_id = guild_id
-        self.user_id = user_id
+        self.challenger_id = challenger_id
+        self.opponent_id = opponent_id
         self.bet_amount = bet_amount
-        self.prize_door = random.randint(1, 3)
-        self.initial_choice: int | None = None
-        self.opened_door: int | None = None
+        self.pot_amount = bet_amount * 2
+        self.challenger_choice: str | None = None
+        self.opponent_choice: str | None = None
         self.resolved = False
 
-        self._set_choice_buttons_enabled(True)
-        self._set_decision_buttons_enabled(False)
+    def _is_bot_match(self) -> bool:
+        return self.opponent_id is None
+
+    def _get_role_key(self, user_id: int) -> str | None:
+        if user_id == self.challenger_id:
+            return "challenger"
+        if user_id == self.opponent_id:
+            return "opponent"
+        return None
+
+    def _set_choice(self, role_key: str, choice: str):
+        if role_key == "challenger":
+            self.challenger_choice = choice
+        else:
+            self.opponent_choice = choice
+
+    def _get_participants(self, guild: discord.Guild, bot_user: discord.ClientUser | None):
+        challenger = guild.get_member(self.challenger_id)
+        opponent = bot_user if self._is_bot_match() else guild.get_member(self.opponent_id)
+        return challenger, opponent
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("이 버튼은 명령어를 사용한 본인만 누를 수 있습니다.", ephemeral=True)
+        if self._get_role_key(interaction.user.id) is None:
+            await interaction.response.send_message("대결 당사자만 버튼을 누를 수 있습니다.", ephemeral=True)
             return False
         return True
 
-    def _available_switch_door(self) -> int:
-        return next(
-            door
-            for door in (1, 2, 3)
-            if door != self.initial_choice and door != self.opened_door
-        )
-
-    def _set_choice_buttons_enabled(self, enabled: bool):
-        for item in self.children:
-            if isinstance(item, discord.ui.Button) and item.label in {"1번 문", "2번 문", "3번 문"}:
-                item.disabled = not enabled
-
-    def _set_decision_buttons_enabled(self, enabled: bool):
-        for item in self.children:
-            if isinstance(item, discord.ui.Button) and item.label in {"유지", "변경"}:
-                item.disabled = not enabled
-
-    def build_embed(self, result_text: str | None = None, color: int = 0xF1C40F) -> discord.Embed:
-        if self.initial_choice is None:
+    def build_embed(
+        self,
+        guild: discord.Guild,
+        bot_user: discord.ClientUser | None,
+        result_text: str | None = None,
+        color: int = 0xF1C40F,
+    ) -> discord.Embed:
+        challenger, opponent = self._get_participants(guild, bot_user)
+        challenger_name = challenger.display_name if challenger else "도전자"
+        opponent_name = opponent.display_name if hasattr(opponent, "display_name") else "마리봇"
+        if result_text is None:
             description = (
-                f"베팅 금액: `{format_money(self.bet_amount)}`\n\n"
-                "문 3개 중 하나 뒤에는 보상이 숨어 있습니다.\n"
-                "먼저 문 하나를 선택해주세요."
-            )
-        elif result_text is None:
-            switch_door = self._available_switch_door()
-            description = (
-                f"처음 선택한 문: **{self.initial_choice}번 문**\n"
-                f"사회자가 연 빈 문: **{self.opened_door}번 문**\n\n"
-                f"선택을 유지하면 **{self.initial_choice}번 문**으로 갑니다.\n"
-                f"선택을 바꾸면 **{switch_door}번 문**으로 갑니다."
+                f"베팅 금액: `{format_money(self.bet_amount)}`\n"
+                f"현재 판돈: `{format_money(self.pot_amount)}`\n\n"
+                "가위, 바위, 보 중 하나를 선택해주세요.\n"
+                "두 사람 모두 선택하면 결과가 공개됩니다."
             )
         else:
             description = result_text
-
-        embed = discord.Embed(title="🚪 몬티홀 게임", description=description, color=color)
+        embed = discord.Embed(title="✊ 가위바위보", description=description, color=color)
+        embed.add_field(name=f"{challenger_name} 상태", value="선택 완료" if self.challenger_choice else "대기 중", inline=True)
+        embed.add_field(name=f"{opponent_name} 상태", value="선택 완료" if self.opponent_choice else "대기 중", inline=True)
         embed.set_footer(text="60초 안에 선택하지 않으면 베팅금이 반환됩니다.")
         return embed
 
-    async def choose_door(self, interaction: discord.Interaction, door: int):
+    async def finish(self, interaction: discord.Interaction, choice: str):
         if self.resolved:
             await interaction.response.send_message("이미 결과가 확정되었습니다.", ephemeral=True)
             return
-        if self.initial_choice is not None:
-            await interaction.response.send_message("이미 첫 문을 선택했습니다.", ephemeral=True)
+
+        role_key = self._get_role_key(interaction.user.id)
+        if role_key is None:
+            await interaction.response.send_message("대결 당사자만 선택할 수 있습니다.", ephemeral=True)
+            return
+        if (role_key == "challenger" and self.challenger_choice) or (role_key == "opponent" and self.opponent_choice):
+            await interaction.response.send_message("이미 선택을 완료했습니다.", ephemeral=True)
             return
 
-        self.initial_choice = door
-        open_candidates = [candidate for candidate in (1, 2, 3) if candidate != door and candidate != self.prize_door]
-        self.opened_door = random.choice(open_candidates)
+        self._set_choice(role_key, choice)
+        if self._is_bot_match():
+            self.opponent_choice = random.choice(["가위", "바위", "보"])
 
-        self._set_choice_buttons_enabled(False)
-        self._set_decision_buttons_enabled(True)
-
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
-
-    async def finish(self, interaction: discord.Interaction, mode: str):
-        if self.resolved:
-            await interaction.response.send_message("이미 결과가 확정되었습니다.", ephemeral=True)
-            return
-        if self.initial_choice is None or self.opened_door is None:
-            await interaction.response.send_message("먼저 문을 선택해주세요.", ephemeral=True)
+        if self.challenger_choice is None or self.opponent_choice is None:
+            embed = self.build_embed(interaction.guild, interaction.client.user)
+            await interaction.response.edit_message(embed=embed, view=self)
             return
 
         self.resolved = True
-        final_choice = self.initial_choice if mode == "stay" else self._available_switch_door()
-        multiplier = 3.0 if mode == "stay" else 1.5
-        won = final_choice == self.prize_door
-
         for item in self.children:
             if isinstance(item, discord.ui.Button):
                 item.disabled = True
 
-        if won:
-            payout = int(self.bet_amount * multiplier)
-            add_balance(self.user_id, payout)
+        challenger, opponent = self._get_participants(interaction.guild, interaction.client.user)
+        challenger_choice = self.challenger_choice
+        opponent_choice = self.opponent_choice
+        challenger_text = challenger.mention if challenger else "도전자"
+        opponent_text = opponent.mention if opponent else "마리봇"
+
+        if challenger_choice == opponent_choice:
+            add_balance(self.challenger_id, self.bet_amount)
+            if not self._is_bot_match():
+                add_balance(self.opponent_id, self.bet_amount)
+            result_label = "무승부"
+            color = 0x3498DB
+            result_text = (
+                f"{challenger_text}: **{challenger_choice}**\n"
+                f"{opponent_text}: **{opponent_choice}**\n\n"
+                "무승부입니다. 각자 원금을 돌려받았습니다."
+            )
+        elif self.WIN_RULES[challenger_choice] == opponent_choice:
+            add_balance(self.challenger_id, self.pot_amount)
+            result_label = "승리"
             color = 0x2ECC71
             result_text = (
-                f"최종 선택: **{final_choice}번 문**\n"
-                f"정답 문: **{self.prize_door}번 문**\n\n"
-                f"성공! `{format_money(payout)}`을 획득했습니다."
+                f"{challenger_text}: **{challenger_choice}**\n"
+                f"{opponent_text}: **{opponent_choice}**\n\n"
+                f"{challenger_text} 승리! `{format_money(self.pot_amount)}`을 획득했습니다."
             )
         else:
+            if not self._is_bot_match():
+                add_balance(self.opponent_id, self.pot_amount)
+            result_label = "패배"
             color = 0xE74C3C
             result_text = (
-                f"최종 선택: **{final_choice}번 문**\n"
-                f"정답 문: **{self.prize_door}번 문**\n\n"
-                f"아쉽네요... `{format_money(self.bet_amount)}`을 잃었습니다."
+                f"{challenger_text}: **{challenger_choice}**\n"
+                f"{opponent_text}: **{opponent_choice}**\n\n"
+                f"{opponent_text} 승리! `{format_money(self.pot_amount)}`을 획득했습니다."
             )
 
         add_game_history(
             self.guild_id,
-            "몬티홀",
-            f"{interaction.user.display_name} - {'유지' if mode == 'stay' else '변경'} / {'승리' if won else '패배'}",
+            "가위바위보",
+            f"{challenger.display_name if challenger else '도전자'} vs {opponent.display_name if hasattr(opponent, 'display_name') else '마리봇'} / {challenger_choice}:{opponent_choice} / {result_label}",
         )
-        embed = self.build_embed(result_text, color)
-        embed.add_field(name="현재 잔액", value=format_money(get_balance(self.user_id)), inline=False)
+        embed = self.build_embed(interaction.guild, interaction.client.user, result_text, color)
+        embed.add_field(name="도전자 잔액", value=format_money(get_balance(self.challenger_id)), inline=True)
+        if not self._is_bot_match():
+            embed.add_field(name="상대 잔액", value=format_money(get_balance(self.opponent_id)), inline=True)
         await interaction.response.edit_message(embed=embed, view=self)
 
     async def on_timeout(self):
         if self.resolved:
             return
         self.resolved = True
-        add_balance(self.user_id, self.bet_amount)
+        add_balance(self.challenger_id, self.bet_amount)
+        if not self._is_bot_match():
+            add_balance(self.opponent_id, self.bet_amount)
         for item in self.children:
             if isinstance(item, discord.ui.Button):
                 item.disabled = True
 
-    @discord.ui.button(label="1번 문", style=discord.ButtonStyle.primary)
-    async def door_one(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.choose_door(interaction, 1)
+    @discord.ui.button(label="가위", style=discord.ButtonStyle.primary)
+    async def scissors(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.finish(interaction, "가위")
 
-    @discord.ui.button(label="2번 문", style=discord.ButtonStyle.primary)
-    async def door_two(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.choose_door(interaction, 2)
+    @discord.ui.button(label="바위", style=discord.ButtonStyle.success)
+    async def rock(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.finish(interaction, "바위")
 
-    @discord.ui.button(label="3번 문", style=discord.ButtonStyle.primary)
-    async def door_three(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.choose_door(interaction, 3)
+    @discord.ui.button(label="보", style=discord.ButtonStyle.secondary)
+    async def paper(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.finish(interaction, "보")
 
-    @discord.ui.button(label="유지", style=discord.ButtonStyle.success, row=1)
-    async def stay(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.finish(interaction, "stay")
 
-    @discord.ui.button(label="변경", style=discord.ButtonStyle.danger, row=1)
-    async def switch(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.finish(interaction, "switch")
+class RockPaperScissorsChallengeView(discord.ui.View):
+    def __init__(self, challenger_id: int, opponent_id: int, amount: int):
+        super().__init__(timeout=60)
+        self.challenger_id = challenger_id
+        self.opponent_id = opponent_id
+        self.amount = amount
+        self.resolved = False
+
+    async def _ensure_opponent(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.opponent_id:
+            await interaction.response.send_message("이 버튼은 대결 요청을 받은 본인만 누를 수 있습니다.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="수락", style=discord.ButtonStyle.success)
+    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.resolved or not await self._ensure_opponent(interaction):
+            return
+
+        challenger = interaction.guild.get_member(self.challenger_id)
+        opponent = interaction.guild.get_member(self.opponent_id)
+        if challenger is None or opponent is None:
+            await interaction.response.send_message("대결 대상 중 한 명을 찾을 수 없습니다.", ephemeral=True)
+            return
+        if not can_afford(challenger.id, self.amount):
+            await interaction.response.send_message("도전자의 잔액이 부족해 대결을 시작할 수 없습니다.", ephemeral=True)
+            return
+        if not can_afford(opponent.id, self.amount):
+            await interaction.response.send_message("본인의 잔액이 부족해 대결을 시작할 수 없습니다.", ephemeral=True)
+            return
+
+        self.resolved = True
+        add_balance(challenger.id, -self.amount)
+        add_balance(opponent.id, -self.amount)
+        match_view = RockPaperScissorsMatchView(interaction.guild.id, challenger.id, opponent.id, self.amount)
+        embed = match_view.build_embed(interaction.guild, interaction.client.user)
+        await interaction.response.edit_message(embed=embed, view=match_view)
+
+    @discord.ui.button(label="거절", style=discord.ButtonStyle.danger)
+    async def decline(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.resolved or not await self._ensure_opponent(interaction):
+            return
+
+        self.resolved = True
+        opponent = interaction.guild.get_member(self.opponent_id)
+        embed = discord.Embed(
+            title="✊ 가위바위보 대결 요청",
+            description=f"{opponent.mention if opponent else '상대방'}님이 대결을 거절했습니다.",
+            color=0xE74C3C,
+        )
+        embed.add_field(name="베팅 금액", value=format_money(self.amount), inline=False)
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(embed=embed, view=self)
 
 
 def draw_blackjack_card() -> str:
-    return random.choice(BLACKJACK_CARD_VALUES)
+    return draw_playing_card()
 
 
 def blackjack_hand_value(cards: list[str]) -> int:
     total = 0
     aces = 0
     for card in cards:
-        if card == "A":
+        rank = get_playing_card_rank(card)
+        if rank == "A":
             total += 11
             aces += 1
-        elif card in {"J", "Q", "K"}:
+        elif rank in {"J", "Q", "K"}:
             total += 10
         else:
-            total += int(card)
+            total += int(rank)
 
     while total > 21 and aces:
         total -= 10
@@ -7581,9 +7756,9 @@ def blackjack_hand_value(cards: list[str]) -> int:
 
 def format_blackjack_cards(cards: list[str], hide_second: bool = False) -> str:
     if hide_second and len(cards) >= 2:
-        visible_cards = [cards[0], "?"]
+        visible_cards = [format_playing_card(cards[0]), "?"]
     else:
-        visible_cards = cards
+        visible_cards = [format_playing_card(card) for card in cards]
     return " ".join(f"`{card}`" for card in visible_cards)
 
 
@@ -7628,7 +7803,14 @@ class BlackjackView(discord.ui.View):
             embed.add_field(name="현재 잔액", value=format_money(get_balance(self.user_id)), inline=False)
         else:
             embed.set_footer(text="21에 가까울수록 유리합니다. 21을 넘으면 버스트로 패배합니다.")
+        embed.set_image(url=f"attachment://{PLAYING_CARD_ATTACHMENT}")
         return embed
+
+    def build_table_file(self, reveal_dealer: bool = False) -> discord.File:
+        return build_playing_cards_file([
+            [(card, False) for card in self.player_cards],
+            [(card, index == 1 and not reveal_dealer) for index, card in enumerate(self.dealer_cards)],
+        ])
 
     async def settle(self, interaction: discord.Interaction, reason: str):
         if self.resolved:
@@ -7682,6 +7864,7 @@ class BlackjackView(discord.ui.View):
 
         await interaction.response.edit_message(
             embed=self.build_embed(reveal_dealer=True, result_text=result_text, color=color),
+            attachments=[self.build_table_file(reveal_dealer=True)],
             view=self,
         )
 
@@ -7699,7 +7882,7 @@ class BlackjackView(discord.ui.View):
         if blackjack_hand_value(self.player_cards) > 21:
             await self.settle(interaction, "bust")
             return
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+        await interaction.response.edit_message(embed=self.build_embed(), attachments=[self.build_table_file()], view=self)
 
     @discord.ui.button(label="멈추기", style=discord.ButtonStyle.success)
     async def stand(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -8833,7 +9016,16 @@ class SeotdaMatchView(discord.ui.View):
         return build_seotda_table_file(self.challenger_cards, self.opponent_cards, reveal_count)
 
     def _bot_should_bet(self) -> bool:
-        return True
+        first_month, is_kwang = self.opponent_cards[0]
+        if is_kwang:
+            bet_chance = 0.94
+        elif first_month >= 8:
+            bet_chance = 0.84
+        elif first_month >= 5:
+            bet_chance = 0.68
+        else:
+            bet_chance = 0.52
+        return random.random() < bet_chance
 
     def _apply_additional_bet(self, role_key: str, user_id: int | None) -> str:
         if user_id is None:
@@ -9369,9 +9561,9 @@ class HistoryGameSelectView(discord.ui.View):
     async def minesweeper_history(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.show_history(interaction, "지뢰찾기")
 
-    @discord.ui.button(label="몬티홀", style=discord.ButtonStyle.success)
-    async def monty_hall_history(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.show_history(interaction, "몬티홀")
+    @discord.ui.button(label="가위바위보", style=discord.ButtonStyle.success)
+    async def rock_paper_scissors_history(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.show_history(interaction, "가위바위보")
 
     @discord.ui.button(label="섯다", style=discord.ButtonStyle.success)
     async def seotda_history(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -13770,8 +13962,10 @@ async def baccarat(interaction: discord.Interaction, amount: int):
     )
 
 
-@bot.tree.command(name="몬티홀", description="문 3개 중 보상이 있는 문을 찾는 몬티홀 게임입니다.")
-async def monty_hall(interaction: discord.Interaction, amount: int):
+@bot.tree.command(name="가위바위보", description="봇 또는 다른 유저와 가위바위보를 합니다.")
+@app_commands.rename(amount="금액", member="상대")
+@app_commands.describe(amount="베팅 금액", member="비워두면 봇과 대결합니다.")
+async def rock_paper_scissors(interaction: discord.Interaction, amount: int, member: discord.Member | None = None):
     if not await ensure_not_blacklisted_for_gambling(interaction):
         return
     if interaction.guild is None:
@@ -13784,9 +13978,42 @@ async def monty_hall(interaction: discord.Interaction, amount: int):
         await interaction.response.send_message("잔액이 부족합니다.", ephemeral=True)
         return
 
-    add_balance(interaction.user.id, -amount)
-    view = MontyHallView(interaction.guild.id, interaction.user.id, amount)
-    await interaction.response.send_message(embed=view.build_embed(), view=view)
+    if member is None:
+        add_balance(interaction.user.id, -amount)
+        view = RockPaperScissorsMatchView(interaction.guild.id, interaction.user.id, None, amount)
+        await interaction.response.send_message(embed=view.build_embed(interaction.guild, interaction.client.user), view=view)
+        return
+
+    if member.bot:
+        await interaction.response.send_message("봇과 대결하려면 상대를 비워두고 `/가위바위보`를 사용해주세요.", ephemeral=True)
+        return
+    if member.id == interaction.user.id:
+        await interaction.response.send_message("본인과는 대결할 수 없습니다.", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="✊ 가위바위보 대결 요청",
+        description=f"{member.mention}님, {interaction.user.mention}님이 가위바위보 대결을 신청했습니다.",
+        color=0xF1C40F,
+    )
+    embed.add_field(name="도전자", value=interaction.user.mention, inline=True)
+    embed.add_field(name="상대", value=member.mention, inline=True)
+    embed.add_field(name="베팅 금액", value=format_money(amount), inline=False)
+    embed.add_field(
+        name="룰",
+        value=(
+            "수락 시 두 사람 모두 같은 금액을 먼저 겁니다.\n"
+            "가위, 바위, 보를 각자 선택하고 두 사람 모두 선택하면 결과가 공개됩니다.\n"
+            "승자는 판돈을 가져가고, 무승부는 원금이 반환됩니다."
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="상대방만 수락 또는 거절할 수 있습니다.")
+    await interaction.response.send_message(
+        content=member.mention,
+        embed=embed,
+        view=RockPaperScissorsChallengeView(interaction.user.id, member.id, amount),
+    )
 
 
 @bot.tree.command(name="블랙잭", description="입력한 금액으로 딜러와 블랙잭을 합니다.")
@@ -13805,7 +14032,7 @@ async def blackjack(interaction: discord.Interaction, amount: int):
 
     add_balance(interaction.user.id, -amount)
     view = BlackjackView(interaction.guild.id, interaction.user.id, amount)
-    await interaction.response.send_message(embed=view.build_embed(), view=view)
+    await interaction.response.send_message(embed=view.build_embed(), file=view.build_table_file(), view=view)
 
 
 @bot.tree.command(name="경마", description="입력한 금액으로 원하는 말에 베팅합니다.")
@@ -14502,12 +14729,11 @@ async def probability_table(interaction: discord.Interaction):
     )
 
     embed.add_field(
-        name="몬티홀",
+        name="가위바위보",
         value=(
-            "문 3개 중 보상이 있는 문을 찾는 게임\n"
-            "첫 문 선택 후 사회자가 빈 문 하나를 공개\n"
-            "유지: 승률 33.33% / 3배\n"
-            "변경: 승률 66.67% / 1.5배"
+            "승리 33.33% / 2배\n"
+            "무승부 33.33% / 원금 반환\n"
+            "패배 33.33% / 베팅금 손실"
         ),
         inline=False,
     )
@@ -15336,7 +15562,7 @@ async def gambling_commands(interaction: discord.Interaction):
             "`/보급 [금액]` - 보급 상자 게임\n"
             "`/덕몽 [금액]` - 오리를 찾아라\n"
             "`/블랙잭 [금액]` - 딜러와 21 대결\n"
-            "`/몬티홀 [금액]` - 문 3개 중 보상이 있는 문 찾기\n"
+            "`/가위바위보 [금액] [상대]` - 봇 또는 유저와 가위바위보\n"
             "`/경마 [금액]` - 원하는 말에 베팅\n"
             "`/숫자야구` - 100,000마리 고정 숫자 추리 게임\n"
             "`/지뢰찾기 [금액]` - 지뢰를 피해 수익 확정\n"
@@ -15467,7 +15693,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="🎮 도박 / 게임",
         value=(
             "`/슬롯`, `/동전`, `/바카라`, `/보급`, `/덕몽`\n"
-            "`/블랙잭`, `/몬티홀`, `/경마`, `/숫자야구`, `/지뢰찾기`\n"
+            "`/블랙잭`, `/가위바위보`, `/경마`, `/숫자야구`, `/지뢰찾기`\n"
             "`/섯다`, `/몰빵참여`"
         ),
         inline=False,
