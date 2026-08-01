@@ -112,9 +112,6 @@ CREDIT_LEVEL_LIMIT_STEP = 5_000_000
 CREDIT_LEVEL_INTEREST_RATE = 10
 DEFAULT_VOICE_BONUS_HOURLY_AMOUNT = "250000"
 VOICE_BONUS_BLACKLIST_TICKETS_PER_HOUR = 5
-DEFAULT_ACTIVITY_REPORT_HOUR = "9"
-DEFAULT_ACTIVITY_REPORT_MINUTE = "0"
-DEFAULT_ACTIVITY_REPORT_WEEKDAY = "0"
 ATTENDANCE_CHANNEL_ID = 1483339751674089544
 ATTENDANCE_MIDNIGHT_CHANNEL_ID = 1377672440783704219
 ATTENDANCE_GUILD_ID = 1377672440276058214
@@ -126,10 +123,6 @@ ATTENDANCE_DATA_FILE = "/data/attendance.json"
 GUEST_INTERVAL_DAYS = 7
 LEGACY_GUEST_BASE_DATE = datetime(2026, 5, 4, tzinfo=ZoneInfo("Asia/Seoul")).date()
 LEGACY_GUEST_DUE_DATE = datetime(2026, 5, 11, tzinfo=ZoneInfo("Asia/Seoul")).date()
-DEFAULT_ACTIVITY_WARNING_TYPE = "attendance"
-DEFAULT_ACTIVITY_WARNING_DAYS = "7"
-DEFAULT_ACTIVITY_WARNING_MIN_ATTENDANCE = "2"
-DEFAULT_ACTIVITY_WARNING_MIN_VOICE_HOURS = "5"
 
 KILL_BET_RULES = {
     "solo_total": {
@@ -212,17 +205,17 @@ INITIAL_CREDIT_GRADE = INITIAL_CREDIT_LEVEL
 
 LABOR_GACHA_RESULTS = [
     ("꽝", 0, 5500),
-    ("-5%", 5, 2000),
-    ("-10%", 10, 1200),
-    ("-20%", 20, 700),
-    ("-30%", 30, 350),
-    ("-40%", 40, 150),
-    ("-50%", 50, 60),
-    ("-60%", 60, 25),
-    ("-70%", 70, 10),
-    ("-80%", 80, 3),
-    ("-90%", 90, 1),
-    ("-100%", 100, 1),
+    ("20회 감소", 20, 2000),
+    ("40회 감소", 40, 1200),
+    ("70회 감소", 70, 700),
+    ("100회 감소", 100, 350),
+    ("150회 감소", 150, 150),
+    ("200회 감소", 200, 60),
+    ("300회 감소", 300, 25),
+    ("500회 감소", 500, 10),
+    ("700회 감소", 700, 3),
+    ("900회 감소", 900, 1),
+    ("1000회 감소", 1000, 1),
 ]
 
 BACCARAT_OUTCOMES = [
@@ -233,6 +226,10 @@ BACCARAT_OUTCOMES = [
 BACCARAT_CARD_VALUES = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
 PLAYING_CARD_SUITS = ["S", "H", "D", "C"]
 PLAYING_CARD_ASSET_DIR = Path(__file__).resolve().parent / "assets" / "playing_cards"
+PLAYING_CARD_ASSET_DIRS = [
+    PLAYING_CARD_ASSET_DIR,
+    Path(__file__).resolve().parent / "assets" / "playing_card",
+]
 PLAYING_CARD_ATTACHMENT = "playing_cards.png"
 
 LOAN_GRADE_LIMITS = {
@@ -318,6 +315,7 @@ PLAYLIST_FAILURE_BACKOFF_STEP_SECONDS = 15
 PLAYLIST_FAILURE_BACKOFF_MAX_SECONDS = 90
 PUBG_API_REQUEST_INTERVAL_SECONDS = float(os.getenv("PUBG_API_REQUEST_INTERVAL_SECONDS", "2.5"))
 KILL_BET_AUTO_EXPIRE_HOURS = 6
+NON_BUSINESS_DAILY_TRANSFER_LIMIT = 100_000_000
 
 intents = discord.Intents.default()
 intents.members = True
@@ -327,6 +325,8 @@ intents.voice_states = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 settings_group = app_commands.Group(name="세팅", description="서버 설정 명령어")
 bot.tree.add_command(settings_group)
+business_group = app_commands.Group(name="사업자", description="사업자 등록과 조회 명령어")
+bot.tree.add_command(business_group)
 active_recruits = {}
 playlist_queues: dict[int, list[dict]] = {}
 playlist_now_playing: dict[int, dict] = {}
@@ -637,6 +637,23 @@ cursor.execute(
         status TEXT NOT NULL DEFAULT 'active',
         created_at TEXT NOT NULL,
         resolved_at TEXT
+    )
+    """
+)
+
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS business_registrations(
+        guild_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        business_name TEXT NOT NULL,
+        industry TEXT NOT NULL,
+        logo_url TEXT,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        deleted_at TEXT,
+        PRIMARY KEY (guild_id, user_id)
     )
     """
 )
@@ -3359,73 +3376,6 @@ def count_user_attendance_in_range(user_id: str, start_date, end_date, guild_id:
     return count
 
 
-def get_activity_warning_config(guild_id: int):
-    condition_type = get_setting_with_default(guild_id, "activity_warning_type", DEFAULT_ACTIVITY_WARNING_TYPE)
-    if condition_type not in ("attendance", "voice"):
-        condition_type = DEFAULT_ACTIVITY_WARNING_TYPE
-
-    try:
-        days = int(get_setting_with_default(guild_id, "activity_warning_days", DEFAULT_ACTIVITY_WARNING_DAYS))
-    except (TypeError, ValueError):
-        days = int(DEFAULT_ACTIVITY_WARNING_DAYS)
-    days = max(1, days)
-
-    if condition_type == "voice":
-        try:
-            minimum = float(get_setting_with_default(guild_id, "activity_warning_min_voice_hours", DEFAULT_ACTIVITY_WARNING_MIN_VOICE_HOURS))
-        except (TypeError, ValueError):
-            minimum = float(DEFAULT_ACTIVITY_WARNING_MIN_VOICE_HOURS)
-    else:
-        try:
-            minimum = int(get_setting_with_default(guild_id, "activity_warning_min_attendance", DEFAULT_ACTIVITY_WARNING_MIN_ATTENDANCE))
-        except (TypeError, ValueError):
-            minimum = int(DEFAULT_ACTIVITY_WARNING_MIN_ATTENDANCE)
-    minimum = max(0, minimum)
-
-    return condition_type, days, minimum
-
-
-def get_activity_warning_target_rows(guild: discord.Guild):
-    condition_type, days, minimum = get_activity_warning_config(guild.id)
-    role_id = get_guild_setting_role_id(guild.id, "upgrade_clan_role_id")
-    if role_id is None:
-        return condition_type, days, minimum, []
-
-    start_dt = get_kst_now() - timedelta(days=days)
-    start_date = start_dt.date()
-    end_date = get_kst_now().date()
-    rows = []
-
-    for member in guild.members:
-        if member.bot or not any(role.id == role_id for role in member.roles):
-            continue
-
-        if condition_type == "voice":
-            total_seconds = get_voice_bonus_duration_seconds(guild.id, member.id, start_dt, get_kst_now())
-            value = round(total_seconds / 3600, 2)
-            passed = value >= float(minimum)
-            value_text = f"{value:g}시간"
-            required_text = f"{float(minimum):g}시간"
-        else:
-            count = count_user_attendance_in_range(str(member.id), start_date, end_date, guild.id)
-            value = count
-            passed = count >= int(minimum)
-            value_text = f"{count}회"
-            required_text = f"{int(minimum)}회"
-
-        if not passed:
-            rows.append(
-                {
-                    "member": member,
-                    "value_text": value_text,
-                    "required_text": required_text,
-                }
-            )
-
-    rows.sort(key=lambda row: (row["value_text"], row["member"].display_name))
-    return condition_type, days, minimum, rows
-
-
 async def send_safe_dm(member: discord.Member, content: str) -> bool:
     try:
         await member.send(content)
@@ -3650,6 +3600,123 @@ def get_transfer_logs(guild_id: int, receiver_user_id: int, limit: int = 20):
         (str(guild_id), str(receiver_user_id), limit),
     )
     return cursor.fetchall()
+
+
+def get_daily_transfer_sent_amount(guild_id: int, sender_user_id: int, target_date=None) -> int:
+    target_date = target_date or get_kst_now().date()
+    start_at = datetime.combine(target_date, datetime.min.time(), tzinfo=ZoneInfo("Asia/Seoul"))
+    end_at = start_at + timedelta(days=1)
+    cursor.execute(
+        """
+        SELECT COALESCE(SUM(amount), 0)
+        FROM transfer_logs
+        WHERE guild_id=? AND sender_user_id=? AND created_at>=? AND created_at<?
+        """,
+        (str(guild_id), str(sender_user_id), dt_to_db(start_at), dt_to_db(end_at)),
+    )
+    row = cursor.fetchone()
+    return int(row[0] or 0)
+
+
+def upsert_business_registration(
+    guild_id: int,
+    user_id: int,
+    business_name: str,
+    industry: str,
+    logo_url: str | None,
+    created_by: int,
+):
+    cursor.execute(
+        """
+        INSERT INTO business_registrations(
+            guild_id, user_id, business_name, industry, logo_url, status, created_by, created_at, deleted_at
+        )
+        VALUES (?, ?, ?, ?, ?, 'active', ?, ?, NULL)
+        ON CONFLICT(guild_id, user_id)
+        DO UPDATE SET
+            business_name=excluded.business_name,
+            industry=excluded.industry,
+            logo_url=excluded.logo_url,
+            status='active',
+            created_by=excluded.created_by,
+            created_at=excluded.created_at,
+            deleted_at=NULL
+        """,
+        (
+            str(guild_id),
+            str(user_id),
+            business_name.strip(),
+            industry.strip(),
+            (logo_url or "").strip() or None,
+            str(created_by),
+            dt_to_db(get_kst_now()),
+        ),
+    )
+    conn.commit()
+
+
+def get_business_registration(guild_id: int, user_id: int):
+    cursor.execute(
+        """
+        SELECT guild_id, user_id, business_name, industry, logo_url, created_by, created_at
+        FROM business_registrations
+        WHERE guild_id=? AND user_id=? AND status='active'
+        """,
+        (str(guild_id), str(user_id)),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+
+    return {
+        "guild_id": row[0],
+        "user_id": int(row[1]),
+        "business_name": row[2],
+        "industry": row[3],
+        "logo_url": row[4],
+        "created_by": int(row[5]),
+        "created_at": row[6],
+    }
+
+
+def is_business_registered(guild_id: int, user_id: int) -> bool:
+    return get_business_registration(guild_id, user_id) is not None
+
+
+def get_business_registrations(guild_id: int, limit: int = 30):
+    cursor.execute(
+        """
+        SELECT user_id, business_name, industry, logo_url, created_at
+        FROM business_registrations
+        WHERE guild_id=? AND status='active'
+        ORDER BY created_at DESC, user_id ASC
+        LIMIT ?
+        """,
+        (str(guild_id), limit),
+    )
+    return [
+        {
+            "user_id": int(row[0]),
+            "business_name": row[1],
+            "industry": row[2],
+            "logo_url": row[3],
+            "created_at": row[4],
+        }
+        for row in cursor.fetchall()
+    ]
+
+
+def delete_business_registration(guild_id: int, user_id: int) -> bool:
+    cursor.execute(
+        """
+        UPDATE business_registrations
+        SET status='deleted', deleted_at=?
+        WHERE guild_id=? AND user_id=? AND status='active'
+        """,
+        (dt_to_db(get_kst_now()), str(guild_id), str(user_id)),
+    )
+    conn.commit()
+    return cursor.rowcount > 0
 
 
 def table_exists(table_name: str) -> bool:
@@ -4272,11 +4339,101 @@ def resolve_manual_credit_debt(debt_id: int):
     conn.commit()
 
 
+def repay_manual_credit_debt_amount(debt_id: int, amount: int):
+    debt = get_manual_credit_debt(debt_id)
+    if debt is None or debt["status"] != "active":
+        return None
+
+    payment_amount = max(0, min(amount, debt["amount"]))
+    if payment_amount <= 0:
+        return None
+
+    remaining_amount = debt["amount"] - payment_amount
+    if remaining_amount <= 0:
+        resolve_manual_credit_debt(debt_id)
+    else:
+        cursor.execute(
+            "UPDATE manual_credit_debts SET amount=? WHERE id=? AND status='active'",
+            (remaining_amount, debt_id),
+        )
+        conn.commit()
+
+    return {
+        "debt": debt,
+        "payment_amount": payment_amount,
+        "fully_repaid": remaining_amount <= 0,
+        "remaining_amount": max(0, remaining_amount),
+    }
+
+
 def get_total_credit_obligation(guild_id: int | None, user_id: int) -> int:
     total = get_total_active_loan_repayment(user_id)
     if guild_id is not None:
         total += get_total_active_manual_credit_debt(guild_id, user_id)
+        total += get_total_active_business_promissory_debt(guild_id, user_id)
     return total
+
+
+def apply_confiscated_amount_to_credit_obligations(guild_id: int, user_id: int, amount: int) -> int:
+    remaining_amount = max(0, amount)
+    applied_amount = 0
+
+    for loan in sorted(get_active_loans(user_id), key=lambda item: item["id"]):
+        if remaining_amount <= 0:
+            break
+        result = repay_loan_amount(loan["id"], remaining_amount)
+        if result is None:
+            continue
+        applied_amount += result["payment_amount"]
+        remaining_amount -= result["payment_amount"]
+
+    for debt in get_active_manual_credit_debts(guild_id, user_id):
+        if remaining_amount <= 0:
+            break
+        result = repay_manual_credit_debt_amount(debt["id"], remaining_amount)
+        if result is None:
+            continue
+        applied_amount += result["payment_amount"]
+        remaining_amount -= result["payment_amount"]
+
+    for note_id in get_active_business_promissory_notes_for_borrower(guild_id, user_id):
+        if remaining_amount <= 0:
+            break
+        payment_amount = repay_business_promissory_note_amount(guild_id, note_id, remaining_amount)
+        if payment_amount <= 0:
+            continue
+        applied_amount += payment_amount
+        remaining_amount -= payment_amount
+
+    return applied_amount
+
+
+def confiscate_assets_for_blacklist(guild_id: int, user_id: int, target_debt_amount: int) -> dict:
+    target_amount = max(0, target_debt_amount)
+    remaining_target = target_amount
+    balance_before = get_balance(user_id)
+    balance_confiscated = min(balance_before, remaining_target)
+    if balance_confiscated > 0:
+        add_balance(user_id, -balance_confiscated)
+        remaining_target -= balance_confiscated
+
+    saving = get_active_saving(guild_id, user_id)
+    saving_confiscated = 0
+    if saving is not None and remaining_target > 0:
+        saving_confiscated = confiscate_saving_amount(saving, remaining_target)
+        remaining_target -= saving_confiscated
+
+    total_confiscated = balance_confiscated + saving_confiscated
+    applied_to_debt = apply_confiscated_amount_to_credit_obligations(guild_id, user_id, total_confiscated)
+
+    return {
+        "balance_before": balance_before,
+        "balance_confiscated": balance_confiscated,
+        "saving_confiscated": saving_confiscated,
+        "total_confiscated": total_confiscated,
+        "applied_to_debt": applied_to_debt,
+        "remaining_target": remaining_target,
+    }
 
 
 def get_remaining_loan_limit(user_id: int) -> int:
@@ -4501,6 +4658,7 @@ def build_credit_embed(member: discord.abc.User, guild_id: int | None = None) ->
     active_loans = get_active_loans(member.id)
     manual_debts = get_active_manual_credit_debts(guild_id, member.id) if guild_id is not None else []
     manual_debt_total = get_total_active_manual_credit_debt(guild_id, member.id) if guild_id is not None else 0
+    business_note_total = get_total_active_business_promissory_debt(guild_id, member.id) if guild_id is not None else 0
     labor_penalty = ensure_active_labor_penalty(guild_id, member.id) if guild_id is not None else None
 
     if profile["is_blacklisted"]:
@@ -4550,8 +4708,8 @@ def build_credit_embed(member: discord.abc.User, guild_id: int | None = None) ->
             last_loan_used_text = profile["last_loan_used_at"]
         embed.add_field(name="마지막 대출 사용 시각", value=last_loan_used_text, inline=False)
 
-    if not active_loans and manual_debt_total <= 0:
-        embed.add_field(name="현재 대출 상태", value="진행 중인 대출/벌금 없음", inline=False)
+    if not active_loans and manual_debt_total <= 0 and business_note_total <= 0:
+        embed.add_field(name="현재 대출 상태", value="진행 중인 대출/벌금/사업자 차용증 없음", inline=False)
     else:
         latest_loan = active_loans[0] if active_loans else None
         latest_due_text = ""
@@ -4574,6 +4732,7 @@ def build_credit_embed(member: discord.abc.User, guild_id: int | None = None) ->
             inline=True,
         )
         embed.add_field(name="관리자 부채 합계", value=format_money(manual_debt_total), inline=False)
+        embed.add_field(name="사업자 차용증 합계", value=format_money(business_note_total), inline=False)
 
         if latest_loan is not None:
             embed.add_field(
@@ -5127,68 +5286,6 @@ def get_voice_ranking_between(guild: discord.Guild, start_dt: datetime, end_dt: 
 
     rows.sort(key=lambda item: item[1], reverse=True)
     return rows[:limit]
-
-
-def get_activity_report_setting_int(guild_id: int, key: str, default_value: str, minimum: int, maximum: int) -> int:
-    raw = get_setting_with_default(guild_id, key, default_value)
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        value = int(default_value)
-    return max(minimum, min(maximum, value))
-
-
-def get_activity_report_time(guild_id: int) -> tuple[int, int]:
-    hour = get_activity_report_setting_int(guild_id, "activity_report_hour", DEFAULT_ACTIVITY_REPORT_HOUR, 0, 23)
-    minute = get_activity_report_setting_int(guild_id, "activity_report_minute", DEFAULT_ACTIVITY_REPORT_MINUTE, 0, 59)
-    return hour, minute
-
-
-def get_activity_report_weekday(guild_id: int) -> int:
-    return get_activity_report_setting_int(guild_id, "activity_report_weekday", DEFAULT_ACTIVITY_REPORT_WEEKDAY, 0, 6)
-
-
-def get_activity_report_period(period_type: str) -> tuple[str, datetime, datetime]:
-    now = get_kst_now()
-    today_start = datetime.combine(now.date(), datetime.min.time(), tzinfo=ZoneInfo("Asia/Seoul"))
-    if period_type == "weekly":
-        end_dt = today_start
-        start_dt = end_dt - timedelta(days=7)
-        title = f"{start_dt.strftime('%Y-%m-%d')} ~ {(end_dt - timedelta(seconds=1)).strftime('%Y-%m-%d')}"
-    else:
-        end_dt = today_start
-        start_dt = end_dt - timedelta(days=1)
-        title = start_dt.strftime("%Y-%m-%d")
-    return title, start_dt, end_dt
-
-
-def build_activity_report_embed(guild: discord.Guild, period_type: str) -> discord.Embed:
-    period_title, start_dt, end_dt = get_activity_report_period(period_type)
-    report_name = "주간" if period_type == "weekly" else "일간"
-    voice_rows = get_voice_ranking_between(guild, start_dt, end_dt, 3)
-    chat_count = get_chat_message_count_between(guild.id, start_dt, end_dt)
-    chicken_count = get_chicken_proof_count_between(guild.id, start_dt, end_dt)
-
-    if voice_rows:
-        voice_lines = [
-            f"**{index}. {member.display_name}** - `{format_duration_korean(total_seconds)}`"
-            for index, (member, total_seconds) in enumerate(voice_rows, start=1)
-        ]
-        voice_text = "\n".join(voice_lines)
-    else:
-        voice_text = "집계된 음성채널 기록이 없습니다."
-
-    embed = discord.Embed(
-        title=f"📊 {report_name} 활동 보고서",
-        description=f"집계 기간: `{period_title}`",
-        color=0x3498DB,
-        timestamp=get_kst_now(),
-    )
-    embed.add_field(name="🎙 음성로그 랭킹 TOP 3", value=voice_text, inline=False)
-    embed.add_field(name="💬 채팅 기록", value=f"`{chat_count:,}개`", inline=True)
-    embed.add_field(name="🍗 치킨 인증글", value=f"`{chicken_count:,}개`", inline=True)
-    embed.set_footer(text="채팅/치킨 기록은 기능 적용 이후부터 집계됩니다.")
-    return embed
 
 
 def clear_active_voice_session(guild_id: int, user_id: int):
@@ -6102,6 +6199,41 @@ def cancel_saving(saving_id: int):
     conn.commit()
 
 
+def confiscate_saving(saving_id: int):
+    cursor.execute(
+        """
+        UPDATE savings
+        SET status='confiscated', claimed_at=?
+        WHERE id=? AND status='active'
+        """,
+        (dt_to_db(get_kst_now()), saving_id),
+    )
+    conn.commit()
+
+
+def confiscate_saving_amount(saving: dict, amount: int) -> int:
+    confiscate_amount = min(max(0, amount), int(saving["principal"]))
+    if confiscate_amount <= 0:
+        return 0
+
+    remaining_principal = int(saving["principal"]) - confiscate_amount
+    remaining_total_amount = max(0, int(saving["total_amount"]) - confiscate_amount)
+    if remaining_principal <= 0:
+        confiscate_saving(saving["id"])
+    else:
+        cursor.execute(
+            """
+            UPDATE savings
+            SET principal=?, total_amount=?
+            WHERE id=? AND status='active'
+            """,
+            (remaining_principal, remaining_total_amount, saving["id"]),
+        )
+        conn.commit()
+
+    return confiscate_amount
+
+
 def get_due_savings(now: datetime):
     cursor.execute(
         """
@@ -6198,6 +6330,7 @@ def resolve_labor_penalty_if_complete(guild_id: int, user_id: int, penalty: dict
     set_credit_blacklisted(user_id, False)
     set_credit_grade(user_id, INITIAL_CREDIT_GRADE)
     reset_loan_progress_amount(user_id)
+    clear_labor_gacha_tickets(guild_id, user_id)
     return penalty, True
 
 
@@ -6263,6 +6396,23 @@ def remove_labor_gacha_tickets(guild_id: int, user_id: int, amount: int) -> int:
     return remove_count
 
 
+def clear_labor_gacha_tickets(guild_id: int, user_id: int) -> int:
+    current_count = get_labor_gacha_ticket_count(guild_id, user_id)
+    if current_count <= 0:
+        return 0
+
+    cursor.execute(
+        """
+        UPDATE labor_gacha_tickets
+        SET ticket_count=0
+        WHERE guild_id=? AND user_id=?
+        """,
+        (str(guild_id), str(user_id)),
+    )
+    conn.commit()
+    return current_count
+
+
 def consume_labor_gacha_ticket(guild_id: int, user_id: int) -> bool:
     current_count = get_labor_gacha_ticket_count(guild_id, user_id)
     if current_count <= 0:
@@ -6285,9 +6435,9 @@ def roll_labor_gacha():
     weights = [item[2] for item in LABOR_GACHA_RESULTS]
     label = random.choices(labels, weights=weights, k=1)[0]
 
-    for result_label, percent, _weight in LABOR_GACHA_RESULTS:
+    for result_label, reduce_count, _weight in LABOR_GACHA_RESULTS:
         if result_label == label:
-            return result_label, percent
+            return result_label, reduce_count
 
     return "꽝", 0
 
@@ -6402,6 +6552,25 @@ def get_active_promissory_notes_for_user(guild_id: int, user_id: int):
     return notes
 
 
+def get_total_active_business_promissory_debt(guild_id: int, borrower_user_id: int) -> int:
+    cursor.execute(
+        """
+        SELECT COALESCE(SUM(p.amount), 0)
+        FROM promissory_notes p
+        INNER JOIN business_registrations b
+            ON b.guild_id=p.guild_id
+            AND b.user_id=p.lender_user_id
+            AND b.status='active'
+        WHERE p.guild_id=?
+          AND p.borrower_user_id=?
+          AND p.status='active'
+        """,
+        (str(guild_id), str(borrower_user_id)),
+    )
+    row = cursor.fetchone()
+    return int(row[0] or 0)
+
+
 def resolve_promissory_note(note_id: int):
     cursor.execute(
         """
@@ -6413,6 +6582,59 @@ def resolve_promissory_note(note_id: int):
     )
     conn.commit()
     return cursor.rowcount > 0
+
+
+def repay_business_promissory_note_amount(guild_id: int, note_id: int, amount: int) -> int:
+    note = get_promissory_note(note_id)
+    if (
+        note is None
+        or note["guild_id"] != str(guild_id)
+        or note["status"] != "active"
+        or not is_business_registered(guild_id, note["lender_user_id"])
+    ):
+        return 0
+
+    payment_amount = max(0, min(amount, note["amount"]))
+    if payment_amount <= 0:
+        return 0
+
+    add_balance(note["lender_user_id"], payment_amount)
+    remaining_amount = note["amount"] - payment_amount
+    if remaining_amount <= 0:
+        resolve_promissory_note(note_id)
+    else:
+        remaining_principal = max(0, note["principal_amount"] - payment_amount)
+        remaining_interest = max(0, remaining_amount - remaining_principal)
+        cursor.execute(
+            """
+            UPDATE promissory_notes
+            SET amount=?, principal_amount=?, interest_amount=?
+            WHERE id=? AND status='active'
+            """,
+            (remaining_amount, remaining_principal, remaining_interest, note_id),
+        )
+        conn.commit()
+
+    return payment_amount
+
+
+def get_active_business_promissory_notes_for_borrower(guild_id: int, borrower_user_id: int):
+    cursor.execute(
+        """
+        SELECT p.id
+        FROM promissory_notes p
+        INNER JOIN business_registrations b
+            ON b.guild_id=p.guild_id
+            AND b.user_id=p.lender_user_id
+            AND b.status='active'
+        WHERE p.guild_id=?
+          AND p.borrower_user_id=?
+          AND p.status='active'
+        ORDER BY p.id ASC
+        """,
+        (str(guild_id), str(borrower_user_id)),
+    )
+    return [int(row[0]) for row in cursor.fetchall()]
 
 
 def build_promissory_note_embed(
@@ -6644,13 +6866,15 @@ LABOR_MINE_TABLE = {
         "label": "심층 광맥",
         "color": 0x8E44AD,
         "results": [
-            {"name": "철광석", "weight": 625, "progress": 2, "description": "위험을 감수한 보람은 있었습니다. 철광석을 확보했습니다.", "ticket_bonus": 0},
-            {"name": "은광석", "weight": 450, "progress": 3, "description": "심층부에서 은광석을 찾아냈습니다. 꽤 괜찮은 성과입니다.", "ticket_bonus": 0},
-            {"name": "금광석", "weight": 200, "progress": 4, "description": "희미하게 빛나는 금광석을 발견했습니다. 탄광장도 탐낼 만한 물건입니다.", "ticket_bonus": 0},
-            {"name": "다이아 원석", "weight": 75, "progress": 7, "description": "다이아 원석을 캐냈습니다! 오늘 작업은 전설로 남을 겁니다.", "ticket_bonus": 0},
-            {"name": "꽝", "weight": 600, "progress": 0, "description": "깊숙이 들어갔지만 광맥을 놓쳤습니다. 체력만 빠졌습니다.", "ticket_bonus": 0},
-            {"name": "붕락", "weight": 548, "progress": 0, "description": "탄광이 무너져 작업을 중단했습니다. 겨우 몸만 빠져나왔습니다.", "ticket_bonus": 0},
-            {"name": "노동가챠권 발견", "weight": 2, "progress": 1, "description": "심층부 틈새에서 노동가챠권을 찾아냈습니다. 위험을 감수한 보상이 따릅니다.", "ticket_bonus": 1},
+            {"name": "석탄", "weight": 25, "progress": 1, "description": "심층부에서 석탄을 캐냈습니다. 작지만 확실하게 작업을 마쳤습니다.", "ticket_bonus": 0},
+            {"name": "철광석", "weight": 22, "progress": 2, "description": "위험을 감수한 보람은 있었습니다. 철광석을 확보했습니다.", "ticket_bonus": 0},
+            {"name": "은광석", "weight": 18, "progress": 3, "description": "심층부에서 은광석을 찾아냈습니다. 꽤 괜찮은 성과입니다.", "ticket_bonus": 0},
+            {"name": "금광석", "weight": 15, "progress": 4, "description": "희미하게 빛나는 금광석을 발견했습니다. 탄광장도 탐낼 만한 물건입니다.", "ticket_bonus": 0},
+            {"name": "다이아 원석", "weight": 10, "progress": 5, "description": "다이아 원석을 캐냈습니다! 오늘 작업은 전설로 남을 겁니다.", "ticket_bonus": 0},
+            {"name": "고대 광맥", "weight": 5, "progress": 10, "description": "묵직한 고대 광맥을 터뜨렸습니다. 노동이 크게 줄어듭니다.", "ticket_bonus": 0},
+            {"name": "전설의 광맥", "weight": 3, "progress": 20, "description": "전설급 광맥을 발견했습니다. 아오지의 공기가 달라졌습니다.", "ticket_bonus": 0},
+            {"name": "심연의 보석", "weight": 1, "progress": 25, "description": "심연 깊은 곳에서 보석을 캐냈습니다. 믿기 힘든 대박입니다.", "ticket_bonus": 0},
+            {"name": "노동가챠권 발견", "weight": 1, "progress": 1, "description": "심층부 틈새에서 노동가챠권을 찾아냈습니다. 위험을 감수한 보상이 따릅니다.", "ticket_bonus": 1},
         ],
     },
 }
@@ -7294,6 +7518,12 @@ def format_playing_card(card: str) -> str:
 
 
 def get_playing_card_asset_path(card: str | None, hidden: bool = False) -> Path:
+    filename = "Card-back.png" if hidden or card is None else f"{card}.png"
+    for asset_dir in PLAYING_CARD_ASSET_DIRS:
+        path = asset_dir / filename
+        if path.exists():
+            return path
+
     if hidden or card is None:
         return PLAYING_CARD_ASSET_DIR / "Card-back.png"
     return PLAYING_CARD_ASSET_DIR / f"{card}.png"
@@ -11978,6 +12208,8 @@ class PromissoryNoteRequestView(discord.ui.View):
             interaction.channel.id,
             interaction.message.id,
         )
+        if is_business_registered(self.guild_id, self.lender_user_id):
+            refresh_active_labor_penalty_debt(self.guild_id, self.borrower_user_id)
 
         embed = build_promissory_note_embed(
             lender,
@@ -11991,7 +12223,10 @@ class PromissoryNoteRequestView(discord.ui.View):
             status_text="수락됨",
             note_id=note_id,
         )
-        embed.set_footer(text="상환이 끝나면 /차용증삭제 로 정리할 수 있습니다.")
+        if is_business_registered(self.guild_id, self.lender_user_id):
+            embed.set_footer(text="사업자 차용증입니다. 채무자의 노동량에 자동 반영되며 /차용증상환 으로 자동 상환할 수 있습니다.")
+        else:
+            embed.set_footer(text="상환이 끝나면 /차용증삭제 로 정리할 수 있습니다.")
 
         for item in self.children:
             item.disabled = True
@@ -12338,62 +12573,6 @@ async def set_voice_bonus_amount(interaction: discord.Interaction, amount: int):
     await interaction.response.send_message(
         f"음성 성과급을 `1시간당 {format_money(amount)}`으로 설정했습니다.\n"
         f"신용불량자는 금액 설정과 관계없이 `1시간당 노동가챠권 {VOICE_BONUS_BLACKLIST_TICKETS_PER_HOUR}장`을 받습니다.",
-        ephemeral=True,
-    )
-
-
-@settings_group.command(name="활동보고서채널", description="현재 채널을 활동 보고서 자동 발송 채널로 설정합니다.")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_activity_report_channel(interaction: discord.Interaction):
-    if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
-        return
-
-    set_guild_setting(interaction.guild.id, "activity_report_channel_id", str(interaction.channel.id))
-    await interaction.response.send_message(
-        f"활동 보고서 채널을 {interaction.channel.mention} 으로 설정했습니다.",
-        ephemeral=True,
-    )
-
-
-@settings_group.command(name="활동보고서시간", description="활동 보고서 자동 발송 시간을 설정합니다.")
-@app_commands.rename(hour="시", minute="분")
-@app_commands.describe(hour="0~23 사이의 시", minute="0~59 사이의 분")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_activity_report_time(interaction: discord.Interaction, hour: int, minute: int = 0):
-    if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
-        return
-
-    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
-        await interaction.response.send_message("시간은 0~23시, 분은 0~59분으로 입력해주세요.", ephemeral=True)
-        return
-
-    set_guild_setting(interaction.guild.id, "activity_report_hour", str(hour))
-    set_guild_setting(interaction.guild.id, "activity_report_minute", str(minute))
-    await interaction.response.send_message(
-        f"활동 보고서 시간을 `{hour:02d}:{minute:02d}`으로 설정했습니다.",
-        ephemeral=True,
-    )
-
-
-@settings_group.command(name="활동보고서요일", description="주간 활동 보고서 발송 요일을 설정합니다.")
-@app_commands.rename(weekday="요일번호")
-@app_commands.describe(weekday="0=월요일, 1=화요일, 2=수요일, 3=목요일, 4=금요일, 5=토요일, 6=일요일")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_activity_report_weekday(interaction: discord.Interaction, weekday: int):
-    if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
-        return
-
-    if weekday < 0 or weekday > 6:
-        await interaction.response.send_message("요일번호는 0부터 6까지만 입력할 수 있습니다. 0=월요일, 6=일요일입니다.", ephemeral=True)
-        return
-
-    weekday_names = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"]
-    set_guild_setting(interaction.guild.id, "activity_report_weekday", str(weekday))
-    await interaction.response.send_message(
-        f"주간 활동 보고서 발송 요일을 `{weekday_names[weekday]}`로 설정했습니다.",
         ephemeral=True,
     )
 
@@ -12861,27 +13040,6 @@ async def voice_bonus_panel(interaction: discord.Interaction):
     )
 
 
-@bot.tree.command(name="활동보고서", description="서버 활동 보고서를 즉시 출력합니다.")
-@app_commands.rename(period="기간")
-@app_commands.describe(period="일간 또는 주간")
-@app_commands.checks.has_permissions(administrator=True)
-async def activity_report(interaction: discord.Interaction, period: str = "일간"):
-    if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
-        return
-
-    normalized = period.strip()
-    if normalized in {"주간", "weekly", "week"}:
-        period_type = "weekly"
-    elif normalized in {"일간", "daily", "day"}:
-        period_type = "daily"
-    else:
-        await interaction.response.send_message("기간은 `일간` 또는 `주간`으로 입력해주세요.", ephemeral=True)
-        return
-
-    await interaction.response.send_message(embed=build_activity_report_embed(interaction.guild, period_type))
-
-
 # ----------------------------
 # 재화 / 적금 명령어
 # ----------------------------
@@ -12913,6 +13071,113 @@ async def balance(interaction: discord.Interaction):
     await interaction.response.send_message(
         f"{interaction.user.mention}님의 현재 잔액은 `{format_money(get_balance(interaction.user.id))}`입니다."
     )
+
+
+class BusinessRegistrationModal(discord.ui.Modal, title="사업자 등록"):
+    def __init__(self, target: discord.Member):
+        super().__init__(timeout=None)
+        self.target = target
+        self.business_name = discord.ui.TextInput(
+            label="사업자명",
+            placeholder="예: 머로상사",
+            max_length=50,
+        )
+        self.industry = discord.ui.TextInput(
+            label="업종",
+            placeholder="예: 금융 / 도박 / 광산 / 이벤트",
+            max_length=50,
+        )
+        self.logo_url = discord.ui.TextInput(
+            label="로고 URL",
+            placeholder="이미지 URL을 입력하세요. 없으면 비워둬도 됩니다.",
+            required=False,
+            max_length=300,
+        )
+        self.add_item(self.business_name)
+        self.add_item(self.industry)
+        self.add_item(self.logo_url)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+            return
+
+        business_name = str(self.business_name.value).strip()
+        industry = str(self.industry.value).strip()
+        logo_url = str(self.logo_url.value).strip() or None
+        if not business_name or not industry:
+            await interaction.response.send_message("사업자명과 업종은 반드시 입력해야 합니다.", ephemeral=True)
+            return
+
+        upsert_business_registration(
+            interaction.guild.id,
+            self.target.id,
+            business_name,
+            industry,
+            logo_url,
+            interaction.user.id,
+        )
+
+        embed = discord.Embed(title="✅ 사업자 등록 완료", color=0x2ECC71)
+        embed.add_field(name="대상", value=self.target.mention, inline=False)
+        embed.add_field(name="사업자명", value=business_name, inline=False)
+        embed.add_field(name="업종", value=industry, inline=False)
+        embed.add_field(name="송금 한도", value="사업자 등록 인원은 일일 송금 한도 제한이 없습니다.", inline=False)
+        if logo_url:
+            embed.set_image(url=logo_url)
+        await interaction.response.send_message(embed=embed, ephemeral=False)
+
+
+@business_group.command(name="등록", description="특정 인원을 사업자로 등록합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+@app_commands.rename(member="인원")
+async def business_register(interaction: discord.Interaction, member: discord.Member):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+    if member.bot:
+        await interaction.response.send_message("봇은 사업자로 등록할 수 없습니다.", ephemeral=True)
+        return
+
+    await interaction.response.send_modal(BusinessRegistrationModal(member))
+
+
+@business_group.command(name="삭제", description="특정 인원의 사업자 등록을 삭제합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+@app_commands.rename(member="인원")
+async def business_delete(interaction: discord.Interaction, member: discord.Member):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    deleted = delete_business_registration(interaction.guild.id, member.id)
+    if not deleted:
+        await interaction.response.send_message(f"{member.mention}님은 등록된 사업자가 아닙니다.", ephemeral=True)
+        return
+
+    await interaction.response.send_message(f"{member.mention}님의 사업자 등록을 삭제했습니다.", ephemeral=False)
+
+
+@business_group.command(name="목록", description="현재 서버의 사업자 등록 목록을 확인합니다.")
+async def business_list(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    rows = get_business_registrations(interaction.guild.id, 30)
+    embed = discord.Embed(title="🏢 사업자 목록", color=0x3498DB)
+    if not rows:
+        embed.description = "등록된 사업자가 없습니다."
+    else:
+        lines = []
+        for index, row in enumerate(rows, start=1):
+            member = interaction.guild.get_member(row["user_id"])
+            name = member.mention if member else f"<@{row['user_id']}>"
+            lines.append(f"{index}. {name}\n사업자명: `{row['business_name']}`\n업종: `{row['industry']}`")
+        embed.description = "\n\n".join(lines)
+        embed.set_footer(text="최근 등록 기준 최대 30명까지 표시합니다.")
+
+    await interaction.response.send_message(embed=embed, ephemeral=False)
 
 
 @bot.tree.command(name="적금", description="현재 서버 설정 기준으로 적금에 가입합니다.")
@@ -13050,6 +13315,22 @@ async def transfer(interaction: discord.Interaction, member: discord.Member, amo
     if not can_afford(interaction.user.id, amount):
         await interaction.response.send_message("잔액이 부족합니다.", ephemeral=True)
         return
+
+    if not is_business_registered(interaction.guild.id, interaction.user.id):
+        sent_today = get_daily_transfer_sent_amount(interaction.guild.id, interaction.user.id)
+        remaining_daily_limit = max(0, NON_BUSINESS_DAILY_TRANSFER_LIMIT - sent_today)
+        if amount > remaining_daily_limit:
+            await interaction.response.send_message(
+                (
+                    "사업자 등록이 되지 않은 인원은 하루 송금 한도가 있습니다.\n"
+                    f"일일 한도: `{format_money(NON_BUSINESS_DAILY_TRANSFER_LIMIT)}`\n"
+                    f"오늘 이미 송금한 금액: `{format_money(sent_today)}`\n"
+                    f"오늘 추가 송금 가능 금액: `{format_money(remaining_daily_limit)}`\n"
+                    "한도 없이 송금하려면 관리자에게 `/사업자 등록`을 요청해주세요."
+                ),
+                ephemeral=True,
+            )
+            return
 
     note_text = (note or "").strip() or None
     add_balance(interaction.user.id, -amount)
@@ -13497,111 +13778,6 @@ async def initialize_legacy_guests(interaction: discord.Interaction):
         f"다음 마감일: {format_attendance_date(today + timedelta(days=GUEST_INTERVAL_DAYS))}",
         ephemeral=True,
     )
-
-
-@bot.tree.command(name="경고조건설정", description="클랜원 활동 경고 조건을 설정합니다.")
-@app_commands.default_permissions(manage_guild=True)
-@app_commands.rename(condition_type="기준", days="기간일수", minimum="최소값")
-@app_commands.describe(
-    condition_type="attendance 또는 voice",
-    days="며칠 기준으로 확인할지 입력합니다.",
-    minimum="출석 기준이면 횟수, 음성 기준이면 시간입니다.",
-)
-async def set_activity_warning_condition(interaction: discord.Interaction, condition_type: str, days: int, minimum: float):
-    if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
-        return
-
-    normalized_type = condition_type.strip().lower()
-    if normalized_type in ("출석", "attendance"):
-        normalized_type = "attendance"
-    elif normalized_type in ("음성", "voice", "voice_hours"):
-        normalized_type = "voice"
-    else:
-        await interaction.response.send_message("기준은 `출석` 또는 `음성`으로 입력해주세요.", ephemeral=True)
-        return
-
-    if days <= 0:
-        await interaction.response.send_message("기간일수는 1일 이상이어야 합니다.", ephemeral=True)
-        return
-
-    if minimum < 0:
-        await interaction.response.send_message("최소값은 0 이상이어야 합니다.", ephemeral=True)
-        return
-
-    set_guild_setting(interaction.guild.id, "activity_warning_type", normalized_type)
-    set_guild_setting(interaction.guild.id, "activity_warning_days", str(days))
-    if normalized_type == "voice":
-        set_guild_setting(interaction.guild.id, "activity_warning_min_voice_hours", str(minimum))
-        condition_text = f"최근 `{days}일` 동안 음성채널 `{minimum:g}시간` 이상"
-    else:
-        attendance_minimum = int(minimum)
-        set_guild_setting(interaction.guild.id, "activity_warning_min_attendance", str(attendance_minimum))
-        condition_text = f"최근 `{days}일` 동안 출석 `{attendance_minimum}회` 이상"
-
-    await interaction.response.send_message(
-        f"✅ 경고자 조건을 설정했습니다.\n활동 조건: {condition_text}",
-        ephemeral=True,
-    )
-
-
-@bot.tree.command(name="경고조건확인", description="현재 클랜원 활동 경고 조건을 확인합니다.")
-@app_commands.default_permissions(manage_guild=True)
-async def show_activity_warning_condition(interaction: discord.Interaction):
-    if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
-        return
-
-    condition_type, days, minimum = get_activity_warning_config(interaction.guild.id)
-    if condition_type == "voice":
-        condition_text = f"최근 `{days}일` 동안 음성채널 `{float(minimum):g}시간` 이상"
-    else:
-        condition_text = f"최근 `{days}일` 동안 출석 `{int(minimum)}회` 이상"
-
-    role_id = get_guild_setting_role_id(interaction.guild.id, "upgrade_clan_role_id")
-    role_text = f"<@&{role_id}>" if role_id else "`/세팅 클랜등업역할` 미설정"
-    await interaction.response.send_message(
-        f"📋 현재 경고자 조건\n대상 역할: {role_text}\n활동 조건: {condition_text}",
-        ephemeral=True,
-    )
-
-
-@bot.tree.command(name="경고자조회", description="현재 활동 조건을 충족하지 못한 클랜원을 조회합니다.")
-@app_commands.default_permissions(manage_guild=True)
-async def show_activity_warning_targets(interaction: discord.Interaction):
-    if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
-        return
-
-    condition_type, days, minimum, rows = get_activity_warning_target_rows(interaction.guild)
-    if get_guild_setting_role_id(interaction.guild.id, "upgrade_clan_role_id") is None:
-        await interaction.response.send_message("먼저 `/세팅 클랜등업역할`을 설정해주세요.", ephemeral=True)
-        return
-
-    condition_label = "음성채널" if condition_type == "voice" else "출석"
-    required_text = f"{float(minimum):g}시간" if condition_type == "voice" else f"{int(minimum)}회"
-    lines = []
-    for index, row in enumerate(rows[:30], start=1):
-        lines.append(
-            f"{index}. {row['member'].mention} - 현재 `{row['value_text']}` / 필요 `{row['required_text']}`"
-        )
-
-    embed = discord.Embed(
-        title="⚠ 활동 경고 대상 조회",
-        description=(
-            f"기준: 최근 `{days}일` / {condition_label} `{required_text}` 이상\n"
-            f"대상: 클랜원 역할 보유자"
-        ),
-        color=0xE67E22,
-    )
-    embed.add_field(
-        name=f"경고 대상 {len(rows)}명",
-        value=join_compact_discord_field_lines(lines) if lines else "현재 경고 대상자가 없습니다.",
-        inline=False,
-    )
-    if len(rows) > 30:
-        embed.set_footer(text="표시 제한으로 최대 30명까지만 보여줍니다.")
-    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(name="추첨권등록", description="서버 재화로 구매할 수 있는 추첨권을 등록합니다.")
@@ -14903,7 +15079,7 @@ async def loan_money(interaction: discord.Interaction, amount: int):
         await interaction.response.send_message(
             (
                 "동시에 진행할 수 있는 대출은 최대 2건입니다.\n"
-                "기존 대출을 `/대출상환` 또는 `/중도상환`으로 정리한 뒤 다시 시도해주세요."
+                "기존 대출을 `/대출상환`으로 정리한 뒤 다시 시도해주세요."
             ),
             ephemeral=True,
         )
@@ -14911,7 +15087,7 @@ async def loan_money(interaction: discord.Interaction, amount: int):
 
     if remaining_limit <= 0:
         await interaction.response.send_message(
-            f"현재 {grade}레벨의 대출 한도를 모두 사용 중입니다. `/대출상환` 또는 `/중도상환` 후 다시 시도해주세요.",
+            f"현재 {grade}레벨의 대출 한도를 모두 사용 중입니다. `/대출상환` 후 다시 시도해주세요.",
             ephemeral=True,
         )
         return
@@ -14966,99 +15142,6 @@ async def loan_money(interaction: discord.Interaction, amount: int):
         view=LoanConfirmView(interaction.guild.id, interaction.user.id, amount),
         ephemeral=True,
     )
-
-
-@bot.tree.command(name="중도상환", description="현재 대출을 즉시 전액 상환합니다.")
-async def repay_loan_command(interaction: discord.Interaction):
-    active_loans = get_active_loans(interaction.user.id)
-    if not active_loans:
-        await interaction.response.send_message("현재 상환할 대출이 없습니다.", ephemeral=True)
-        return
-
-    repayment_amount = sum(loan["total_repayment"] for loan in active_loans)
-    if not can_afford(interaction.user.id, repayment_amount):
-        await interaction.response.send_message(
-            f"상환 금액 `{format_money(repayment_amount)}`이 부족합니다.",
-            ephemeral=True,
-        )
-        return
-
-    profile = get_credit_profile(interaction.user.id)
-    previous_grade_text = get_credit_grade_text(interaction.user.id)
-    loan_progress_amount = profile["loan_progress_amount"]
-
-    add_balance(interaction.user.id, -repayment_amount)
-    repay_loans([loan["id"] for loan in active_loans])
-
-    grade_up = False
-
-    if profile["is_blacklisted"]:
-        manual_debt_total = get_total_active_manual_credit_debt(interaction.guild.id, interaction.user.id) if interaction.guild else 0
-        if manual_debt_total <= 0:
-            set_credit_blacklisted(interaction.user.id, False)
-            set_credit_grade(interaction.user.id, INITIAL_CREDIT_GRADE)
-            if interaction.guild is not None:
-                delete_labor_penalty(interaction.guild.id, interaction.user.id)
-                await sync_blacklist_role(interaction.user, False)
-            grade_up = True
-        elif interaction.guild is not None:
-            refresh_active_labor_penalty_debt(interaction.guild.id, interaction.user.id)
-    else:
-        required_amount = get_loan_limit_by_grade(profile["grade"])
-        if profile["grade"] < MAX_CREDIT_LEVEL and loan_progress_amount >= required_amount:
-            upgrade_credit_grade(interaction.user.id)
-            grade_up = True
-
-    current_grade_text = get_credit_grade_text(interaction.user.id)
-
-    embed = discord.Embed(title="✅ 대출 상환 완료", color=0x2ECC71)
-    embed.add_field(name="상환한 대출 수", value=f"{len(active_loans)}건", inline=False)
-    embed.add_field(name="상환 금액", value=format_money(repayment_amount), inline=False)
-    embed.add_field(name="상환 전 신용레벨", value=previous_grade_text, inline=False)
-    embed.add_field(name="현재 신용레벨", value=current_grade_text, inline=False)
-    embed.add_field(name="현재 잔액", value=format_money(get_balance(interaction.user.id)), inline=False)
-    embed.add_field(
-        name="한도 회복 안내",
-        value=f"상환한 원금만큼의 대출 한도는 `{LOAN_LIMIT_RECOVERY_DELAY_MINUTES}분` 뒤 회복됩니다.",
-        inline=False,
-    )
-
-    if profile["is_blacklisted"]:
-        manual_debt_total = get_total_active_manual_credit_debt(interaction.guild.id, interaction.user.id) if interaction.guild else 0
-        if manual_debt_total <= 0:
-            embed.add_field(
-                name="레벨 변화",
-                value=f"기존 대출을 모두 상환하여 신용불량자 상태가 해제되고 {INITIAL_CREDIT_LEVEL}레벨로 복귀했습니다.",
-                inline=False,
-            )
-        else:
-            embed.add_field(
-                name="레벨 변화",
-                value=(
-                    "일반 대출은 모두 상환했지만 관리자 부채가 남아 있어 신용불량자 상태는 유지됩니다.\n"
-                    f"남은 관리자 부채: `{format_money(manual_debt_total)}`"
-                ),
-                inline=False,
-            )
-    elif grade_up:
-        embed.add_field(
-            name="레벨 변화",
-            value="현재 레벨의 최대 한도 이상 대출을 정상 상환하여 신용레벨이 1단계 상승했습니다.",
-            inline=False,
-        )
-    else:
-        required_amount = get_loan_limit_by_grade(profile["grade"])
-        embed.add_field(
-            name="레벨 변화",
-            value=(
-                "대출은 정상 상환했지만 신용레벨은 유지되었습니다.\n"
-                f"레벨 상승을 위해서는 현재 레벨 기준 최대 한도인 `{format_money(required_amount)}` 이상 대출 실적을 쌓아야 합니다.\n"
-                f"현재 누적 실적: `{format_money(loan_progress_amount)}`"
-            ),
-            inline=False,
-        )
-
-    await interaction.response.send_message(embed=embed)
 
 
 @bot.tree.command(name="내신용", description="현재 신용레벨과 대출 상태를 확인합니다.")
@@ -15171,14 +15254,14 @@ async def labor_gacha(interaction: discord.Interaction):
         await interaction.response.send_message("노동가챠권 사용에 실패했습니다. 다시 시도해주세요.", ephemeral=True)
         return
 
-    result_label, percent = roll_labor_gacha()
+    result_label, reduce_count = roll_labor_gacha()
     remaining_before = max(0, penalty["required_count"] - penalty["completed_count"])
     reduction_count = 0
     resolved = False
     updated_penalty = penalty
 
-    if percent > 0 and remaining_before > 0:
-        reduction_count = min(remaining_before, max(1, math.ceil(remaining_before * percent / 100)))
+    if reduce_count > 0 and remaining_before > 0:
+        reduction_count = min(remaining_before, reduce_count)
         updated_penalty, resolved = apply_labor_progress(interaction.guild.id, interaction.user.id, reduction_count)
         if updated_penalty is None:
             await interaction.response.send_message("노동가챠 처리 중 오류가 발생했습니다.", ephemeral=True)
@@ -15206,10 +15289,10 @@ async def labor_gacha(interaction: discord.Interaction):
             inline=False,
         )
         await sync_blacklist_role(interaction.user, False)
-    elif percent == 0:
+    elif reduce_count == 0:
         embed.add_field(name="결과 안내", value="이번에는 꽝입니다. 다음 가챠권을 노려보세요.", inline=False)
     else:
-        embed.add_field(name="결과 안내", value=f"남은 노동 횟수의 {percent}%가 감소했습니다.", inline=False)
+        embed.add_field(name="결과 안내", value=f"남은 노동 횟수가 `{reduction_count}회` 감소했습니다.", inline=False)
 
     await interaction.response.send_message(embed=embed)
 
@@ -15349,8 +15432,72 @@ async def promissory_note_list(interaction: discord.Interaction, member: discord
         description="\n\n".join(lines[:20]),
         color=0x3498DB,
     )
-    embed.set_footer(text="최근 활성 차용증 최대 20개를 표시합니다. 상환 완료 후에는 /차용증삭제 로 정리할 수 있습니다.")
+    embed.set_footer(text="최근 활성 차용증 최대 20개를 표시합니다. 사업자 채권자의 차용증은 /차용증상환 으로 자동 상환할 수 있습니다.")
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="차용증상환", description="차용증 번호를 지정해 상환하고 자동으로 완료 처리합니다.")
+@app_commands.rename(note_id="차용증번호")
+@app_commands.describe(note_id="상환할 차용증 번호")
+async def repay_promissory_note_command(interaction: discord.Interaction, note_id: int):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    note_info = get_promissory_note(note_id)
+    if note_info is None or note_info["guild_id"] != str(interaction.guild.id):
+        await interaction.response.send_message("해당 차용증을 찾을 수 없습니다.", ephemeral=True)
+        return
+
+    if note_info["status"] != "active":
+        await interaction.response.send_message("이미 상환 또는 정리된 차용증입니다.", ephemeral=True)
+        return
+
+    if interaction.user.id != note_info["borrower_user_id"]:
+        await interaction.response.send_message("차용증 상환은 채무자 본인만 진행할 수 있습니다.", ephemeral=True)
+        return
+
+    if not is_business_registered(interaction.guild.id, note_info["lender_user_id"]):
+        await interaction.response.send_message(
+            "사업자 등록된 채권자의 차용증만 `/차용증상환`으로 자동 상환할 수 있습니다.",
+            ephemeral=True,
+        )
+        return
+
+    repayment_amount = note_info["amount"]
+    if not can_afford(interaction.user.id, repayment_amount):
+        await interaction.response.send_message(
+            (
+                "차용증 상환에 필요한 잔액이 부족합니다.\n"
+                f"필요 금액: `{format_money(repayment_amount)}`\n"
+                f"현재 잔액: `{format_money(get_balance(interaction.user.id))}`"
+            ),
+            ephemeral=True,
+        )
+        return
+
+    add_balance(interaction.user.id, -repayment_amount)
+    add_balance(note_info["lender_user_id"], repayment_amount)
+    resolve_promissory_note(note_id)
+    refresh_active_labor_penalty_debt(interaction.guild.id, note_info["borrower_user_id"])
+
+    lender = interaction.guild.get_member(note_info["lender_user_id"]) or interaction.client.get_user(note_info["lender_user_id"])
+    borrower = interaction.guild.get_member(note_info["borrower_user_id"]) or interaction.client.get_user(note_info["borrower_user_id"])
+    embed = build_promissory_note_embed(
+        lender,
+        borrower,
+        note_info["principal_amount"],
+        note_info["interest_amount"],
+        note_info["due_text"],
+        note_info["note"],
+        title="✅ 차용증 상환 완료",
+        color=0x2ECC71,
+        status_text="상환 완료",
+        note_id=note_info["id"],
+    )
+    embed.add_field(name="처리 결과", value="채무자 잔액에서 차감 후 채권자에게 지급되었고, 차용증은 자동 정리되었습니다.", inline=False)
+    embed.add_field(name="채무자 현재 잔액", value=format_money(get_balance(interaction.user.id)), inline=False)
+    await interaction.response.send_message(embed=embed, ephemeral=False)
 
 
 @bot.tree.command(name="차용증삭제", description="상환이 끝난 차용증을 정리합니다.")
@@ -15375,6 +15522,8 @@ async def delete_promissory_note_command(interaction: discord.Interaction, note_
         return
 
     resolve_promissory_note(note_id)
+    if is_business_registered(interaction.guild.id, note_info["lender_user_id"]):
+        refresh_active_labor_penalty_debt(interaction.guild.id, note_info["borrower_user_id"])
 
     lender = interaction.guild.get_member(note_info["lender_user_id"]) or interaction.client.get_user(note_info["lender_user_id"])
     borrower = interaction.guild.get_member(note_info["borrower_user_id"]) or interaction.client.get_user(note_info["borrower_user_id"])
@@ -15517,6 +15666,7 @@ async def gambling_commands(interaction: discord.Interaction):
             "`/랭킹` - 서버 자산/신용레벨 순위 확인\n"
             "`/송금` - 비고와 함께 다른 유저에게 돈 보내기\n"
             "`/송금내역 [인원]` - 특정 인원이 받은 송금 내역 확인\n"
+            "`/사업자 목록` - 송금 한도 제한이 없는 사업자 목록 확인\n"
             "`/차용증` - 개인 간 차용증 요청"
         ),
         inline=False,
@@ -15538,7 +15688,6 @@ async def gambling_commands(interaction: discord.Interaction):
         value=(
             "`/신용대출 [금액]` - 남은 대출 한도 내에서 추가 대출\n"
             "`/대출상환 [대출번호] [금액]` - 특정 대출 부분 상환\n"
-            "`/중도상환` - 현재 진행 중인 대출 전체 상환\n"
             "`/내신용` - 내 신용레벨, 대출, 노동 현황 확인\n"
             "`/신용조회 [인원]` - 특정 인원의 신용 정보 조회\n"
             "`/신용레벨표` - 레벨별 대출 한도와 이자율 확인\n"
@@ -15548,6 +15697,7 @@ async def gambling_commands(interaction: discord.Interaction):
             "`/벌금부여`로 등록된 관리자 부채는 노동 횟수에 반영됩니다.\n"
             "`/벌금삭제 [부채번호]` - 상환 완료된 관리자 부채 정리\n"
             "`/차용증목록` - 현재 차용증 목록 확인\n"
+            "`/차용증상환 [차용증번호]` - 사업자 채권자의 차용증 상환\n"
             "`/차용증삭제` - 채권자가 상환 완료된 차용증 정리"
         ),
         inline=False,
@@ -15600,7 +15750,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         value=(
             "`/세팅 등업로그`, `/세팅 퇴장로그`, `/세팅 규칙로그`\n"
             "`/세팅 구인채널`, `/세팅 대출알림채널`, `/세팅 음성로그채널`, `/세팅 음성생성채널`, `/음성생성채널목록`, `/음성생성채널해제`\n"
-            "`/세팅 몰빵결과채널`, `/세팅 활동보고서채널`, `/세팅 활동보고서시간`, `/세팅 활동보고서요일`\n"
+            "`/세팅 몰빵결과채널`\n"
             "`/세팅 가이드안내`, `/세팅 환영메시지채널`\n"
             "`/세팅 규칙역할`, `/세팅 신입역할`, `/신용불량자역할`\n"
             "`/세팅 클랜등업역할`, `/세팅 게스트등업역할`, `/세팅 시간대역할`"
@@ -15620,7 +15770,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="🎛 메시지 / 패널 생성",
         value=(
             "`/규칙버튼`, `/등업패널`, `/시간설정패널`, `/문의패널`\n"
-            "`/성과급패널`, `/활동보고서`, `/고정메시지`, `/고정메시지해제`, `/고정메시지확인`, `/내전공지`"
+            "`/성과급패널`, `/고정메시지`, `/고정메시지해제`, `/고정메시지확인`, `/내전공지`"
         ),
         inline=False,
     )
@@ -15635,8 +15785,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
     admin_embed.add_field(
         name="📅 출석 / 활동 관리",
         value=(
-            "`/출석생성`, `/게스트갱신생성`, `/갱신점검`, `/게스트갱신초기화`\n"
-            "`/경고조건설정`, `/경고조건확인`, `/경고자조회`"
+            "`/출석생성`, `/게스트갱신생성`, `/갱신점검`, `/게스트갱신초기화`"
         ),
         inline=False,
     )
@@ -15644,10 +15793,11 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="💰 경제 / 신용 관리",
         value=(
             "`/돈주기`, `/돈주기내역`, `/돈삭제`, `/치킨성과급`, `/송금내역`, `/벌금부여`, `/벌금삭제`\n"
+            "`/사업자 등록`, `/사업자 삭제`, `/사업자 목록`\n"
             "`/추첨권등록`, `/추첨권삭제`\n"
             "`/신용불량자등록`, `/신용불량자목록`, `/신용불량자삭제`, `/신용초기화`\n"
             "`/노동가챠권지급`, `/노동가챠권삭제`\n"
-            "`/신용조회`, `/신용레벨표`, `/신용대출`, `/대출상환`, `/중도상환`"
+            "`/신용조회`, `/신용레벨표`, `/신용대출`, `/대출상환`"
         ),
         inline=False,
     )
@@ -15675,7 +15825,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="🏠 기본 / 정보",
         value=(
             "`/기초생활수급비`, `/잔액`, `/랭킹`, `/송금`, `/송금내역`\n"
-            "`/추첨권구매`, `/추첨권현황`\n"
+            "`/사업자 목록`, `/추첨권구매`, `/추첨권현황`\n"
             "`/도박명령어`, `/확률표`, `/족보`"
         ),
         inline=False,
@@ -15684,8 +15834,8 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="🏦 적금 / 대출 / 신용",
         value=(
             "`/적금`, `/내적금`, `/적금수령`, `/적금중도해지`\n"
-            "`/신용대출`, `/대출상환`, `/중도상환`, `/내신용`, `/신용조회`, `/신용레벨표`, `/노동`, `/노동가챠`, `/노동현황`\n"
-            "`/차용증`, `/차용증목록`, `/차용증삭제`"
+            "`/신용대출`, `/대출상환`, `/내신용`, `/신용조회`, `/신용레벨표`, `/노동`, `/노동가챠`, `/노동현황`\n"
+            "`/차용증`, `/차용증목록`, `/차용증상환`, `/차용증삭제`"
         ),
         inline=False,
     )
@@ -15739,17 +15889,38 @@ async def scrim_notice(interaction: discord.Interaction):
 @bot.tree.command(name="신용불량자등록", description="특정 인원을 신용불량자로 등록합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def blacklist_user(interaction: discord.Interaction, member: discord.Member):
-    set_credit_grade(member.id, MIN_CREDIT_LEVEL)
-    set_credit_blacklisted(member.id, True)
-    reset_loan_progress_amount(member.id)
-    debt_amount = get_total_credit_obligation(interaction.guild.id, member.id) or DEFAULT_LABOR_DEBT_AMOUNT
-    create_or_replace_labor_penalty(interaction.guild.id, member.id, debt_amount)
-    await sync_blacklist_role(member, True)
+    original_obligation = get_total_credit_obligation(interaction.guild.id, member.id)
+    target_debt_amount = original_obligation or DEFAULT_LABOR_DEBT_AMOUNT
+    confiscation = confiscate_assets_for_blacklist(interaction.guild.id, member.id, target_debt_amount)
+    remaining_obligation = get_total_credit_obligation(interaction.guild.id, member.id)
+    debt_amount = remaining_obligation if original_obligation > 0 else max(0, target_debt_amount - confiscation["total_confiscated"])
 
-    await interaction.response.send_message(
-        f"{member.mention}님을 신용불량자로 등록했습니다.\n필요 노동 횟수: `{calculate_labor_required_count(debt_amount)}회`",
-        ephemeral=True,
-    )
+    set_credit_grade(member.id, MIN_CREDIT_LEVEL)
+    reset_loan_progress_amount(member.id)
+
+    embed = discord.Embed(title="🚨 신용불량자 등록", color=0xE74C3C)
+    embed.add_field(name="대상", value=member.mention, inline=False)
+    embed.add_field(name="등록 기준 채무", value=format_money(target_debt_amount), inline=False)
+    embed.add_field(name="잔액 압류", value=format_money(confiscation["balance_confiscated"]), inline=True)
+    embed.add_field(name="적금 압류", value=format_money(confiscation["saving_confiscated"]), inline=True)
+    embed.add_field(name="총 압류액", value=format_money(confiscation["total_confiscated"]), inline=True)
+
+    if debt_amount <= 0:
+        set_credit_blacklisted(member.id, False)
+        set_credit_grade(member.id, INITIAL_CREDIT_LEVEL)
+        delete_labor_penalty(interaction.guild.id, member.id)
+        clear_labor_gacha_tickets(interaction.guild.id, member.id)
+        await sync_blacklist_role(member, False)
+        embed.color = 0x2ECC71
+        embed.add_field(name="처리 결과", value="압류액으로 채무가 모두 처리되어 노동 없이 신용불량자 상태가 해제되었습니다.", inline=False)
+    else:
+        set_credit_blacklisted(member.id, True)
+        create_or_replace_labor_penalty(interaction.guild.id, member.id, debt_amount)
+        await sync_blacklist_role(member, True)
+        embed.add_field(name="남은 노동 기준 금액", value=format_money(debt_amount), inline=False)
+        embed.add_field(name="필요 노동 횟수", value=f"`{calculate_labor_required_count(debt_amount)}회`", inline=False)
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(name="노동가챠권지급", description="특정 인원에게 노동가챠권을 지급합니다.")
@@ -16604,42 +16775,6 @@ async def savings_auto_claim_loop():
 
 
 @tasks.loop(minutes=1)
-async def activity_report_loop():
-    now = get_kst_now()
-    today = now.strftime("%Y-%m-%d")
-
-    for guild in bot.guilds:
-        channel_id = get_guild_setting_channel_id(guild.id, "activity_report_channel_id")
-        if channel_id is None:
-            continue
-
-        report_hour, report_minute = get_activity_report_time(guild.id)
-        if now.hour != report_hour or now.minute != report_minute:
-            continue
-
-        channel = guild.get_channel(channel_id)
-        if not isinstance(channel, discord.TextChannel):
-            continue
-
-        last_daily_sent = get_guild_setting(guild.id, "activity_report_daily_last_sent")
-        if last_daily_sent != today:
-            try:
-                await channel.send(embed=build_activity_report_embed(guild, "daily"))
-                set_guild_setting(guild.id, "activity_report_daily_last_sent", today)
-            except (discord.Forbidden, discord.HTTPException):
-                pass
-
-        weekly_day = get_activity_report_weekday(guild.id)
-        last_weekly_sent = get_guild_setting(guild.id, "activity_report_weekly_last_sent")
-        if now.weekday() == weekly_day and last_weekly_sent != today:
-            try:
-                await channel.send(embed=build_activity_report_embed(guild, "weekly"))
-                set_guild_setting(guild.id, "activity_report_weekly_last_sent", today)
-            except (discord.Forbidden, discord.HTTPException):
-                pass
-
-
-@tasks.loop(minutes=1)
 async def attendance_daily_loop():
     refresh_attendance_data()
     now = get_kst_now()
@@ -16766,9 +16901,6 @@ async def on_ready():
 
     if not savings_auto_claim_loop.is_running():
         savings_auto_claim_loop.start()
-
-    if not activity_report_loop.is_running():
-        activity_report_loop.start()
 
     if not attendance_daily_loop.is_running():
         attendance_daily_loop.start()
