@@ -658,6 +658,27 @@ cursor.execute(
     """
 )
 
+cursor.execute("PRAGMA table_info(business_registrations)")
+business_registration_columns = [row[1] for row in cursor.fetchall()]
+if "industry" not in business_registration_columns:
+    cursor.execute("ALTER TABLE business_registrations ADD COLUMN industry TEXT NOT NULL DEFAULT '미지정'")
+    conn.commit()
+if "logo_url" not in business_registration_columns:
+    cursor.execute("ALTER TABLE business_registrations ADD COLUMN logo_url TEXT")
+    conn.commit()
+if "status" not in business_registration_columns:
+    cursor.execute("ALTER TABLE business_registrations ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+    conn.commit()
+if "created_by" not in business_registration_columns:
+    cursor.execute("ALTER TABLE business_registrations ADD COLUMN created_by TEXT NOT NULL DEFAULT ''")
+    conn.commit()
+if "created_at" not in business_registration_columns:
+    cursor.execute("ALTER TABLE business_registrations ADD COLUMN created_at TEXT NOT NULL DEFAULT ''")
+    conn.commit()
+if "deleted_at" not in business_registration_columns:
+    cursor.execute("ALTER TABLE business_registrations ADD COLUMN deleted_at TEXT")
+    conn.commit()
+
 cursor.execute(
     """
     CREATE TABLE IF NOT EXISTS scrim_signups(
