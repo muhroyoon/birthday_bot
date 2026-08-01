@@ -6753,9 +6753,9 @@ def build_labor_embed(
         embed.add_field(
             name="채굴 안내",
             value=(
-                "`얕은 광맥`은 가장 안정적이고,\n"
-                "`일반 광맥`은 무난하며,\n"
-                "`심층 광맥`은 평균 효율은 낮지만 대박과 가챠권을 노릴 수 있습니다."
+                "아래 `채굴하기` 버튼을 눌러 노동을 진행합니다.\n"
+                "오토마우스 악용을 줄이기 위해 버튼은 한 번씩 처리되며,\n"
+                "채굴 결과에 따라 노동 횟수와 노동가챠권이 랜덤으로 적용됩니다."
             ),
             inline=False,
         )
@@ -6862,40 +6862,19 @@ MINESWEEPER_MULTIPLIERS = {
 }
 
 LABOR_MINE_TABLE = {
-    "shallow": {
-        "label": "얕은 광맥",
-        "color": 0xF1C40F,
-        "results": [
-            {"name": "석탄", "weight": 35, "progress": 1, "description": "석탄을 캐냈습니다. 무난한 하루치 작업입니다.", "ticket_bonus": 0},
-            {"name": "철광석", "weight": 40, "progress": 2, "description": "철광석을 발견했습니다. 삽질한 보람이 느껴집니다.", "ticket_bonus": 0},
-            {"name": "은광석", "weight": 20, "progress": 3, "description": "은광석을 캤습니다. 오늘은 제법 손맛이 좋습니다.", "ticket_bonus": 0},
-            {"name": "꽝", "weight": 5, "progress": 0, "description": "쓸 만한 광물을 찾지 못했습니다. 먼지만 잔뜩 뒤집어썼습니다.", "ticket_bonus": 0},
-        ],
-    },
-    "normal": {
-        "label": "일반 광맥",
+    "aogi": {
+        "label": "아오지탄광",
         "color": 0xE67E22,
         "results": [
-            {"name": "석탄", "weight": 45, "progress": 1, "description": "석탄 더미를 건졌습니다. 평범하지만 확실한 수확입니다.", "ticket_bonus": 0},
-            {"name": "철광석", "weight": 27, "progress": 2, "description": "철광석 덩어리를 캐냈습니다. 제법 묵직한 한 방입니다.", "ticket_bonus": 0},
-            {"name": "은광석", "weight": 13, "progress": 3, "description": "은광석이 섞인 광맥을 찾았습니다. 생각보다 괜찮은 성과입니다.", "ticket_bonus": 0},
-            {"name": "금광석", "weight": 8, "progress": 4, "description": "금광석을 발견했습니다. 오늘 인부들 사이에서 자랑할 만합니다.", "ticket_bonus": 0},
-            {"name": "꽝", "weight": 7, "progress": 0, "description": "광맥을 잘못 짚었습니다. 이번 작업은 허탕입니다.", "ticket_bonus": 0},
-        ],
-    },
-    "deep": {
-        "label": "심층 광맥",
-        "color": 0x8E44AD,
-        "results": [
-            {"name": "석탄", "weight": 25, "progress": 1, "description": "심층부에서 석탄을 캐냈습니다. 작지만 확실하게 작업을 마쳤습니다.", "ticket_bonus": 0},
-            {"name": "철광석", "weight": 22, "progress": 2, "description": "위험을 감수한 보람은 있었습니다. 철광석을 확보했습니다.", "ticket_bonus": 0},
-            {"name": "은광석", "weight": 18, "progress": 3, "description": "심층부에서 은광석을 찾아냈습니다. 꽤 괜찮은 성과입니다.", "ticket_bonus": 0},
-            {"name": "금광석", "weight": 15, "progress": 4, "description": "희미하게 빛나는 금광석을 발견했습니다. 탄광장도 탐낼 만한 물건입니다.", "ticket_bonus": 0},
-            {"name": "다이아 원석", "weight": 10, "progress": 5, "description": "다이아 원석을 캐냈습니다! 오늘 작업은 전설로 남을 겁니다.", "ticket_bonus": 0},
-            {"name": "고대 광맥", "weight": 5, "progress": 10, "description": "묵직한 고대 광맥을 터뜨렸습니다. 노동이 크게 줄어듭니다.", "ticket_bonus": 0},
-            {"name": "전설의 광맥", "weight": 3, "progress": 20, "description": "전설급 광맥을 발견했습니다. 아오지의 공기가 달라졌습니다.", "ticket_bonus": 0},
+            {"name": "석탄", "weight": 30, "progress": 1, "description": "석탄을 캐냈습니다. 작지만 확실하게 노동이 줄어듭니다.", "ticket_bonus": 0},
+            {"name": "철광석", "weight": 25, "progress": 2, "description": "철광석을 발견했습니다. 삽질한 보람이 느껴집니다.", "ticket_bonus": 0},
+            {"name": "은광석", "weight": 20, "progress": 3, "description": "은광석을 캤습니다. 오늘은 제법 손맛이 좋습니다.", "ticket_bonus": 0},
+            {"name": "금광석", "weight": 15, "progress": 4, "description": "금광석을 발견했습니다. 탄광장도 탐낼 만한 성과입니다.", "ticket_bonus": 0},
+            {"name": "다이아 원석", "weight": 5, "progress": 5, "description": "다이아 원석을 캐냈습니다. 꽤 큰 수확입니다.", "ticket_bonus": 0},
+            {"name": "고대 광맥", "weight": 2, "progress": 10, "description": "묵직한 고대 광맥을 터뜨렸습니다. 노동이 크게 줄어듭니다.", "ticket_bonus": 0},
+            {"name": "전설의 광맥", "weight": 1, "progress": 20, "description": "전설급 광맥을 발견했습니다. 아오지의 공기가 달라졌습니다.", "ticket_bonus": 0},
             {"name": "심연의 보석", "weight": 1, "progress": 25, "description": "심연 깊은 곳에서 보석을 캐냈습니다. 믿기 힘든 대박입니다.", "ticket_bonus": 0},
-            {"name": "노동가챠권 발견", "weight": 1, "progress": 1, "description": "심층부 틈새에서 노동가챠권을 찾아냈습니다. 위험을 감수한 보상이 따릅니다.", "ticket_bonus": 1},
+            {"name": "노동가챠권 발견", "weight": 1, "progress": 1, "description": "탄광 틈새에서 노동가챠권을 찾아냈습니다. 추가 보상이 지급됩니다.", "ticket_bonus": 1},
         ],
     },
 }
@@ -12094,17 +12073,9 @@ class LaborWorkView(discord.ui.View):
 
         await interaction.response.edit_message(embed=embed, view=self)
 
-    @discord.ui.button(label="얕은 광맥", style=discord.ButtonStyle.success)
-    async def shallow(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.run_mining(interaction, "shallow")
-
-    @discord.ui.button(label="일반 광맥", style=discord.ButtonStyle.primary)
-    async def normal(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.run_mining(interaction, "normal")
-
-    @discord.ui.button(label="심층 광맥", style=discord.ButtonStyle.danger)
-    async def deep(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.run_mining(interaction, "deep")
+    @discord.ui.button(label="채굴하기", style=discord.ButtonStyle.primary)
+    async def mine(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.run_mining(interaction, "aogi")
 
 
 class PromissoryNoteModal(discord.ui.Modal):
