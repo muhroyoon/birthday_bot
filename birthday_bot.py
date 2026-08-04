@@ -4,17 +4,14 @@ import random
 import sqlite3
 import asyncio
 import shutil
-import base64
 import re
 import json
 import io
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
-from urllib.parse import quote
 
 import discord
-import aiohttp
 from PIL import Image, ImageDraw, ImageFont
 from discord import app_commands
 from discord.ext import commands, tasks
@@ -83,8 +80,6 @@ def parse_date_range(start_date: str | None, end_date: str | None, *, default_da
 
 
 TOKEN = os.getenv("TOKEN")
-PUBG_API_KEY = os.getenv("PUBG_API_KEY")
-PUBG_DEFAULT_PLATFORM = os.getenv("PUBG_DEFAULT_PLATFORM", "steam").strip() or "steam"
 
 # ============================================================
 # 전역 설정
@@ -303,17 +298,6 @@ STORAGE_LOG_RETENTION_DAYS = 90
 MONEY_LOG_RETENTION_DAYS = 60
 GAME_HISTORY_KEEP_PER_GAME = 20
 STORAGE_CLEANUP_INTERVAL_HOURS = 24
-YTDLP_PERSISTENT_COOKIE_FILE = "/data/youtube-cookies.txt"
-PLAYLIST_PLAY_LIMIT = 500
-PLAYLIST_FAILURE_RETRY_DELAY_SECONDS = 8
-PLAYLIST_FAILED_TRACK_LIMIT = 10
-PLAYLIST_TRACK_DELAY_MIN_SECONDS = 4
-PLAYLIST_TRACK_DELAY_MAX_SECONDS = 10
-PLAYLIST_YOUTUBE_REQUEST_INTERVAL_SECONDS = 12
-PLAYLIST_FAILURE_NOTICE_INTERVAL = 5
-PLAYLIST_FAILURE_BACKOFF_STEP_SECONDS = 15
-PLAYLIST_FAILURE_BACKOFF_MAX_SECONDS = 90
-PUBG_API_REQUEST_INTERVAL_SECONDS = float(os.getenv("PUBG_API_REQUEST_INTERVAL_SECONDS", "2.5"))
 KILL_BET_AUTO_EXPIRE_HOURS = 6
 NON_BUSINESS_DAILY_TRANSFER_LIMIT = 100_000_000
 
@@ -328,19 +312,7 @@ bot.tree.add_command(settings_group)
 business_group = app_commands.Group(name="사업자", description="사업자 등록과 조회 명령어")
 bot.tree.add_command(business_group)
 active_recruits = {}
-playlist_queues: dict[int, list[dict]] = {}
-playlist_now_playing: dict[int, dict] = {}
-playlist_text_channels: dict[int, int] = {}
-playlist_previous_tracks: dict[int, dict] = {}
-playlist_library_cache: dict[int, list[dict]] = {}
-playlist_modes: dict[int, str] = {}
-playlist_panel_messages: dict[int, tuple[int, int]] = {}
-playlist_panel_requesters: dict[int, int] = {}
-playlist_failure_counts: dict[int, int] = {}
-playlist_failed_tracks: dict[int, list[dict]] = {}
-playlist_last_youtube_request_at: dict[int, float] = {}
-pubg_api_lock = asyncio.Lock()
-pubg_last_request_at = 0.0
+single_song_tokens: dict[int, int] = {}
 
 # ============================================================
 # 데이터베이스 초기화
@@ -953,26 +925,12 @@ cursor.execute(
         session_id INTEGER NOT NULL,
         team_name TEXT,
         pubg_name TEXT NOT NULL,
-        pubg_account_id TEXT,
         handicap_kill REAL NOT NULL DEFAULT 0,
         handicap_damage REAL NOT NULL DEFAULT 0,
         total_kills INTEGER NOT NULL DEFAULT 0,
         total_damage REAL NOT NULL DEFAULT 0,
         placement_score REAL NOT NULL DEFAULT 0,
         total_score REAL NOT NULL DEFAULT 0
-    )
-    """
-)
-
-cursor.execute(
-    """
-    CREATE TABLE IF NOT EXISTS kill_bet_matches(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        session_id INTEGER NOT NULL,
-        match_id TEXT NOT NULL,
-        played_at TEXT,
-        created_at TEXT NOT NULL,
-        UNIQUE(session_id, match_id)
     )
     """
 )
@@ -1047,12 +1005,6 @@ if "team_name" not in kill_bet_round_columns:
     conn.commit()
 if "team_round_no" not in kill_bet_round_columns:
     cursor.execute("ALTER TABLE kill_bet_rounds ADD COLUMN team_round_no INTEGER")
-    conn.commit()
-
-cursor.execute("PRAGMA table_info(kill_bet_players)")
-kill_bet_player_columns = [row[1] for row in cursor.fetchall()]
-if "pubg_account_id" not in kill_bet_player_columns:
-    cursor.execute("ALTER TABLE kill_bet_players ADD COLUMN pubg_account_id TEXT")
     conn.commit()
 
 conn.commit()
@@ -1649,7 +1601,7 @@ def get_active_kill_bet_sessions_for_guild(guild_id: int) -> list[dict]:
 def get_kill_bet_players(session_id: int) -> list[dict]:
     cursor.execute(
         """
-        SELECT id, team_name, pubg_name, pubg_account_id, handicap_kill, handicap_damage, total_kills, total_damage, placement_score, total_score
+        SELECT id, team_name, pubg_name, handicap_kill, handicap_damage, total_kills, total_damage, placement_score, total_score
         FROM kill_bet_players
         WHERE session_id=?
         ORDER BY total_score DESC, total_kills DESC, total_damage DESC, id ASC
@@ -1661,13 +1613,12 @@ def get_kill_bet_players(session_id: int) -> list[dict]:
             "id": row[0],
             "team_name": row[1],
             "pubg_name": row[2],
-            "pubg_account_id": row[3],
-            "handicap_kill": float(row[4] or 0),
-            "handicap_damage": float(row[5] or 0),
-            "total_kills": int(row[6] or 0),
-            "total_damage": float(row[7] or 0),
-            "placement_score": float(row[8] or 0),
-            "total_score": float(row[9] or 0),
+            "handicap_kill": float(row[3] or 0),
+            "handicap_damage": float(row[4] or 0),
+            "total_kills": int(row[5] or 0),
+            "total_damage": float(row[6] or 0),
+            "placement_score": float(row[7] or 0),
+            "total_score": float(row[8] or 0),
         }
         for row in cursor.fetchall()
     ]
@@ -1846,37 +1797,6 @@ def set_kill_bet_status_message(session_id: int, channel_id: int, message_id: in
         WHERE id=?
         """,
         (str(channel_id), str(message_id), session_id),
-    )
-    conn.commit()
-
-
-def is_kill_bet_match_processed(session_id: int, match_id: str) -> bool:
-    cursor.execute(
-        "SELECT 1 FROM kill_bet_matches WHERE session_id=? AND match_id=?",
-        (session_id, match_id),
-    )
-    return cursor.fetchone() is not None
-
-
-def mark_kill_bet_match_processed(session_id: int, match_id: str, played_at: str | None):
-    cursor.execute(
-        """
-        INSERT OR IGNORE INTO kill_bet_matches(session_id, match_id, played_at, created_at)
-        VALUES (?, ?, ?, ?)
-        """,
-        (session_id, match_id, played_at, dt_to_db(get_kst_now())),
-    )
-    conn.commit()
-
-
-def update_kill_bet_player_account_id(session_id: int, pubg_name: str, account_id: str):
-    cursor.execute(
-        """
-        UPDATE kill_bet_players
-        SET pubg_account_id=?
-        WHERE session_id=? AND LOWER(pubg_name)=LOWER(?)
-        """,
-        (account_id, session_id, pubg_name),
     )
     conn.commit()
 
@@ -2351,7 +2271,6 @@ def reset_kill_bet_scores(session_id: int):
     )
     cursor.execute("DELETE FROM kill_bet_rounds WHERE session_id=?", (session_id,))
     cursor.execute("DELETE FROM kill_bet_manual_entries WHERE session_id=?", (session_id,))
-    cursor.execute("DELETE FROM kill_bet_matches WHERE session_id=?", (session_id,))
     conn.commit()
 
 
@@ -2692,185 +2611,6 @@ async def apply_kill_bet_score_edit(
     await interaction.response.send_message("점수를 수정하고 누적 현황을 다시 계산했습니다.", ephemeral=True)
 
 
-def parse_pubg_created_at(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(ZoneInfo("Asia/Seoul"))
-    except ValueError:
-        return None
-
-
-def get_pubg_headers() -> dict:
-    return {
-        "Authorization": f"Bearer {PUBG_API_KEY}",
-        "Accept": "application/vnd.api+json",
-    }
-
-
-async def pubg_api_get(http_session: aiohttp.ClientSession, platform: str, path: str) -> dict:
-    global pubg_last_request_at
-    url = f"https://api.pubg.com/shards/{platform}{path}"
-    async with pubg_api_lock:
-        loop = asyncio.get_running_loop()
-        elapsed = loop.time() - pubg_last_request_at
-        wait_seconds = PUBG_API_REQUEST_INTERVAL_SECONDS - elapsed
-        if wait_seconds > 0:
-            await asyncio.sleep(wait_seconds)
-
-        async with http_session.get(url, headers=get_pubg_headers(), timeout=20) as response:
-            pubg_last_request_at = loop.time()
-            if response.status == 429:
-                raise RuntimeError("PUBG API 호출 제한에 도달했습니다. 잠시 후 다시 시도합니다.")
-            if response.status == 401:
-                raise RuntimeError("PUBG_API_KEY가 없거나 올바르지 않습니다.")
-            if response.status >= 400:
-                body = await response.text()
-                raise RuntimeError(f"PUBG API 오류 {response.status}: {body[:200]}")
-            return await response.json()
-
-
-async def pubg_api_get_optional(http_session: aiohttp.ClientSession, platform: str, path: str) -> dict:
-    try:
-        return await pubg_api_get(http_session, platform, path)
-    except RuntimeError as e:
-        if "PUBG API 오류 404" in str(e):
-            return {"data": {"attributes": {}}}
-        raise
-
-
-async def fetch_pubg_players(http_session: aiohttp.ClientSession, platform: str, names: list[str]) -> dict[str, dict]:
-    result = {}
-    for start in range(0, len(names), 10):
-        chunk = names[start:start + 10]
-        encoded_names = quote(",".join(chunk), safe=",")
-        data = await pubg_api_get(http_session, platform, f"/players?filter[playerNames]={encoded_names}")
-        for player in data.get("data", []):
-            attributes = player.get("attributes", {})
-            name = attributes.get("name")
-            if name:
-                result[name.lower()] = {
-                    "account_id": player.get("id"),
-                    "name": name,
-                    "matches": [
-                        match.get("id")
-                        for match in player.get("relationships", {}).get("matches", {}).get("data", [])
-                        if match.get("id")
-                    ],
-                }
-        await asyncio.sleep(1)
-    return result
-
-
-async def fetch_pubg_match(http_session: aiohttp.ClientSession, platform: str, match_id: str) -> dict:
-    return await pubg_api_get(http_session, platform, f"/matches/{match_id}")
-
-
-def calculate_kill_bet_match_scores(session: dict, match_data: dict) -> tuple[list[dict], str] | None:
-    rule = get_kill_bet_rule(session["rule_key"])
-    if rule is None:
-        return None
-
-    started_at = dt_from_db(session["started_at"])
-    match_created_at_raw = match_data.get("data", {}).get("attributes", {}).get("createdAt")
-    match_created_at = parse_pubg_created_at(match_created_at_raw)
-    if match_created_at is None or match_created_at < started_at:
-        return None
-
-    participants_by_name = {}
-    for item in match_data.get("included", []):
-        if item.get("type") != "participant":
-            continue
-        stats = item.get("attributes", {}).get("stats", {})
-        name = stats.get("name")
-        if name:
-            participants_by_name[name.lower()] = stats
-
-    registered_players = get_kill_bet_players(session["id"])
-    if not registered_players:
-        return None
-
-    if rule["mode"] == "solo":
-        if any(player["pubg_name"].lower() not in participants_by_name for player in registered_players):
-            return None
-        scoring_players = registered_players
-    else:
-        scoring_players = [
-            player
-            for player in registered_players
-            if player["pubg_name"].lower() in participants_by_name
-        ]
-        if not scoring_players:
-            return None
-
-    team_placement_scores = {}
-    if rule["mode"] == "team" and rule["placement_scores"]:
-        team_places = {}
-        for player in scoring_players:
-            team_name = player["team_name"] or "미지정"
-            stats = participants_by_name[player["pubg_name"].lower()]
-            win_place = int(stats.get("winPlace") or 0)
-            if win_place > 0:
-                team_places[team_name] = min(team_places.get(team_name, win_place), win_place)
-        team_placement_scores = {
-            team_name: float(rule["placement_scores"].get(place, 0))
-            for team_name, place in team_places.items()
-        }
-
-    placement_score_used_for_team = set()
-    scored_rows = []
-    for player in scoring_players:
-        stats = participants_by_name[player["pubg_name"].lower()]
-        kills = int(stats.get("kills") or 0)
-        damage = float(stats.get("damageDealt") or 0)
-        kill_score = kills * (float(rule["kill_score"]) + player["handicap_kill"])
-        damage_score = (damage / 100) * (float(rule["damage_score_per_100"]) + player["handicap_damage"])
-        placement_score = 0.0
-
-        if rule["mode"] == "team":
-            team_name = player["team_name"] or "미지정"
-            if team_name not in placement_score_used_for_team:
-                placement_score = team_placement_scores.get(team_name, 0.0)
-                placement_score_used_for_team.add(team_name)
-
-        total_score = kill_score + damage_score + placement_score
-        scored_rows.append(
-            {
-                "player_id": player["id"],
-                "team_name": player["team_name"],
-                "pubg_name": player["pubg_name"],
-                "kills": kills,
-                "damage": damage,
-                "placement_score": placement_score,
-                "score": total_score,
-            }
-        )
-
-    return scored_rows, match_created_at_raw or dt_to_db(match_created_at)
-
-
-def build_kill_bet_match_embed(guild: discord.Guild, session: dict, match_id: str, scored_rows: list[dict]) -> discord.Embed:
-    rule = get_kill_bet_rule(session["rule_key"])
-    embed = discord.Embed(
-        title=f"🔫 킬내기 매치 집계 - {rule['name'] if rule else session['rule_key']}",
-        description=f"매치 ID: `{match_id}`",
-        color=0xE67E22,
-    )
-
-    lines = []
-    for row in sorted(scored_rows, key=lambda item: (-item["score"], -item["kills"], -item["damage"])):
-        team_text = f"[{row['team_name']}] " if row["team_name"] else ""
-        place_text = f" / 순위 `{format_score(row['placement_score'])}`" if row["placement_score"] else ""
-        lines.append(
-            f"**{team_text}{row['pubg_name']}** `{format_score(row['score'])}점`\n"
-            f"킬 `{row['kills']}` / 딜 `{format_score(row['damage'])}`{place_text}"
-        )
-
-    embed.add_field(name="이번 판 점수", value=join_compact_discord_field_lines(lines), inline=False)
-    embed.add_field(name="누적 현황", value="`/킬내기현황`으로 확인할 수 있습니다.", inline=False)
-    return embed
-
-
 def kill_bet_target_reached(session: dict) -> bool:
     if session["target_score"] is None:
         return False
@@ -2885,75 +2625,6 @@ def kill_bet_target_reached(session: dict) -> bool:
             team_scores[team_name] = team_scores.get(team_name, 0.0) + player["total_score"]
         return any(score >= float(session["target_score"]) for score in team_scores.values())
     return any(player["total_score"] >= float(session["target_score"]) for player in players)
-
-
-async def process_kill_bet_session(session: dict):
-    if not PUBG_API_KEY:
-        return
-
-    guild = bot.get_guild(int(session["guild_id"]))
-    if guild is None:
-        return
-
-    channel = guild.get_channel(int(session["channel_id"])) or bot.get_channel(int(session["channel_id"]))
-    if channel is None or not hasattr(channel, "send"):
-        return
-
-    players = get_kill_bet_players(session["id"])
-    if not players:
-        return
-
-    platform = session.get("platform") or PUBG_DEFAULT_PLATFORM
-    names = [player["pubg_name"] for player in players]
-
-    async with aiohttp.ClientSession() as http_session:
-        pubg_players = await fetch_pubg_players(http_session, platform, names)
-
-        candidate_match_ids = []
-        for player in players:
-            pubg_player = pubg_players.get(player["pubg_name"].lower())
-            if pubg_player is None:
-                continue
-            if pubg_player["account_id"]:
-                update_kill_bet_player_account_id(session["id"], player["pubg_name"], pubg_player["account_id"])
-            for match_id in pubg_player["matches"]:
-                if match_id not in candidate_match_ids and not is_kill_bet_match_processed(session["id"], match_id):
-                    candidate_match_ids.append(match_id)
-
-        for match_id in candidate_match_ids[:8]:
-            match_data = await fetch_pubg_match(http_session, platform, match_id)
-            calculated = calculate_kill_bet_match_scores(session, match_data)
-            if calculated is None:
-                continue
-
-            scored_rows, played_at = calculated
-            for row in scored_rows:
-                apply_kill_bet_player_score(
-                    row["player_id"],
-                    row["kills"],
-                    row["damage"],
-                    row["placement_score"],
-                    row["score"],
-                )
-            mark_kill_bet_match_processed(session["id"], match_id, played_at)
-
-            try:
-                await channel.send(embed=build_kill_bet_match_embed(guild, session, match_id, scored_rows))
-            except (discord.Forbidden, discord.HTTPException):
-                pass
-
-            if kill_bet_target_reached(session):
-                finish_kill_bet_session(session["id"])
-                session["status"] = "ended"
-                try:
-                    final_embed = build_kill_bet_status_embed(guild, session)
-                    final_embed.title = final_embed.title.replace("현황", "목표점수 달성")
-                    await channel.send(embed=final_embed)
-                except (discord.Forbidden, discord.HTTPException):
-                    pass
-                break
-
-            await asyncio.sleep(6)
 
 
 async def auto_close_kill_bet_session_if_needed(session: dict) -> bool:
@@ -3830,9 +3501,6 @@ def cleanup_storage(days_to_keep: int = STORAGE_LOG_RETENTION_DAYS) -> dict[str,
     money_cutoff = get_kst_now() - timedelta(days=MONEY_LOG_RETENTION_DAYS)
     result: dict[str, int | bool] = {}
 
-    result["playlist_tracks"] = count_all_rows("playlist_tracks")
-    cursor.execute("DROP TABLE IF EXISTS playlist_tracks")
-
     result["game_history"] = prune_game_history(GAME_HISTORY_KEEP_PER_GAME)
     result["money_grant_logs"] = delete_rows_before("money_grant_logs", "created_at", money_cutoff)
     result["transfer_logs"] = delete_rows_before("transfer_logs", "created_at", money_cutoff)
@@ -3840,12 +3508,6 @@ def cleanup_storage(days_to_keep: int = STORAGE_LOG_RETENTION_DAYS) -> dict[str,
     result["voice_channel_logs"] = delete_rows_before("voice_channel_logs", "ended_at", cutoff)
     result["chat_message_logs"] = delete_rows_before("chat_message_logs", "created_at", cutoff)
     result["chicken_proof_logs"] = delete_rows_before("chicken_proof_logs", "created_at", cutoff)
-
-    cookie_deleted = False
-    if os.path.exists(YTDLP_PERSISTENT_COOKIE_FILE):
-        os.remove(YTDLP_PERSISTENT_COOKIE_FILE)
-        cookie_deleted = True
-    result["youtube_cookie_deleted"] = cookie_deleted
 
     conn.commit()
     cursor.execute("VACUUM")
@@ -5389,759 +5051,6 @@ def calculate_voice_overlap_seconds(intervals_a: list[dict], intervals_b: list[d
             overlap_by_channel[channel_id] = overlap_seconds
 
     return overlap_by_channel
-
-
-def add_playlist_track(guild_id: int, owner_user_id: int, title: str, url: str):
-    cursor.execute(
-        """
-        INSERT INTO playlist_tracks(guild_id, owner_user_id, title, url, created_at)
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (str(guild_id), str(owner_user_id), title.strip(), url.strip(), dt_to_db(get_kst_now())),
-    )
-    conn.commit()
-    return cursor.lastrowid
-
-
-def get_playlist_tracks(guild_id: int, limit: int = 30):
-    cursor.execute(
-        """
-        SELECT id, owner_user_id, title, url, created_at
-        FROM playlist_tracks
-        WHERE guild_id=?
-        ORDER BY id DESC
-        LIMIT ?
-        """,
-        (str(guild_id), limit),
-    )
-    return cursor.fetchall()
-
-
-def get_playlist_tracks_from(guild_id: int, start_track_id: int | None = None, limit: int = 30):
-    if start_track_id is None:
-        return get_playlist_tracks(guild_id, limit)
-
-    cursor.execute(
-        """
-        SELECT id, owner_user_id, title, url, created_at
-        FROM playlist_tracks
-        WHERE guild_id=? AND id>=?
-        ORDER BY id ASC
-        LIMIT ?
-        """,
-        (str(guild_id), start_track_id, limit),
-    )
-    return cursor.fetchall()
-
-
-def get_playlist_track(guild_id: int, track_id: int):
-    cursor.execute(
-        """
-        SELECT id, owner_user_id, title, url, created_at
-        FROM playlist_tracks
-        WHERE guild_id=? AND id=?
-        """,
-        (str(guild_id), track_id),
-    )
-    row = cursor.fetchone()
-    if not row:
-        return None
-    return {
-        "id": row[0],
-        "owner_user_id": int(row[1]),
-        "title": row[2],
-        "url": row[3],
-        "created_at": row[4],
-    }
-
-
-def delete_playlist_track(guild_id: int, track_id: int):
-    cursor.execute(
-        "DELETE FROM playlist_tracks WHERE guild_id=? AND id=?",
-        (str(guild_id), track_id),
-    )
-    conn.commit()
-    return cursor.rowcount > 0
-
-
-def build_playlist_track_from_row(row) -> dict:
-    track_id, owner_user_id, title, url, created_at = row
-    return {
-        "id": track_id,
-        "owner_user_id": int(owner_user_id),
-        "title": title,
-        "url": url,
-        "created_at": created_at,
-    }
-
-
-def get_ffmpeg_executable_path() -> str:
-    system_ffmpeg = shutil.which("ffmpeg")
-    if system_ffmpeg:
-        return system_ffmpeg
-
-    raise RuntimeError(
-        "시스템 ffmpeg를 찾지 못했습니다. Railway 배포 루트에 `nixpacks.toml`이 적용됐는지 확인해주세요."
-    )
-
-
-def get_ytdlp_cookie_file_path() -> str | None:
-    if os.path.exists(YTDLP_PERSISTENT_COOKIE_FILE):
-        print(f"yt-dlp 쿠키 파일 사용: {YTDLP_PERSISTENT_COOKIE_FILE}")
-        return YTDLP_PERSISTENT_COOKIE_FILE
-
-    cookie_file = os.getenv("YTDLP_COOKIES_FILE")
-    if cookie_file and os.path.exists(cookie_file):
-        print(f"yt-dlp 쿠키 파일 사용: YTDLP_COOKIES_FILE ({cookie_file})")
-        return cookie_file
-
-    cookie_b64_parts = []
-    numbered_cookie_vars = []
-    for key, value in os.environ.items():
-        match = re.fullmatch(r"YTDLP_COOKIES_B64_(\d+)", key)
-        if match and value:
-            numbered_cookie_vars.append((int(match.group(1)), value.strip()))
-
-    for part_index, part_value in sorted(numbered_cookie_vars):
-        prefix = f"YTDLP_COOKIES_B64_{part_index}="
-        if part_value.startswith(prefix):
-            part_value = part_value[len(prefix):].strip()
-        cookie_b64_parts.append(part_value)
-
-    if cookie_b64_parts:
-        print(f"yt-dlp 분할 쿠키 변수 인식: {len(cookie_b64_parts)}개")
-
-    cookie_b64 = "".join(cookie_b64_parts) if cookie_b64_parts else os.getenv("YTDLP_COOKIES_B64")
-    cookie_text = None
-    if cookie_b64:
-        try:
-            cookie_text = base64.b64decode(cookie_b64).decode("utf-8")
-        except Exception as e:
-            print(f"YTDLP_COOKIES_B64 디코딩 실패: {type(e).__name__}: {e}")
-
-    if cookie_text is None:
-        cookie_text = os.getenv("YTDLP_COOKIES_TXT")
-
-    if not cookie_text:
-        print("yt-dlp 쿠키 없음: YTDLP_COOKIES_B64(_1...) / YTDLP_COOKIES_TXT / YTDLP_COOKIES_FILE 미설정")
-        return None
-
-    if "\\n" in cookie_text and "\n" not in cookie_text:
-        cookie_text = cookie_text.replace("\\n", "\n")
-
-    cookie_text = cookie_text.lstrip("\ufeff\r\n\t ")
-    header_index = cookie_text.find("# Netscape HTTP Cookie File")
-    if header_index > 0:
-        cookie_text = cookie_text[header_index:]
-
-    if "# Netscape HTTP Cookie File" not in cookie_text:
-        print("yt-dlp 쿠키 경고: Netscape cookies.txt 헤더를 찾지 못했습니다.")
-
-    cookie_path = "/tmp/yt-dlp-cookies.txt"
-    with open(cookie_path, "w", encoding="utf-8") as cookie_file_obj:
-        cookie_file_obj.write(cookie_text.strip() + "\n")
-
-    cookie_lines = [line for line in cookie_text.splitlines() if line and not line.startswith("#")]
-    print(f"yt-dlp 쿠키 파일 생성 완료: {len(cookie_lines)}개 쿠키 라인")
-    return cookie_path
-
-
-def get_cookie_names_from_text(cookie_text: str) -> set[str]:
-    cookie_names = set()
-    for line in cookie_text.splitlines():
-        if not line or line.startswith("#"):
-            continue
-        parts = line.split("\t")
-        if len(parts) >= 7:
-            cookie_names.add(parts[5])
-    return cookie_names
-
-
-def get_missing_youtube_login_cookie_names(cookie_text: str) -> list[str]:
-    cookie_names = get_cookie_names_from_text(cookie_text)
-    required_cookie_names = ["SID", "HSID", "SSID", "SAPISID", "__Secure-3PSID"]
-    return [name for name in required_cookie_names if name not in cookie_names]
-
-
-def get_missing_youtube_recommended_cookie_names(cookie_text: str) -> list[str]:
-    cookie_names = get_cookie_names_from_text(cookie_text)
-    recommended_cookie_names = ["LOGIN_INFO", "SIDCC", "__Secure-1PSID", "__Secure-3PSIDCC"]
-    return [name for name in recommended_cookie_names if name not in cookie_names]
-
-
-def get_ytdlp_cookie_status_text() -> str:
-    if os.path.exists(YTDLP_PERSISTENT_COOKIE_FILE):
-        try:
-            with open(YTDLP_PERSISTENT_COOKIE_FILE, "r", encoding="utf-8-sig") as cookie_file_obj:
-                cookie_text = cookie_file_obj.read()
-            cookie_lines = [line for line in cookie_text.splitlines() if line and not line.startswith("#")]
-            has_header = "# Netscape HTTP Cookie File" in cookie_text
-            missing_cookie_names = get_missing_youtube_login_cookie_names(cookie_text)
-            missing_recommended_cookie_names = get_missing_youtube_recommended_cookie_names(cookie_text)
-            return (
-                "등록 상태: `등록됨`\n"
-                f"저장 위치: `{YTDLP_PERSISTENT_COOKIE_FILE}`\n"
-                f"쿠키 라인: `{len(cookie_lines)}개`\n"
-                f"Netscape 형식: `{'정상' if has_header else '헤더 없음'}`\n"
-                f"로그인 핵심 쿠키: `{'정상' if not missing_cookie_names else '누락: ' + ', '.join(missing_cookie_names)}`\n"
-                f"로그인 유지 쿠키: `{'정상' if not missing_recommended_cookie_names else '주의: ' + ', '.join(missing_recommended_cookie_names)}`"
-            )
-        except Exception as e:
-            return f"등록 상태: `읽기 실패`\n오류: `{type(e).__name__}: {e}`"
-
-    env_cookie_keys = [key for key in os.environ if key.startswith("YTDLP_COOKIES")]
-    if env_cookie_keys:
-        return "등록 상태: `/data` 파일 없음`\n환경변수 쿠키 설정은 존재합니다."
-
-    return "등록 상태: `없음`\n`/유튜브쿠키등록`으로 원본 cookies.txt를 업로드해주세요."
-
-
-async def resolve_playlist_audio_url(url: str):
-    try:
-        import yt_dlp
-    except ImportError:
-        raise RuntimeError("음악 재생을 위해 서버에 `yt-dlp` 설치가 필요합니다.")
-
-    class YtdlpQuietLogger:
-        def debug(self, message):
-            pass
-
-        def warning(self, message):
-            pass
-
-        def error(self, message):
-            pass
-
-    base_options = {
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": True,
-        "default_search": "auto",
-        "js_runtimes": {"node": {}},
-        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
-        "logger": YtdlpQuietLogger(),
-    }
-    cookie_file = get_ytdlp_cookie_file_path()
-    if cookie_file:
-        base_options["cookiefile"] = cookie_file
-        print(f"yt-dlp 옵션 cookiefile 적용: {cookie_file}")
-    else:
-        print("yt-dlp 옵션 cookiefile 미적용")
-
-    format_candidates = [
-        "bestaudio[acodec!=none]/bestaudio/best[acodec!=none]/best",
-        "ba[ext=m4a]/ba[ext=webm]/ba/best",
-        "best[acodec!=none]/best",
-        None,
-    ]
-
-    def find_audio_stream_url(info: dict) -> str | None:
-        stream_url = info.get("url")
-        if stream_url:
-            return stream_url
-
-        formats = info.get("formats") or []
-        audio_formats = [
-            item for item in formats
-            if item.get("url") and item.get("acodec") not in (None, "none")
-        ]
-        if not audio_formats:
-            return None
-
-        audio_formats.sort(key=lambda item: item.get("abr") or item.get("tbr") or 0, reverse=True)
-        return audio_formats[0].get("url")
-
-    def extract():
-        last_error = None
-        for format_selector in format_candidates:
-            options = dict(base_options)
-            if format_selector:
-                options["format"] = format_selector
-
-            with yt_dlp.YoutubeDL(options) as ydl:
-                try:
-                    info = ydl.extract_info(url, download=False)
-                except yt_dlp.utils.DownloadError as e:
-                    error_text = str(e)
-                    if "Sign in to confirm" in error_text or "not a bot" in error_text:
-                        raise RuntimeError(
-                            "YouTube가 Railway 서버 요청을 봇으로 판단해 차단했습니다. "
-                            "쿠키 파일 형식이 정상이어도 로그인 유지 쿠키가 부족하거나 세션이 만료되면 차단될 수 있습니다. "
-                            "`/유튜브쿠키확인`에서 로그인 유지 쿠키 상태를 확인하고, 필요하면 YouTube에 로그인한 브라우저에서 새 원본 cookies.txt를 다시 등록해주세요."
-                        )
-                    if "not made this video available in your country" in error_text:
-                        raise RuntimeError(
-                            "이 영상은 Railway 서버가 접속 중인 국가에서는 재생할 수 없는 지역 제한 영상입니다. "
-                            "한국에서만 재생 가능한 영상이면 Railway 서버 위치 때문에 막힐 수 있습니다."
-                        )
-                    if "Requested format is not available" in error_text:
-                        last_error = RuntimeError(
-                            "YouTube가 이 영상의 재생 가능한 오디오 포맷을 제공하지 않았습니다. "
-                            "다른 영상으로 테스트하거나, 같은 곡의 다른 업로드 영상을 등록해주세요."
-                        )
-                        continue
-                    raise
-            if "entries" in info:
-                info = next((entry for entry in info["entries"] if entry), None)
-            if not info:
-                raise RuntimeError("재생 정보를 가져오지 못했습니다.")
-            stream_url = find_audio_stream_url(info)
-            if not stream_url:
-                last_error = RuntimeError("재생 가능한 오디오 스트림을 찾지 못했습니다.")
-                continue
-            return {
-                "title": info.get("title") or "제목 없음",
-                "stream_url": stream_url,
-                "webpage_url": info.get("webpage_url") or url,
-                "http_headers": info.get("http_headers") or {},
-            }
-        if last_error:
-            raise last_error
-        raise RuntimeError("재생 가능한 오디오 포맷을 찾지 못했습니다.")
-
-    return await asyncio.to_thread(extract)
-
-
-async def wait_for_playlist_youtube_safety_delay(guild_id: int):
-    await asyncio.sleep(random.uniform(PLAYLIST_TRACK_DELAY_MIN_SECONDS, PLAYLIST_TRACK_DELAY_MAX_SECONDS))
-
-    loop = asyncio.get_running_loop()
-    now = loop.time()
-    last_requested_at = playlist_last_youtube_request_at.get(guild_id)
-    if last_requested_at is not None:
-        elapsed = now - last_requested_at
-        if elapsed < PLAYLIST_YOUTUBE_REQUEST_INTERVAL_SECONDS:
-            await asyncio.sleep(PLAYLIST_YOUTUBE_REQUEST_INTERVAL_SECONDS - elapsed)
-
-    playlist_last_youtube_request_at[guild_id] = loop.time()
-
-
-async def handle_playlist_track_failure(guild: discord.Guild, track: dict, stage: str, error: Exception):
-    error_text = f"{type(error).__name__}: {error}" if str(error) else type(error).__name__
-    failed_tracks = playlist_failed_tracks.setdefault(guild.id, [])
-    failed_tracks.append(
-        {
-            "title": track.get("title", "제목 없음"),
-            "id": track.get("id"),
-            "reason": error_text,
-        }
-    )
-    if len(failed_tracks) > PLAYLIST_FAILED_TRACK_LIMIT:
-        del failed_tracks[:-PLAYLIST_FAILED_TRACK_LIMIT]
-    playlist_failure_counts[guild.id] = playlist_failure_counts.get(guild.id, 0) + 1
-
-    failure_count = playlist_failure_counts[guild.id]
-    text_channel = guild.get_channel(playlist_text_channels.get(guild.id, 0))
-    if text_channel and failure_count % PLAYLIST_FAILURE_NOTICE_INTERVAL == 1:
-        await text_channel.send(
-            f"일부 곡이 재생되지 않아 자동으로 건너뛰고 있습니다. "
-            f"최근 실패 곡은 플레이리스트 패널에서 확인해주세요. (`{failure_count}곡 실패`)"
-        )
-
-    backoff_seconds = min(
-        PLAYLIST_FAILURE_RETRY_DELAY_SECONDS + ((failure_count - 1) * PLAYLIST_FAILURE_BACKOFF_STEP_SECONDS),
-        PLAYLIST_FAILURE_BACKOFF_MAX_SECONDS,
-    )
-    await refresh_playlist_panel(guild)
-    await asyncio.sleep(backoff_seconds)
-    await start_next_playlist_track(guild)
-
-
-async def start_next_playlist_track(guild: discord.Guild):
-    voice_client = guild.voice_client
-
-    if voice_client is None:
-        playlist_now_playing.pop(guild.id, None)
-        playlist_failure_counts.pop(guild.id, None)
-        await refresh_playlist_panel(guild)
-        return
-
-    mode = playlist_modes.get(guild.id, "order")
-    queue = playlist_queues.setdefault(guild.id, [])
-    library = playlist_library_cache.get(guild.id, [])
-
-    if not queue and mode == "order" and library:
-        queue.extend(library)
-
-    if not queue:
-        playlist_now_playing.pop(guild.id, None)
-        playlist_failure_counts.pop(guild.id, None)
-        await refresh_playlist_panel(guild)
-        return
-
-    current_track = playlist_now_playing.get(guild.id)
-    if current_track:
-        playlist_previous_tracks[guild.id] = current_track
-
-    if mode == "random":
-        source_tracks = queue or library
-        if not source_tracks:
-            playlist_now_playing.pop(guild.id, None)
-            playlist_failure_counts.pop(guild.id, None)
-            await refresh_playlist_panel(guild)
-            return
-        track = random.choice(source_tracks)
-        if queue and track in queue:
-            queue.remove(track)
-    else:
-        track = queue.pop(0)
-
-    playlist_now_playing[guild.id] = track
-    await refresh_playlist_panel(guild)
-    await wait_for_playlist_youtube_safety_delay(guild.id)
-
-    voice_client = guild.voice_client
-    if voice_client is None or not voice_client.is_connected():
-        playlist_now_playing.pop(guild.id, None)
-        await refresh_playlist_panel(guild)
-        return
-
-    try:
-        audio_info = await resolve_playlist_audio_url(track["url"])
-    except Exception as e:
-        await handle_playlist_track_failure(guild, track, "재생 준비 중", e)
-        return
-
-    try:
-        ffmpeg_options = {
-            "before_options": (
-                "-reconnect 1 "
-                "-reconnect_streamed 1 "
-                "-reconnect_at_eof 1 "
-                "-reconnect_on_network_error 1 "
-                "-reconnect_on_http_error 4xx,5xx "
-                "-reconnect_delay_max 5 "
-                "-reconnect_delay_total_max 30"
-            ),
-            "options": "-vn -loglevel error -filter:a loudnorm=I=-16:LRA=11:TP=-1.5",
-        }
-        ffmpeg_path = get_ffmpeg_executable_path()
-        source = discord.FFmpegOpusAudio(
-            audio_info["stream_url"],
-            executable=ffmpeg_path,
-            **ffmpeg_options,
-        )
-        print(f"플레이리스트 ffmpeg 경로: {ffmpeg_path}")
-
-        def after_play(error):
-            if error:
-                print(f"플레이리스트 재생 오류: {error}")
-            bot.loop.create_task(start_next_playlist_track(guild))
-
-        voice_client.play(source, after=after_play)
-        playlist_failure_counts.pop(guild.id, None)
-    except Exception as e:
-        await handle_playlist_track_failure(guild, track, "재생 시작 중", e)
-        return
-
-
-async def refresh_playlist_panel(guild: discord.Guild):
-    panel_info = playlist_panel_messages.get(guild.id)
-    if not panel_info:
-        return
-
-    channel_id, message_id = panel_info
-    channel = guild.get_channel(channel_id)
-    if channel is None:
-        return
-
-    try:
-        message = await channel.fetch_message(message_id)
-        await message.edit(embed=build_playlist_panel_embed(guild))
-    except Exception:
-        pass
-
-
-async def disconnect_playlist_if_alone(guild: discord.Guild):
-    voice_client = guild.voice_client
-    if voice_client is None or not voice_client.is_connected() or voice_client.channel is None:
-        return
-
-    human_members = [member for member in voice_client.channel.members if not member.bot]
-    if human_members:
-        return
-
-    playlist_queues.pop(guild.id, None)
-    playlist_now_playing.pop(guild.id, None)
-    playlist_text_channels.pop(guild.id, None)
-    playlist_previous_tracks.pop(guild.id, None)
-    playlist_library_cache.pop(guild.id, None)
-    playlist_modes.pop(guild.id, None)
-    playlist_panel_requesters.pop(guild.id, None)
-    playlist_failure_counts.pop(guild.id, None)
-    playlist_failed_tracks.pop(guild.id, None)
-    playlist_last_youtube_request_at.pop(guild.id, None)
-    await disable_playlist_panel(guild)
-    await voice_client.disconnect(force=True)
-
-
-async def disable_playlist_panel(guild: discord.Guild):
-    panel_info = playlist_panel_messages.pop(guild.id, None)
-    if not panel_info:
-        return
-
-    channel_id, message_id = panel_info
-    channel = guild.get_channel(channel_id)
-    if channel is None:
-        return
-
-    try:
-        message = await channel.fetch_message(message_id)
-    except Exception:
-        return
-
-    view = discord.ui.View()
-    for label, style in [
-        ("이전 곡", discord.ButtonStyle.secondary),
-        ("정지", discord.ButtonStyle.danger),
-        ("다음 곡", discord.ButtonStyle.primary),
-        ("랜덤재생", discord.ButtonStyle.success),
-        ("순서재생", discord.ButtonStyle.success),
-    ]:
-        view.add_item(discord.ui.Button(label=label, style=style, disabled=True))
-
-    try:
-        await message.edit(embed=build_playlist_panel_embed(guild), view=view)
-    except Exception:
-        pass
-
-
-async def start_playlist_player(
-    interaction: discord.Interaction,
-    tracks: list[dict],
-    *,
-    mode: str = "order",
-    start_immediately: bool = True,
-):
-    if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
-        return
-
-    if not tracks:
-        await interaction.response.send_message("재생할 플레이리스트 곡이 없습니다.", ephemeral=True)
-        return
-
-    if not interaction.user.voice or not interaction.user.voice.channel:
-        await interaction.response.send_message("먼저 재생할 음성채널에 들어가 주세요.", ephemeral=True)
-        return
-
-    await interaction.response.defer()
-
-    voice_channel = interaction.user.voice.channel
-    try:
-        voice_client = interaction.guild.voice_client
-        if voice_client is None:
-            voice_client = await voice_channel.connect(timeout=10, reconnect=False)
-        elif voice_client.channel != voice_channel:
-            await voice_client.move_to(voice_channel)
-    except Exception as e:
-        if getattr(e, "code", None) == 4017:
-            await interaction.followup.send(
-                "이 음성채널은 E2EE/DAVE 보안 음성 연결이 필요해서 봇이 접속하지 못했습니다.\n"
-                "일반 음성채널에서 다시 시도하거나, 해당 채널의 E2EE/DAVE 관련 설정을 꺼주세요.",
-                ephemeral=True,
-            )
-            return
-        await interaction.followup.send(f"음성채널에 연결하지 못했습니다: {e}", ephemeral=True)
-        return
-
-    playlist_text_channels[interaction.guild.id] = interaction.channel.id
-    playlist_library_cache[interaction.guild.id] = list(tracks)
-    playlist_modes[interaction.guild.id] = mode
-    playlist_panel_requesters[interaction.guild.id] = interaction.user.id
-    playlist_queues[interaction.guild.id] = list(tracks)
-    playlist_failure_counts.pop(interaction.guild.id, None)
-    playlist_failed_tracks.pop(interaction.guild.id, None)
-    playlist_last_youtube_request_at.pop(interaction.guild.id, None)
-
-    if not start_immediately:
-        await interaction.followup.send("🎧 플레이리스트 패널을 열었습니다.")
-        return
-
-    if voice_client.is_playing() or voice_client.is_paused():
-        voice_client.stop()
-
-    await start_next_playlist_track(interaction.guild)
-
-
-class PlaylistPanelView(discord.ui.View):
-    def __init__(self, requester_id: int, tracks: list[dict]):
-        super().__init__(timeout=None)
-        self.requester_id = requester_id
-        self.tracks = tracks
-
-    async def refresh_panel(self, interaction: discord.Interaction):
-        if interaction.message and interaction.guild:
-            try:
-                await interaction.message.edit(embed=build_playlist_panel_embed(interaction.guild), view=self)
-            except Exception:
-                pass
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("이 플레이리스트 패널은 명령어를 사용한 사람만 조작할 수 있습니다.", ephemeral=True)
-            return False
-        return True
-
-    @discord.ui.button(label="이전 곡", style=discord.ButtonStyle.secondary)
-    async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.guild is None:
-            await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
-            return
-
-        previous_track = playlist_previous_tracks.get(interaction.guild.id)
-        voice_client = interaction.guild.voice_client
-        if previous_track is None or voice_client is None or not voice_client.is_connected():
-            await interaction.response.send_message("이전 곡이 없습니다.", ephemeral=True)
-            return
-
-        await interaction.response.defer()
-        playlist_queues.setdefault(interaction.guild.id, []).insert(0, previous_track)
-        if voice_client.is_playing() or voice_client.is_paused():
-            voice_client.stop()
-        else:
-            await start_next_playlist_track(interaction.guild)
-        await self.refresh_panel(interaction)
-
-    @discord.ui.button(label="정지", style=discord.ButtonStyle.danger)
-    async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.guild is None:
-            await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
-            return
-
-        playlist_queues.pop(interaction.guild.id, None)
-        playlist_now_playing.pop(interaction.guild.id, None)
-        playlist_previous_tracks.pop(interaction.guild.id, None)
-        playlist_library_cache.pop(interaction.guild.id, None)
-        playlist_modes.pop(interaction.guild.id, None)
-        playlist_panel_requesters.pop(interaction.guild.id, None)
-        playlist_text_channels.pop(interaction.guild.id, None)
-        playlist_failure_counts.pop(interaction.guild.id, None)
-        playlist_failed_tracks.pop(interaction.guild.id, None)
-        playlist_last_youtube_request_at.pop(interaction.guild.id, None)
-
-        voice_client = interaction.guild.voice_client
-        if voice_client is not None and voice_client.is_connected():
-            await interaction.response.defer()
-            await disable_playlist_panel(interaction.guild)
-            await voice_client.disconnect(force=True)
-            return
-        await interaction.response.send_message("현재 연결된 음성채널이 없습니다.", ephemeral=True)
-
-    @discord.ui.button(label="다음 곡", style=discord.ButtonStyle.primary)
-    async def next_track(self, interaction: discord.Interaction, button: discord.ui.Button):
-        voice_client = interaction.guild.voice_client if interaction.guild else None
-        if voice_client is None or not voice_client.is_connected():
-            await interaction.response.send_message("현재 재생 중인 플레이리스트가 없습니다.", ephemeral=True)
-            return
-
-        await interaction.response.defer()
-        if voice_client.is_playing() or voice_client.is_paused():
-            voice_client.stop()
-            await self.refresh_panel(interaction)
-            return
-        await start_next_playlist_track(interaction.guild)
-        await self.refresh_panel(interaction)
-
-    @discord.ui.button(label="랜덤재생", style=discord.ButtonStyle.success)
-    async def random_play(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.guild is None:
-            await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
-            return
-
-        playlist_modes[interaction.guild.id] = "random"
-        if not playlist_library_cache.get(interaction.guild.id):
-            playlist_library_cache[interaction.guild.id] = list(self.tracks)
-        await interaction.response.defer()
-        await self.refresh_panel(interaction)
-
-    @discord.ui.button(label="순서재생", style=discord.ButtonStyle.success)
-    async def order_play(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.guild is None:
-            await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
-            return
-
-        library = playlist_library_cache.get(interaction.guild.id) or self.tracks
-        now_playing = playlist_now_playing.get(interaction.guild.id)
-        now_playing_id = now_playing["id"] if now_playing else None
-        playlist_modes[interaction.guild.id] = "order"
-        playlist_library_cache[interaction.guild.id] = list(library)
-        playlist_queues[interaction.guild.id] = [
-            track for track in sorted(library, key=lambda item: item["id"])
-            if now_playing_id is None or track["id"] > now_playing_id
-        ]
-        await interaction.response.defer()
-        await self.refresh_panel(interaction)
-
-
-def build_playlist_panel_embed(guild: discord.Guild):
-    embed = discord.Embed(
-        title="🎧 마리봇 플레이리스트",
-        description="현재 재생 중인 곡을 확인하고 재생 방식을 선택할 수 있습니다.",
-        color=0x1DB954,
-    )
-
-    requester_id = playlist_panel_requesters.get(guild.id)
-    requester = guild.get_member(requester_id) if requester_id else None
-    requester_text = requester.mention if requester else ("알 수 없음" if requester_id else "등록 안 됨")
-    embed.add_field(name="패널 생성자", value=requester_text, inline=False)
-
-    now_playing = playlist_now_playing.get(guild.id)
-    if now_playing:
-        owner = guild.get_member(now_playing["owner_user_id"])
-        owner_name = owner.display_name if owner else f"알 수 없는 유저 ({now_playing['owner_user_id']})"
-        embed.add_field(
-            name="현재 재생 중",
-            value=(
-                f"**{now_playing['title']}**\n"
-                f"등록자: {owner_name}\n"
-                f"곡번호: `{now_playing['id']}`"
-            ),
-            inline=False,
-        )
-    else:
-        next_tracks = playlist_queues.get(guild.id, [])
-        if next_tracks:
-            next_track = next_tracks[0]
-            embed.add_field(
-                name="현재 재생 중",
-                value=(
-                    "재생 중인 곡이 없습니다.\n"
-                    f"시작 대기 곡: **{next_track['title']}**\n"
-                    f"곡번호: `{next_track['id']}`"
-                ),
-                inline=False,
-            )
-        else:
-            embed.add_field(name="현재 재생 중", value="재생 중인 곡이 없습니다.", inline=False)
-
-    mode = playlist_modes.get(guild.id, "order")
-    mode_text = "랜덤재생" if mode == "random" else "순서재생"
-    embed.add_field(name="재생 모드", value=f"`{mode_text}`", inline=True)
-    embed.add_field(name="대기열", value=f"`{len(playlist_queues.get(guild.id, []))}곡`", inline=True)
-    failure_count = playlist_failure_counts.get(guild.id, 0)
-    if failure_count:
-        backoff_seconds = min(
-            PLAYLIST_FAILURE_RETRY_DELAY_SECONDS + ((failure_count - 1) * PLAYLIST_FAILURE_BACKOFF_STEP_SECONDS),
-            PLAYLIST_FAILURE_BACKOFF_MAX_SECONDS,
-        )
-        embed.add_field(name="재생 안정화", value=f"`연속 실패 {failure_count}회 / {backoff_seconds}초 후 다음 시도`", inline=False)
-
-    failed_tracks = playlist_failed_tracks.get(guild.id, [])
-    if failed_tracks:
-        failed_lines = []
-        for failed_track in failed_tracks[-3:]:
-            track_id = failed_track.get("id")
-            title = failed_track.get("title", "제목 없음")
-            id_text = f"#{track_id} " if track_id is not None else ""
-            failed_lines.append(f"{id_text}{title}")
-        embed.add_field(
-            name="최근 재생 실패",
-            value="\n".join(failed_lines),
-            inline=False,
-        )
-    embed.set_footer(text="이전 곡 / 정지 / 다음 곡 / 랜덤재생 / 순서재생 버튼으로 조작합니다.")
-    return embed
 
 
 def get_active_saving(guild_id: int, user_id: int):
@@ -8235,488 +7144,6 @@ def get_number_baseball_multiplier(attempt_count: int) -> float:
     return 1.5
 
 
-def roll_dice_poker_hand() -> list[int]:
-    return [random.randint(1, 6) for _ in range(5)]
-
-
-def evaluate_dice_poker_hand(dice: list[int]) -> tuple[str, float]:
-    counts = sorted([dice.count(value) for value in set(dice)], reverse=True)
-    unique_values = set(dice)
-
-    if counts == [5]:
-        hand_name = "야추"
-    elif counts == [4, 1]:
-        hand_name = "포카드"
-    elif counts == [3, 2]:
-        hand_name = "풀하우스"
-    elif unique_values == {1, 2, 3, 4, 5} or unique_values == {2, 3, 4, 5, 6}:
-        hand_name = "라지 스트레이트"
-    elif any(sequence.issubset(unique_values) for sequence in ({1, 2, 3, 4}, {2, 3, 4, 5}, {3, 4, 5, 6})):
-        hand_name = "스몰 스트레이트"
-    elif counts == [3, 1, 1]:
-        hand_name = "트리플"
-    elif counts == [2, 2, 1]:
-        hand_name = "투페어"
-    elif counts == [2, 1, 1, 1]:
-        hand_name = "원페어"
-    else:
-        hand_name = "노페어"
-
-    return hand_name, DICE_POKER_PAYOUTS[hand_name]
-
-
-def get_dice_poker_tiebreaker(dice: list[int]) -> tuple[int, ...]:
-    counts = {}
-    for value in dice:
-        counts[value] = counts.get(value, 0) + 1
-    grouped_values = sorted(counts.items(), key=lambda item: (item[1], item[0]), reverse=True)
-    return tuple(value for value, count in grouped_values for _ in range(count))
-
-
-def compare_dice_poker_hands(left_dice: list[int], right_dice: list[int]) -> int:
-    left_name, _ = evaluate_dice_poker_hand(left_dice)
-    right_name, _ = evaluate_dice_poker_hand(right_dice)
-    left_rank = DICE_POKER_RANKS[left_name]
-    right_rank = DICE_POKER_RANKS[right_name]
-
-    if left_rank > right_rank:
-        return 1
-    if left_rank < right_rank:
-        return -1
-
-    left_tiebreaker = get_dice_poker_tiebreaker(left_dice)
-    right_tiebreaker = get_dice_poker_tiebreaker(right_dice)
-    if left_tiebreaker > right_tiebreaker:
-        return 1
-    if left_tiebreaker < right_tiebreaker:
-        return -1
-    return 0
-
-
-def format_dice_poker_hand(dice: list[int]) -> str:
-    return " | ".join(f"🎲 {value}" for value in dice)
-
-
-def build_yahtzee_result_embed(
-    challenger: discord.Member | discord.User | None,
-    opponent: discord.Member | discord.User | None,
-    challenger_dice: list[int],
-    opponent_dice: list[int],
-    amount: int,
-    result_text: str,
-    color: int,
-):
-    challenger_name = challenger.display_name if challenger else "도전자"
-    opponent_name = opponent.display_name if opponent else "마리봇"
-    challenger_hand, _ = evaluate_dice_poker_hand(challenger_dice)
-    opponent_hand, _ = evaluate_dice_poker_hand(opponent_dice)
-    pot_amount = amount * 2
-
-    embed = discord.Embed(title="🎲 야추 대결 결과", description=result_text, color=color)
-    embed.add_field(
-        name=challenger_name,
-        value=(
-            f"{format_dice_poker_hand(challenger_dice)}\n"
-            f"숫자: `{' '.join(str(value) for value in challenger_dice)}`\n"
-            f"족보: **{challenger_hand}**"
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name=opponent_name,
-        value=(
-            f"{format_dice_poker_hand(opponent_dice)}\n"
-            f"숫자: `{' '.join(str(value) for value in opponent_dice)}`\n"
-            f"족보: **{opponent_hand}**"
-        ),
-        inline=False,
-    )
-    embed.add_field(name="판돈", value=f"`{format_money(pot_amount)}`", inline=False)
-    return embed
-
-
-def format_yahtzee_visible_dice(dice: list[int], reveal_all: bool = False) -> str:
-    if reveal_all:
-        return format_dice_poker_hand(dice)
-    return f"{format_dice_poker_hand(dice[:3])} | ? | ?"
-
-
-def format_yahtzee_action(action: str | None) -> str:
-    if action == "bet":
-        return "배팅"
-    if action == "allin":
-        return "올인"
-    if action == "die":
-        return "다이"
-    return "선택 대기"
-
-
-def build_yahtzee_progress_embed(
-    challenger: discord.Member | discord.User | None,
-    opponent: discord.Member | discord.User | None,
-    challenger_dice: list[int],
-    opponent_dice: list[int],
-    amount: int,
-    pot_amount: int,
-    challenger_action: str | None,
-    opponent_action: str | None,
-):
-    challenger_name = challenger.display_name if challenger else "도전자"
-    opponent_name = opponent.display_name if opponent else "마리봇"
-    embed = discord.Embed(
-        title="🎲 야추 대결",
-        description="각자 주사위 5개 중 3개가 먼저 공개되었습니다.\n배팅 또는 다이를 선택해주세요.",
-        color=0xF1C40F,
-    )
-    embed.add_field(name="기본 베팅금", value=f"`{format_money(amount)}`", inline=True)
-    embed.add_field(name="현재 판돈", value=f"`{format_money(pot_amount)}`", inline=True)
-    embed.add_field(
-        name=challenger_name,
-        value=(
-            f"{format_yahtzee_visible_dice(challenger_dice)}\n"
-            f"상태: `{format_yahtzee_action(challenger_action)}`"
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name=opponent_name,
-        value=(
-            f"{format_yahtzee_visible_dice(opponent_dice)}\n"
-            f"상태: `{format_yahtzee_action(opponent_action)}`"
-        ),
-        inline=False,
-    )
-    embed.set_footer(text="둘 다 배팅해야 남은 주사위 2개를 공개하고 승부합니다.")
-    return embed
-
-
-class YahtzeeMatchView(discord.ui.View):
-    def __init__(self, guild_id: int, challenger_id: int, opponent_id: int | None, amount: int):
-        super().__init__(timeout=SEOTDA_TIMEOUT)
-        self.guild_id = guild_id
-        self.challenger_id = challenger_id
-        self.opponent_id = opponent_id
-        self.amount = amount
-        self.pot_amount = amount * 2
-        self.challenger_dice = roll_dice_poker_hand()
-        self.opponent_dice = roll_dice_poker_hand()
-        self.challenger_action: str | None = None
-        self.opponent_action: str | None = None
-        self.challenger_bet_amount = 0
-        self.opponent_bet_amount = 0
-        self.resolved = False
-
-    def _is_bot_match(self) -> bool:
-        return self.opponent_id is None
-
-    def _get_role_key(self, user_id: int) -> str | None:
-        if user_id == self.challenger_id:
-            return "challenger"
-        if user_id == self.opponent_id:
-            return "opponent"
-        return None
-
-    def _set_action(self, role_key: str, action: str):
-        if role_key == "challenger":
-            self.challenger_action = action
-        elif role_key == "opponent":
-            self.opponent_action = action
-
-    def _get_action(self, role_key: str) -> str | None:
-        return self.challenger_action if role_key == "challenger" else self.opponent_action
-
-    def _get_participants(self, guild: discord.Guild, bot_user: discord.ClientUser | None):
-        challenger = guild.get_member(self.challenger_id)
-        if self._is_bot_match():
-            opponent = bot_user
-        else:
-            opponent = guild.get_member(self.opponent_id)
-        return challenger, opponent
-
-    def build_embed(self, guild: discord.Guild, bot_user: discord.ClientUser | None):
-        challenger, opponent = self._get_participants(guild, bot_user)
-        return build_yahtzee_progress_embed(
-            challenger,
-            opponent,
-            self.challenger_dice,
-            self.opponent_dice,
-            self.amount,
-            self.pot_amount,
-            self.challenger_action,
-            self.opponent_action,
-        )
-
-    def _apply_additional_bet(self, role_key: str, user_id: int | None) -> str:
-        if user_id is None:
-            additional_amount = self.amount
-        else:
-            current_balance = get_balance(user_id)
-            additional_amount = min(current_balance, self.amount)
-            if additional_amount > 0:
-                add_balance(user_id, -additional_amount)
-
-        if role_key == "challenger":
-            self.challenger_bet_amount = additional_amount
-        else:
-            self.opponent_bet_amount = additional_amount
-
-        self.pot_amount += additional_amount
-        return "bet" if additional_amount >= self.amount else "allin"
-
-    def _settle_all_in_difference(self):
-        matched_amount = min(self.challenger_bet_amount, self.opponent_bet_amount)
-
-        if self.challenger_bet_amount > matched_amount:
-            refund = self.challenger_bet_amount - matched_amount
-            add_balance(self.challenger_id, refund)
-            self.pot_amount -= refund
-            self.challenger_bet_amount = matched_amount
-
-        if self.opponent_id is not None and self.opponent_bet_amount > matched_amount:
-            refund = self.opponent_bet_amount - matched_amount
-            add_balance(self.opponent_id, refund)
-            self.pot_amount -= refund
-            self.opponent_bet_amount = matched_amount
-
-        if self.opponent_id is None and self.opponent_bet_amount > matched_amount:
-            refund = self.opponent_bet_amount - matched_amount
-            self.pot_amount -= refund
-            self.opponent_bet_amount = matched_amount
-
-    async def _resolve_round(self, interaction: discord.Interaction):
-        self.resolved = True
-        challenger, opponent = self._get_participants(interaction.guild, interaction.client.user)
-
-        if self.challenger_action == "die" and self.opponent_action == "die":
-            add_balance(self.challenger_id, self.amount)
-            if not self._is_bot_match():
-                add_balance(self.opponent_id, self.amount)
-            embed = discord.Embed(
-                title="🎲 야추 대결 결과",
-                description="두 사람이 모두 다이를 선택해 무승부가 되었습니다.\n처음 건 금액은 각각 반환되었습니다.",
-                color=0x95A5A6,
-            )
-            embed.add_field(name="판돈", value=f"`{format_money(self.pot_amount)}`", inline=False)
-            add_game_history(interaction.guild.id, "야추", f"{challenger.display_name} vs {opponent.display_name if opponent else '마리봇'} / 양쪽 다이 무승부")
-            await interaction.response.edit_message(embed=embed, view=None)
-            return
-
-        if self.challenger_action == "die" and self.opponent_action in {"bet", "allin"}:
-            if not self._is_bot_match():
-                add_balance(self.opponent_id, self.pot_amount)
-            embed = discord.Embed(
-                title="🎲 야추 대결 결과",
-                description=f"{challenger.mention}님이 다이를 선택했습니다.\n{opponent.mention if opponent else '마리봇'} 승리!",
-                color=0x3498DB,
-            )
-            embed.add_field(name="판돈", value=f"`{format_money(self.pot_amount)}`", inline=False)
-            add_game_history(interaction.guild.id, "야추", f"{challenger.display_name} vs {opponent.display_name if opponent else '마리봇'} / 다이 패배")
-            await interaction.response.edit_message(embed=embed, view=None)
-            return
-
-        if self.challenger_action in {"bet", "allin"} and self.opponent_action == "die":
-            add_balance(self.challenger_id, self.pot_amount)
-            embed = discord.Embed(
-                title="🎲 야추 대결 결과",
-                description=f"{opponent.mention if opponent else '마리봇'}이 다이를 선택했습니다.\n{challenger.mention}님 승리!",
-                color=0x2ECC71,
-            )
-            embed.add_field(name="판돈", value=f"`{format_money(self.pot_amount)}`", inline=False)
-            add_game_history(interaction.guild.id, "야추", f"{challenger.display_name} vs {opponent.display_name if opponent else '마리봇'} / 다이 승리")
-            await interaction.response.edit_message(embed=embed, view=None)
-            return
-
-        self._settle_all_in_difference()
-        comparison = compare_dice_poker_hands(self.challenger_dice, self.opponent_dice)
-        challenger_hand, _ = evaluate_dice_poker_hand(self.challenger_dice)
-        opponent_hand, _ = evaluate_dice_poker_hand(self.opponent_dice)
-
-        if comparison > 0:
-            add_balance(self.challenger_id, self.pot_amount)
-            result_text = f"{challenger.mention}님 승리!\n`{format_money(self.pot_amount)}`을 획득했습니다."
-            color = 0x2ECC71
-            history_text = f"{challenger.display_name} vs {opponent.display_name if opponent else '마리봇'} / {challenger_hand} 승리"
-        elif comparison < 0:
-            if not self._is_bot_match():
-                add_balance(self.opponent_id, self.pot_amount)
-            result_text = f"{opponent.mention if opponent else '마리봇'} 승리!"
-            if not self._is_bot_match():
-                result_text += f"\n`{format_money(self.pot_amount)}`을 획득했습니다."
-            color = 0x3498DB
-            history_text = f"{challenger.display_name} vs {opponent.display_name if opponent else '마리봇'} / {opponent_hand} 승리"
-        else:
-            add_balance(self.challenger_id, self.pot_amount // 2)
-            if not self._is_bot_match():
-                add_balance(self.opponent_id, self.pot_amount // 2)
-            result_text = "같은 수준의 족보가 나와 무승부입니다. 판돈은 반씩 반환되었습니다."
-            color = 0x95A5A6
-            history_text = f"{challenger.display_name} vs {opponent.display_name if opponent else '마리봇'} / 무승부 ({challenger_hand})"
-
-        embed = build_yahtzee_result_embed(
-            challenger,
-            opponent,
-            self.challenger_dice,
-            self.opponent_dice,
-            self.pot_amount // 2,
-            result_text,
-            color,
-        )
-        add_game_history(interaction.guild.id, "야추", history_text)
-        await interaction.response.edit_message(embed=embed, view=None)
-
-    async def _handle_choice(self, interaction: discord.Interaction, action: str):
-        if self.resolved:
-            await interaction.response.send_message("이미 결과가 확정된 판입니다.", ephemeral=True)
-            return
-
-        role_key = self._get_role_key(interaction.user.id)
-        if role_key is None:
-            await interaction.response.send_message("대결 당사자만 버튼을 누를 수 있습니다.", ephemeral=True)
-            return
-
-        if self._get_action(role_key) is not None:
-            await interaction.response.send_message("이미 선택을 완료했습니다.", ephemeral=True)
-            return
-
-        if action == "bet":
-            action = self._apply_additional_bet(role_key, interaction.user.id)
-
-        self._set_action(role_key, action)
-
-        if self._is_bot_match() and role_key == "challenger":
-            if action == "die":
-                self.opponent_action = "bet"
-                self.opponent_bet_amount = 0
-            else:
-                bot_action = self._apply_additional_bet("opponent", None)
-                self._set_action("opponent", bot_action)
-
-        if self.challenger_action is not None and self.opponent_action is not None:
-            await self._resolve_round(interaction)
-            return
-
-        await interaction.response.edit_message(embed=self.build_embed(interaction.guild, interaction.client.user), view=self)
-
-    @discord.ui.button(label="배팅", style=discord.ButtonStyle.success)
-    async def bet(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._handle_choice(interaction, "bet")
-
-    @discord.ui.button(label="다이", style=discord.ButtonStyle.danger)
-    async def die(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._handle_choice(interaction, "die")
-
-
-def resolve_yahtzee_match(guild_id: int, challenger, opponent, amount: int):
-    challenger_dice = roll_dice_poker_hand()
-    opponent_dice = roll_dice_poker_hand()
-    challenger_name = challenger.display_name if challenger else "도전자"
-    opponent_name = opponent.display_name if opponent else "마리봇"
-    comparison = compare_dice_poker_hands(challenger_dice, opponent_dice)
-    challenger_hand, _ = evaluate_dice_poker_hand(challenger_dice)
-    opponent_hand, _ = evaluate_dice_poker_hand(opponent_dice)
-    pot_amount = amount * 2
-
-    if comparison > 0:
-        add_balance(challenger.id, pot_amount)
-        result_text = f"{challenger.mention}님 승리!\n`{format_money(pot_amount)}`을 획득했습니다."
-        color = 0x2ECC71
-        history_text = f"{challenger_name} vs {opponent_name} / {challenger_hand} 승리"
-    elif comparison < 0:
-        if opponent is not None and not getattr(opponent, "bot", False):
-            add_balance(opponent.id, pot_amount)
-        result_text = f"{opponent.mention if opponent else '마리봇'} 승리!"
-        if opponent is not None and not getattr(opponent, "bot", False):
-            result_text += f"\n`{format_money(pot_amount)}`을 획득했습니다."
-        color = 0x3498DB
-        history_text = f"{challenger_name} vs {opponent_name} / {opponent_hand} 승리"
-    else:
-        add_balance(challenger.id, amount)
-        if opponent is not None and not getattr(opponent, "bot", False):
-            add_balance(opponent.id, amount)
-        result_text = "같은 수준의 족보가 나와 무승부입니다. 각자 베팅금이 반환되었습니다."
-        color = 0x95A5A6
-        history_text = f"{challenger_name} vs {opponent_name} / 무승부 ({challenger_hand})"
-
-    add_game_history(guild_id, "야추", history_text)
-    return build_yahtzee_result_embed(
-        challenger,
-        opponent,
-        challenger_dice,
-        opponent_dice,
-        amount,
-        result_text,
-        color,
-    )
-
-
-class YahtzeeChallengeView(discord.ui.View):
-    def __init__(self, challenger_id: int, opponent_id: int, amount: int):
-        super().__init__(timeout=60)
-        self.challenger_id = challenger_id
-        self.opponent_id = opponent_id
-        self.amount = amount
-        self.resolved = False
-
-    async def _ensure_opponent(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.opponent_id:
-            await interaction.response.send_message("이 버튼은 대결 요청을 받은 본인만 누를 수 있습니다.", ephemeral=True)
-            return False
-        return True
-
-    @discord.ui.button(label="수락", style=discord.ButtonStyle.success)
-    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.resolved or not await self._ensure_opponent(interaction):
-            return
-
-        challenger = interaction.guild.get_member(self.challenger_id)
-        opponent = interaction.guild.get_member(self.opponent_id)
-        if challenger is None or opponent is None:
-            await interaction.response.send_message("대결 대상 중 한 명을 찾을 수 없습니다.", ephemeral=True)
-            return
-
-        if not can_afford(challenger.id, self.amount):
-            await interaction.response.send_message("도전자의 잔액이 부족해 대결을 시작할 수 없습니다.", ephemeral=True)
-            return
-
-        if not can_afford(opponent.id, self.amount):
-            await interaction.response.send_message("본인의 잔액이 부족해 대결을 시작할 수 없습니다.", ephemeral=True)
-            return
-
-        self.resolved = True
-        add_balance(challenger.id, -self.amount)
-        add_balance(opponent.id, -self.amount)
-
-        for item in self.children:
-            item.disabled = True
-
-        match_view = YahtzeeMatchView(interaction.guild.id, self.challenger_id, self.opponent_id, self.amount)
-        embed = match_view.build_embed(interaction.guild, interaction.client.user)
-        await interaction.response.edit_message(content=None, embed=embed, view=match_view)
-
-    @discord.ui.button(label="거절", style=discord.ButtonStyle.danger)
-    async def decline(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.resolved or not await self._ensure_opponent(interaction):
-            return
-
-        self.resolved = True
-        challenger = interaction.guild.get_member(self.challenger_id)
-        opponent = interaction.guild.get_member(self.opponent_id)
-        embed = discord.Embed(
-            title="🎲 야추 대결 요청",
-            description=f"{opponent.mention if opponent else '상대방'}님이 대결을 거절했습니다.",
-            color=0xE74C3C,
-        )
-        if challenger is not None and opponent is not None:
-            embed.add_field(name="도전자", value=challenger.mention, inline=True)
-            embed.add_field(name="상대", value=opponent.mention, inline=True)
-        embed.add_field(name="베팅금", value=f"`{format_money(self.amount)}`", inline=False)
-
-        for item in self.children:
-            item.disabled = True
-
-        await interaction.response.edit_message(embed=embed, view=self)
-
-
 class NumberBaseballGuessModal(discord.ui.Modal):
     def __init__(self, game_view):
         super().__init__(title="숫자야구 입력")
@@ -10687,7 +9114,7 @@ class KillBetStartModal(discord.ui.Modal):
             interaction.user.voice.channel.id if interaction.user.voice and interaction.user.voice.channel else None,
             interaction.user.id,
             self.rule_key,
-            PUBG_DEFAULT_PLATFORM,
+            "manual",
             target_score,
             participants,
         )
@@ -14678,6 +13105,111 @@ async def show_team_mix_rule(interaction: discord.Interaction):
         ephemeral=True,
     )
 
+
+def get_ffmpeg_executable_path() -> str:
+    ffmpeg_path = shutil.which("ffmpeg")
+    if ffmpeg_path:
+        return ffmpeg_path
+    raise RuntimeError("서버에서 ffmpeg를 찾지 못했습니다. Railway 배포 설정에 ffmpeg 설치가 필요합니다.")
+
+
+async def resolve_single_track_audio(url: str) -> dict:
+    try:
+        import yt_dlp
+    except ImportError:
+        raise RuntimeError("서버에 yt-dlp가 설치되어 있지 않습니다. requirements.txt 반영 후 재배포해주세요.")
+
+    class QuietYtdlpLogger:
+        def debug(self, message):
+            pass
+
+        def warning(self, message):
+            pass
+
+        def error(self, message):
+            pass
+
+    def extract():
+        options = {
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "format": "bestaudio[acodec!=none]/bestaudio/best[acodec!=none]/best",
+            "logger": QuietYtdlpLogger(),
+        }
+
+        with yt_dlp.YoutubeDL(options) as ydl:
+            try:
+                info = ydl.extract_info(url, download=False)
+            except yt_dlp.utils.DownloadError as e:
+                error_text = str(e)
+                if "Sign in to confirm" in error_text or "not a bot" in error_text:
+                    raise RuntimeError(
+                        "YouTube가 서버 요청을 봇으로 판단해 차단했습니다. 다른 링크로 시도하거나 잠시 후 다시 시도해주세요."
+                    )
+                if "not made this video available in your country" in error_text:
+                    raise RuntimeError("이 영상은 서버 위치에서 재생할 수 없는 지역 제한 영상입니다.")
+                if "Requested format is not available" in error_text:
+                    raise RuntimeError("이 영상에서 재생 가능한 오디오 포맷을 찾지 못했습니다. 다른 업로드 링크를 사용해주세요.")
+                raise
+
+        if "entries" in info:
+            info = next((entry for entry in info["entries"] if entry), None)
+        if not info:
+            raise RuntimeError("재생 정보를 가져오지 못했습니다.")
+
+        stream_url = info.get("url")
+        if not stream_url:
+            formats = info.get("formats") or []
+            audio_formats = [
+                item for item in formats
+                if item.get("url") and item.get("acodec") not in (None, "none")
+            ]
+            audio_formats.sort(key=lambda item: item.get("abr") or item.get("tbr") or 0, reverse=True)
+            stream_url = audio_formats[0]["url"] if audio_formats else None
+        if not stream_url:
+            raise RuntimeError("재생 가능한 오디오 스트림을 찾지 못했습니다.")
+
+        return {
+            "title": info.get("title") or "제목 없음",
+            "stream_url": stream_url,
+            "webpage_url": info.get("webpage_url") or url,
+        }
+
+    return await asyncio.to_thread(extract)
+
+
+async def disconnect_music_if_alone(guild: discord.Guild):
+    voice_client = guild.voice_client
+    if voice_client is None or not voice_client.is_connected() or voice_client.channel is None:
+        return
+
+    human_members = [member for member in voice_client.channel.members if not member.bot]
+    if human_members:
+        return
+
+    if voice_client.is_playing() or voice_client.is_paused():
+        voice_client.stop()
+    single_song_tokens.pop(guild.id, None)
+    await voice_client.disconnect(force=True)
+
+
+async def disconnect_music_after_finish(guild: discord.Guild, song_token: int):
+    await asyncio.sleep(1)
+    if single_song_tokens.get(guild.id) != song_token:
+        return
+
+    voice_client = guild.voice_client
+    if voice_client is None or not voice_client.is_connected():
+        single_song_tokens.pop(guild.id, None)
+        return
+    if voice_client.is_playing() or voice_client.is_paused():
+        return
+
+    single_song_tokens.pop(guild.id, None)
+    await voice_client.disconnect(force=True)
+
+
 @bot.tree.command(name="구인", description="배그 구인")
 async def recruit(interaction: discord.Interaction, message: str):
     recruit_channel_id = get_guild_setting_channel_id(interaction.guild.id, "recruit_channel_id")
@@ -14706,6 +13238,92 @@ async def recruit(interaction: discord.Interaction, message: str):
 @bot.tree.command(name="종겜구인", description="원하는 게임으로 구인 글 작성")
 async def general_recruit(interaction: discord.Interaction):
     await interaction.response.send_modal(GeneralRecruitModal())
+
+
+@bot.tree.command(name="노래재생", description="유튜브 링크 한 곡을 현재 음성채널에서 재생합니다.")
+@app_commands.describe(url="재생할 유튜브 링크")
+async def play_single_song(interaction: discord.Interaction, url: str):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+    if not interaction.user.voice or not interaction.user.voice.channel:
+        await interaction.response.send_message("먼저 재생할 음성채널에 들어가 주세요.", ephemeral=True)
+        return
+    if not url.startswith(("http://", "https://")):
+        await interaction.response.send_message("유튜브 링크를 입력해주세요.", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+
+    voice_channel = interaction.user.voice.channel
+    try:
+        voice_client = interaction.guild.voice_client
+        if voice_client is None:
+            voice_client = await voice_channel.connect(timeout=10, reconnect=False)
+        elif voice_client.channel != voice_channel:
+            await voice_client.move_to(voice_channel)
+    except Exception as e:
+        await interaction.followup.send(f"음성채널에 연결하지 못했습니다: `{type(e).__name__}: {e}`")
+        return
+
+    try:
+        audio_info = await resolve_single_track_audio(url)
+        ffmpeg_path = get_ffmpeg_executable_path()
+        source = discord.FFmpegOpusAudio(
+            audio_info["stream_url"],
+            executable=ffmpeg_path,
+            before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_at_eof 1 -reconnect_delay_max 5",
+            options="-vn -loglevel error",
+        )
+    except Exception as e:
+        await interaction.followup.send(f"재생 준비 중 오류가 발생했습니다: `{type(e).__name__}: {e}`")
+        return
+
+    song_token = single_song_tokens.get(interaction.guild.id, 0) + 1
+    single_song_tokens[interaction.guild.id] = song_token
+
+    if voice_client.is_playing() or voice_client.is_paused():
+        voice_client.stop()
+
+    def after_play(error):
+        if error:
+            print(f"노래 재생 오류: {error}")
+        bot.loop.create_task(disconnect_music_after_finish(interaction.guild, song_token))
+
+    try:
+        voice_client.play(source, after=after_play)
+    except Exception as e:
+        await interaction.followup.send(f"재생 시작 중 오류가 발생했습니다: `{type(e).__name__}: {e}`")
+        return
+
+    embed = discord.Embed(
+        title="🎵 노래 재생",
+        description=f"**{audio_info['title']}**",
+        color=0x1DB954,
+    )
+    embed.add_field(name="요청자", value=interaction.user.mention, inline=True)
+    embed.add_field(name="음성채널", value=voice_channel.mention, inline=True)
+    embed.add_field(name="링크", value=audio_info["webpage_url"], inline=False)
+    embed.set_footer(text="한 번에 한 곡만 재생합니다. 다른 곡을 재생하면 현재 곡은 중지됩니다.")
+    await interaction.followup.send(embed=embed)
+
+
+@bot.tree.command(name="노래정지", description="현재 재생 중인 노래를 정지하고 음성채널에서 나갑니다.")
+async def stop_single_song(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    voice_client = interaction.guild.voice_client
+    if voice_client is None or not voice_client.is_connected():
+        await interaction.response.send_message("현재 재생 중인 노래가 없습니다.", ephemeral=True)
+        return
+
+    if voice_client.is_playing() or voice_client.is_paused():
+        voice_client.stop()
+    single_song_tokens.pop(interaction.guild.id, None)
+    await voice_client.disconnect(force=True)
+    await interaction.response.send_message("노래 재생을 정지하고 음성채널에서 나갔습니다.")
 
 
 @bot.tree.command(name="보급", description="배그 보급상자를 열어 결과에 따라 보상을 받습니다.")
@@ -15849,6 +14467,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="👥 구인 / 팀 / 기타",
         value=(
             "`/구인`, `/종겜구인`, `/팀`, `/팀섞기로그`, `/음성로그`, `/끼리끼리조회`, `/시간설정패널`\n"
+            "`/노래재생`, `/노래정지`\n"
             "`/등업패널`, `/규칙버튼`, `/닉네임패널생성`"
         ),
         inline=False,
@@ -16464,6 +15083,7 @@ async def on_voice_state_update(member, before, after):
         await view.update_embed()
 
     await delete_temporary_voice_channel_if_empty(before.channel)
+    await disconnect_music_if_alone(member.guild)
 
     if moved_to_trigger_channel and isinstance(after.channel, discord.VoiceChannel):
         await create_team_voice_channel_for_member(member, after.channel)
@@ -16845,8 +15465,7 @@ async def storage_cleanup_loop():
             f"음성로그 {result.get('voice_channel_logs', 0)}개 / "
             f"팀섞기로그 {result.get('team_mix_logs', 0)}개 / "
             f"송금로그 {MONEY_LOG_RETENTION_DAYS}일 초과 {result.get('transfer_logs', 0)}개 / "
-            f"지급로그 {MONEY_LOG_RETENTION_DAYS}일 초과 {result.get('money_grant_logs', 0)}개 / "
-            f"플레이리스트 {result.get('playlist_tracks', 0)}개"
+            f"지급로그 {MONEY_LOG_RETENTION_DAYS}일 초과 {result.get('money_grant_logs', 0)}개"
         )
     except Exception as e:
         print(f"저장공간 자동 정리 실패: {e}")
