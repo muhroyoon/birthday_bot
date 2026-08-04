@@ -300,6 +300,7 @@ GAME_HISTORY_KEEP_PER_GAME = 20
 STORAGE_CLEANUP_INTERVAL_HOURS = 24
 KILL_BET_AUTO_EXPIRE_HOURS = 6
 NON_BUSINESS_DAILY_TRANSFER_LIMIT = 100_000_000
+YOUTUBE_COOKIE_FILE = "/data/youtube-cookies.txt"
 
 intents = discord.Intents.default()
 intents.members = True
@@ -11875,6 +11876,59 @@ async def grant_money(interaction: discord.Interaction, targets: str, amount: in
     await interaction.response.send_message("\n".join(lines))
 
 
+@bot.tree.command(name="유튜브쿠키등록", description="노래재생 차단 완화를 위한 YouTube cookies.txt를 등록합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+@app_commands.rename(cookie_file="쿠키파일")
+@app_commands.describe(cookie_file="브라우저에서 내보낸 Netscape 형식 cookies.txt 파일")
+async def register_youtube_cookie(interaction: discord.Interaction, cookie_file: discord.Attachment):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+    if not cookie_file.filename.lower().endswith(".txt"):
+        await interaction.response.send_message("cookies.txt 파일을 업로드해주세요.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+
+    try:
+        raw_bytes = await cookie_file.read()
+        cookie_text = normalize_youtube_cookie_text(raw_bytes.decode("utf-8-sig"))
+    except UnicodeDecodeError:
+        await interaction.followup.send("쿠키 파일을 UTF-8 텍스트로 읽지 못했습니다. 원본 cookies.txt로 다시 시도해주세요.", ephemeral=True)
+        return
+    except Exception as e:
+        await interaction.followup.send(f"쿠키 파일을 읽는 중 오류가 발생했습니다: `{type(e).__name__}: {e}`", ephemeral=True)
+        return
+
+    if "# Netscape HTTP Cookie File" not in cookie_text:
+        await interaction.followup.send("Netscape 형식 cookies.txt가 아닙니다. 쿠키 내보내기 확장 프로그램에서 원본 형식으로 다시 저장해주세요.", ephemeral=True)
+        return
+
+    cookie_names = get_cookie_names_from_text(cookie_text)
+    if not {"SID", "HSID", "SSID", "SAPISID"} & cookie_names:
+        await interaction.followup.send("로그인 쿠키가 거의 없는 파일입니다. YouTube에 로그인된 브라우저에서 다시 내보내주세요.", ephemeral=True)
+        return
+
+    try:
+        os.makedirs(os.path.dirname(YOUTUBE_COOKIE_FILE), exist_ok=True)
+        with open(YOUTUBE_COOKIE_FILE, "w", encoding="utf-8") as saved_cookie_file:
+            saved_cookie_file.write(cookie_text)
+    except Exception as e:
+        await interaction.followup.send(f"쿠키 파일 저장 중 오류가 발생했습니다: `{type(e).__name__}: {e}`", ephemeral=True)
+        return
+
+    await interaction.followup.send(
+        "YouTube 쿠키를 등록했습니다.\n\n" + get_youtube_cookie_status_text(),
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="유튜브쿠키확인", description="노래재생용 YouTube 쿠키 등록 상태를 확인합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def check_youtube_cookie(interaction: discord.Interaction):
+    await interaction.response.send_message(get_youtube_cookie_status_text(), ephemeral=True)
+
+
 @bot.tree.command(name="치킨성과급", description="현재 채널의 치킨 인증글 멘션 인원에게 성과급을 지급합니다.")
 @app_commands.rename(amount="금액", proof_count="인증글개수")
 @app_commands.describe(amount="인증 1회당 지급할 금액", proof_count="최근 인증글 중 처리할 개수")
@@ -13113,6 +13167,54 @@ def get_ffmpeg_executable_path() -> str:
     raise RuntimeError("서버에서 ffmpeg를 찾지 못했습니다. Railway 배포 설정에 ffmpeg 설치가 필요합니다.")
 
 
+def normalize_youtube_cookie_text(cookie_text: str) -> str:
+    cookie_text = (cookie_text or "").replace("\r\n", "\n").replace("\r", "\n")
+    cookie_text = cookie_text.lstrip("\ufeff\r\n\t ")
+    header_index = cookie_text.find("# Netscape HTTP Cookie File")
+    if header_index > 0:
+        cookie_text = cookie_text[header_index:]
+    return cookie_text.strip() + "\n"
+
+
+def get_cookie_names_from_text(cookie_text: str) -> set[str]:
+    cookie_names = set()
+    for line in cookie_text.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) >= 7:
+            cookie_names.add(parts[5])
+    return cookie_names
+
+
+def get_youtube_cookie_status_text() -> str:
+    if not os.path.exists(YOUTUBE_COOKIE_FILE):
+        return "등록 상태: `없음`\n`/유튜브쿠키등록`으로 원본 cookies.txt 파일을 등록해주세요."
+
+    try:
+        with open(YOUTUBE_COOKIE_FILE, "r", encoding="utf-8-sig") as cookie_file:
+            cookie_text = cookie_file.read()
+    except Exception as e:
+        return f"등록 상태: `읽기 실패`\n오류: `{type(e).__name__}: {e}`"
+
+    cookie_lines = [line for line in cookie_text.splitlines() if line and not line.startswith("#")]
+    has_header = "# Netscape HTTP Cookie File" in cookie_text
+    cookie_names = get_cookie_names_from_text(cookie_text)
+    required_cookie_names = ["SID", "HSID", "SSID", "SAPISID", "__Secure-3PSID"]
+    recommended_cookie_names = ["LOGIN_INFO", "SIDCC", "__Secure-1PSID", "__Secure-3PSIDCC"]
+    missing_required = [name for name in required_cookie_names if name not in cookie_names]
+    missing_recommended = [name for name in recommended_cookie_names if name not in cookie_names]
+
+    return (
+        "등록 상태: `등록됨`\n"
+        f"저장 위치: `{YOUTUBE_COOKIE_FILE}`\n"
+        f"쿠키 라인: `{len(cookie_lines)}개`\n"
+        f"Netscape 형식: `{'정상' if has_header else '헤더 없음'}`\n"
+        f"로그인 핵심 쿠키: `{'정상' if not missing_required else '누락: ' + ', '.join(missing_required)}`\n"
+        f"로그인 유지 쿠키: `{'정상' if not missing_recommended else '주의: ' + ', '.join(missing_recommended)}`"
+    )
+
+
 async def resolve_single_track_audio(url: str) -> dict:
     try:
         import yt_dlp
@@ -13138,6 +13240,8 @@ async def resolve_single_track_audio(url: str) -> dict:
             "extractor_args": {"youtube": {"player_client": ["android", "web", "ios"]}},
             "logger": QuietYtdlpLogger(),
         }
+        if os.path.exists(YOUTUBE_COOKIE_FILE):
+            base_options["cookiefile"] = YOUTUBE_COOKIE_FILE
 
         format_candidates = [
             "bestaudio[acodec!=none]/bestaudio/best[acodec!=none]/best",
@@ -13162,8 +13266,8 @@ async def resolve_single_track_audio(url: str) -> dict:
                     if "Sign in to confirm" in error_text or "not a bot" in error_text:
                         raise RuntimeError(
                             "YouTube가 Railway 서버 요청을 봇으로 판단해 차단했습니다. "
-                            "단일 링크 재생도 서버 IP가 막히면 실패할 수 있습니다. "
-                            "같은 곡의 다른 업로드 링크나 YouTube가 아닌 직접 음원 링크로 시도해주세요."
+                            "쿠키가 없거나 만료된 경우 다시 차단될 수 있습니다. "
+                            "`/유튜브쿠키확인`으로 상태를 확인하고 필요하면 `/유튜브쿠키등록`으로 새 cookies.txt를 등록해주세요."
                         )
                     if "not made this video available in your country" in error_text:
                         raise RuntimeError("이 영상은 서버 위치에서 재생할 수 없는 지역 제한 영상입니다.")
@@ -14441,6 +14545,11 @@ async def admin_commands_guide(interaction: discord.Interaction):
             "`/노동가챠권지급`, `/노동가챠권삭제`\n"
             "`/신용조회`, `/신용레벨표`, `/신용대출`, `/대출상환`"
         ),
+        inline=False,
+    )
+    admin_embed.add_field(
+        name="🎵 노래 재생 관리",
+        value="`/유튜브쿠키등록`, `/유튜브쿠키확인`",
         inline=False,
     )
     admin_embed.add_field(
