@@ -13130,32 +13130,54 @@ async def resolve_single_track_audio(url: str) -> dict:
             pass
 
     def extract():
-        options = {
+        base_options = {
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,
-            "format": "bestaudio[acodec!=none]/bestaudio/best[acodec!=none]/best",
+            "default_search": "auto",
+            "extractor_args": {"youtube": {"player_client": ["android", "web", "ios"]}},
             "logger": QuietYtdlpLogger(),
         }
 
-        with yt_dlp.YoutubeDL(options) as ydl:
-            try:
-                info = ydl.extract_info(url, download=False)
-            except yt_dlp.utils.DownloadError as e:
-                error_text = str(e)
-                if "Sign in to confirm" in error_text or "not a bot" in error_text:
-                    raise RuntimeError(
-                        "YouTube가 서버 요청을 봇으로 판단해 차단했습니다. 다른 링크로 시도하거나 잠시 후 다시 시도해주세요."
-                    )
-                if "not made this video available in your country" in error_text:
-                    raise RuntimeError("이 영상은 서버 위치에서 재생할 수 없는 지역 제한 영상입니다.")
-                if "Requested format is not available" in error_text:
-                    raise RuntimeError("이 영상에서 재생 가능한 오디오 포맷을 찾지 못했습니다. 다른 업로드 링크를 사용해주세요.")
-                raise
+        format_candidates = [
+            "bestaudio[acodec!=none]/bestaudio/best[acodec!=none]/best",
+            "ba[ext=m4a]/ba[ext=webm]/ba/best",
+            "best[acodec!=none]/best",
+            None,
+        ]
 
-        if "entries" in info:
+        info = None
+        last_error = None
+        for format_selector in format_candidates:
+            options = dict(base_options)
+            if format_selector:
+                options["format"] = format_selector
+
+            with yt_dlp.YoutubeDL(options) as ydl:
+                try:
+                    info = ydl.extract_info(url, download=False)
+                    break
+                except yt_dlp.utils.DownloadError as e:
+                    error_text = str(e)
+                    if "Sign in to confirm" in error_text or "not a bot" in error_text:
+                        raise RuntimeError(
+                            "YouTube가 Railway 서버 요청을 봇으로 판단해 차단했습니다. "
+                            "단일 링크 재생도 서버 IP가 막히면 실패할 수 있습니다. "
+                            "같은 곡의 다른 업로드 링크나 YouTube가 아닌 직접 음원 링크로 시도해주세요."
+                        )
+                    if "not made this video available in your country" in error_text:
+                        raise RuntimeError("이 영상은 서버 위치에서 재생할 수 없는 지역 제한 영상입니다.")
+                    if "Requested format is not available" in error_text:
+                        last_error = RuntimeError("이 영상에서 재생 가능한 오디오 포맷을 찾지 못했습니다. 다른 업로드 링크를 사용해주세요.")
+                        continue
+                    last_error = e
+                    continue
+
+        if info and "entries" in info:
             info = next((entry for entry in info["entries"] if entry), None)
         if not info:
+            if last_error:
+                raise last_error
             raise RuntimeError("재생 정보를 가져오지 못했습니다.")
 
         stream_url = info.get("url")
@@ -13174,6 +13196,7 @@ async def resolve_single_track_audio(url: str) -> dict:
             "title": info.get("title") or "제목 없음",
             "stream_url": stream_url,
             "webpage_url": info.get("webpage_url") or url,
+            "http_headers": info.get("http_headers") or {},
         }
 
     return await asyncio.to_thread(extract)
@@ -13269,10 +13292,19 @@ async def play_single_song(interaction: discord.Interaction, url: str):
     try:
         audio_info = await resolve_single_track_audio(url)
         ffmpeg_path = get_ffmpeg_executable_path()
+        header_options = ""
+        http_headers = audio_info.get("http_headers") or {}
+        if http_headers:
+            header_text = "".join(f"{key}: {value}\r\n" for key, value in http_headers.items())
+            escaped_header_text = header_text.replace("'", r"'\''")
+            header_options = f" -headers '{escaped_header_text}'"
         source = discord.FFmpegOpusAudio(
             audio_info["stream_url"],
             executable=ffmpeg_path,
-            before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_at_eof 1 -reconnect_delay_max 5",
+            before_options=(
+                "-reconnect 1 -reconnect_streamed 1 -reconnect_at_eof 1 "
+                f"-reconnect_delay_max 5{header_options}"
+            ),
             options="-vn -loglevel error",
         )
     except Exception as e:
