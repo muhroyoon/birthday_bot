@@ -13232,17 +13232,37 @@ async def resolve_single_track_audio(url: str) -> dict:
             pass
 
     def extract():
+        cookie_exists = os.path.exists(YOUTUBE_COOKIE_FILE)
         base_options = {
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,
             "default_search": "auto",
-            "extractor_args": {"youtube": {"player_client": ["android", "web", "ios"]}},
+            "cachedir": False,
+            "extractor_retries": 3,
+            "fragment_retries": 3,
+            "http_headers": {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/126.0.0.0 Safari/537.36"
+                ),
+                "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+            },
             "logger": QuietYtdlpLogger(),
         }
-        if os.path.exists(YOUTUBE_COOKIE_FILE):
+        if cookie_exists:
             base_options["cookiefile"] = YOUTUBE_COOKIE_FILE
 
+        player_client_candidates = [
+            ["web"],
+            ["web_safari"],
+            ["mweb"],
+        ] if cookie_exists else [
+            ["android"],
+            ["web"],
+            ["ios"],
+        ]
         format_candidates = [
             "bestaudio[acodec!=none]/bestaudio/best[acodec!=none]/best",
             "ba[ext=m4a]/ba[ext=webm]/ba/best",
@@ -13252,30 +13272,40 @@ async def resolve_single_track_audio(url: str) -> dict:
 
         info = None
         last_error = None
-        for format_selector in format_candidates:
-            options = dict(base_options)
-            if format_selector:
-                options["format"] = format_selector
+        blocked_by_youtube = False
+        for player_clients in player_client_candidates:
+            for format_selector in format_candidates:
+                options = dict(base_options)
+                options["extractor_args"] = {"youtube": {"player_client": player_clients}}
+                if format_selector:
+                    options["format"] = format_selector
 
-            with yt_dlp.YoutubeDL(options) as ydl:
-                try:
-                    info = ydl.extract_info(url, download=False)
-                    break
-                except yt_dlp.utils.DownloadError as e:
-                    error_text = str(e)
-                    if "Sign in to confirm" in error_text or "not a bot" in error_text:
-                        raise RuntimeError(
-                            "YouTube가 Railway 서버 요청을 봇으로 판단해 차단했습니다. "
-                            "쿠키가 없거나 만료된 경우 다시 차단될 수 있습니다. "
-                            "`/유튜브쿠키확인`으로 상태를 확인하고 필요하면 `/유튜브쿠키등록`으로 새 cookies.txt를 등록해주세요."
-                        )
-                    if "not made this video available in your country" in error_text:
-                        raise RuntimeError("이 영상은 서버 위치에서 재생할 수 없는 지역 제한 영상입니다.")
-                    if "Requested format is not available" in error_text:
-                        last_error = RuntimeError("이 영상에서 재생 가능한 오디오 포맷을 찾지 못했습니다. 다른 업로드 링크를 사용해주세요.")
+                with yt_dlp.YoutubeDL(options) as ydl:
+                    try:
+                        info = ydl.extract_info(url, download=False)
+                        break
+                    except yt_dlp.utils.DownloadError as e:
+                        error_text = str(e)
+                        if "Sign in to confirm" in error_text or "not a bot" in error_text:
+                            blocked_by_youtube = True
+                            last_error = RuntimeError(
+                                "YouTube가 Railway 서버 요청을 봇으로 판단해 차단했습니다. "
+                                "쿠키가 등록되어 있어도 만료되었거나 Railway 서버 IP와 맞지 않으면 다시 차단될 수 있습니다. "
+                                "`/유튜브쿠키확인`으로 상태를 확인하고 필요하면 `/유튜브쿠키등록`으로 새 cookies.txt를 등록해주세요."
+                            )
+                            continue
+                        if "not made this video available in your country" in error_text:
+                            raise RuntimeError("이 영상은 서버 위치에서 재생할 수 없는 지역 제한 영상입니다.")
+                        if "Requested format is not available" in error_text:
+                            last_error = RuntimeError("이 영상에서 재생 가능한 오디오 포맷을 찾지 못했습니다. 다른 업로드 링크를 사용해주세요.")
+                            continue
+                        last_error = e
                         continue
-                    last_error = e
-                    continue
+            if info:
+                break
+
+        if blocked_by_youtube and not info:
+            raise last_error
 
         if info and "entries" in info:
             info = next((entry for entry in info["entries"] if entry), None)
