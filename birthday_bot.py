@@ -13258,12 +13258,19 @@ async def resolve_single_track_audio(url: str) -> dict:
             ["web"],
             ["web_safari"],
             ["mweb"],
+            ["android"],
+            ["ios"],
+            ["tv_embedded"],
         ] if cookie_exists else [
             ["android"],
-            ["web"],
             ["ios"],
+            ["web"],
+            ["mweb"],
+            ["tv_embedded"],
         ]
         format_candidates = [
+            "bestaudio*/best*",
+            "best*[vcodec=none]/bestaudio*/best*",
             "bestaudio[acodec!=none]/bestaudio/best[acodec!=none]/best",
             "ba[ext=m4a]/ba[ext=webm]/ba/best",
             "best[acodec!=none]/best",
