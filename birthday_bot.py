@@ -3239,6 +3239,36 @@ def join_compact_discord_field_lines(lines: list[str], *, limit: int = 1024) -> 
     return "\n".join(selected_lines) if selected_lines else "표시할 기록이 없습니다."
 
 
+def split_discord_field_lines(lines: list[str], *, limit: int = 1024) -> list[str]:
+    chunks = []
+    current_lines = []
+    current_length = 0
+
+    for line in lines:
+        line = str(line)
+        separator_length = 1 if current_lines else 0
+        next_length = current_length + separator_length + len(line)
+
+        if current_lines and next_length > limit:
+            chunks.append("\n".join(current_lines))
+            current_lines = [line]
+            current_length = len(line)
+            continue
+
+        if not current_lines and len(line) > limit:
+            chunks.append(line[:limit])
+            current_length = 0
+            continue
+
+        current_lines.append(line)
+        current_length = next_length
+
+    if current_lines:
+        chunks.append("\n".join(current_lines))
+
+    return chunks
+
+
 def add_money_grant_log(guild_id: int, target_user_id: int, giver_user_id: int, amount: int, note: str | None = None):
     cursor.execute(
         """
@@ -8944,7 +8974,7 @@ class RafflePurchaseView(discord.ui.View):
 def build_raffle_status_embed(guild: discord.Guild, raffle: dict) -> discord.Embed:
     rows, total_quantity, total_amount = get_raffle_summary(raffle["id"], guild.id)
     lines = []
-    for index, (user_id, quantity, amount) in enumerate(rows[:20], start=1):
+    for index, (user_id, quantity, amount) in enumerate(rows, start=1):
         member = guild.get_member(int(user_id))
         name = member.display_name if member else f"알 수 없는 유저 ({user_id})"
         lines.append(f"**{index}. {name}** - `{int(quantity)}장` / `{format_money(int(amount or 0))}`")
@@ -8954,13 +8984,15 @@ def build_raffle_status_embed(guild: discord.Guild, raffle: dict) -> discord.Emb
     embed.add_field(name="하루 제한", value=f"`{raffle['daily_limit']}장`", inline=True)
     embed.add_field(name="총 판매량", value=f"`{total_quantity}장`", inline=True)
     embed.add_field(name="총 차감 재화", value=f"`{format_money(total_amount)}`", inline=True)
-    embed.add_field(
-        name="구매자 현황",
-        value=join_compact_discord_field_lines(lines) if lines else "아직 구매자가 없습니다.",
-        inline=False,
-    )
-    if len(rows) > 20:
-        embed.set_footer(text="구매자 현황은 상위 20명까지만 표시됩니다.")
+    if lines:
+        chunks = split_discord_field_lines(lines)
+        for chunk_index, chunk in enumerate(chunks[:20], start=1):
+            field_name = "구매자 현황" if len(chunks) == 1 else f"구매자 현황 {chunk_index}/{len(chunks)}"
+            embed.add_field(name=field_name, value=chunk, inline=False)
+        if len(chunks) > 20:
+            embed.set_footer(text="임베드 필드 제한으로 일부 구매자가 표시되지 않았습니다. 추첨권을 나누어 운영해주세요.")
+    else:
+        embed.add_field(name="구매자 현황", value="아직 구매자가 없습니다.", inline=False)
     return embed
 
 
