@@ -643,6 +643,16 @@ if "deleted_at" not in business_registration_columns:
     cursor.execute("ALTER TABLE business_registrations ADD COLUMN deleted_at TEXT")
     conn.commit()
 
+# 이전 스키마에서 추가된 created_by의 빈 값은 등록 대상 본인으로 복구합니다.
+cursor.execute(
+    """
+    UPDATE business_registrations
+    SET created_by=user_id
+    WHERE created_by IS NULL OR TRIM(created_by)=''
+    """
+)
+conn.commit()
+
 cursor.execute(
     """
     CREATE TABLE IF NOT EXISTS scrim_signups(
@@ -3351,13 +3361,22 @@ def get_business_registration(guild_id: int, user_id: int):
         "business_name": row[2],
         "industry": row[3],
         "logo_url": row[4],
-        "created_by": int(row[5]),
+        "created_by": int(row[5]) if str(row[5] or "").strip() else int(row[1]),
         "created_at": row[6],
     }
 
 
 def is_business_registered(guild_id: int, user_id: int) -> bool:
-    return get_business_registration(guild_id, user_id) is not None
+    cursor.execute(
+        """
+        SELECT 1
+        FROM business_registrations
+        WHERE guild_id=? AND user_id=? AND status='active'
+        LIMIT 1
+        """,
+        (str(guild_id), str(user_id)),
+    )
+    return cursor.fetchone() is not None
 
 
 def get_business_registrations(guild_id: int, limit: int = 30):
@@ -14946,6 +14965,13 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
             pass
         return
 
+    raise error
+
+
+@bot.event
+async def on_command_error(ctx: commands.Context, error: commands.CommandError):
+    if isinstance(error, commands.CommandNotFound):
+        return
     raise error
 
 
