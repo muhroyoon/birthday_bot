@@ -8804,14 +8804,41 @@ class RafflePurchaseSelect(discord.ui.Select):
         if not isinstance(view, RafflePurchaseView):
             await interaction.response.send_message("추첨권 구매 패널을 처리하지 못했습니다.", ephemeral=True)
             return
-        await view.purchase(interaction, int(self.values[0]))
+        await view.open_quantity_modal(interaction, int(self.values[0]))
+
+
+class RafflePurchaseQuantityModal(discord.ui.Modal):
+    def __init__(self, purchase_view, raffle: dict, remaining_count: int):
+        super().__init__(title="추첨권 구매 수량 입력")
+        self.purchase_view = purchase_view
+        self.raffle_id = raffle["id"]
+        self.quantity_input = discord.ui.TextInput(
+            label=f"구매 수량 (오늘 최대 {remaining_count}장)",
+            placeholder=f"1장 {format_money(raffle['price'])} / 최대 {remaining_count}장",
+            min_length=1,
+            max_length=6,
+            required=True,
+        )
+        self.add_item(self.quantity_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            quantity = int(str(self.quantity_input.value).strip().replace(",", ""))
+        except ValueError:
+            await interaction.response.send_message("구매 수량은 숫자로 입력해주세요.", ephemeral=True)
+            return
+
+        if quantity <= 0:
+            await interaction.response.send_message("구매 수량은 1장 이상이어야 합니다.", ephemeral=True)
+            return
+
+        await self.purchase_view.purchase(interaction, self.raffle_id, quantity)
 
 
 class RafflePurchaseView(discord.ui.View):
-    def __init__(self, user_id: int, quantity: int, raffles):
+    def __init__(self, user_id: int, raffles):
         super().__init__(timeout=180)
         self.user_id = user_id
-        self.quantity = quantity
         self.resolved = False
         self.add_item(RafflePurchaseSelect(raffles))
 
@@ -8825,7 +8852,7 @@ class RafflePurchaseView(discord.ui.View):
         for item in self.children:
             item.disabled = True
 
-    async def purchase(self, interaction: discord.Interaction, raffle_id: int):
+    async def open_quantity_modal(self, interaction: discord.Interaction, raffle_id: int):
         if interaction.guild is None:
             await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
             return
@@ -8855,14 +8882,46 @@ class RafflePurchaseView(discord.ui.View):
             )
             return
 
-        if self.quantity > remaining_count:
+        await interaction.response.send_modal(RafflePurchaseQuantityModal(self, raffle, remaining_count))
+
+    async def purchase(self, interaction: discord.Interaction, raffle_id: int, quantity: int):
+        if interaction.guild is None:
+            await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+            return
+
+        if self.resolved:
+            await interaction.response.send_message("이미 처리된 추첨권 구매 패널입니다.", ephemeral=True)
+            return
+
+        raffle = get_active_raffle_by_id(interaction.guild.id, raffle_id)
+        if raffle is None:
+            self.resolved = True
+            self.disable_all_items()
+            embed = discord.Embed(
+                title="🎟 추첨권 구매 불가",
+                description="선택한 추첨권이 삭제되었거나 더 이상 판매 중이 아닙니다.",
+                color=0xE74C3C,
+            )
+            await interaction.response.edit_message(embed=embed, view=self)
+            return
+
+        already_bought = get_raffle_purchase_count_today(raffle["id"], interaction.guild.id, interaction.user.id)
+        remaining_count = raffle["daily_limit"] - already_bought
+        if remaining_count <= 0:
+            await interaction.response.send_message(
+                f"오늘 `{raffle['title']}` 추첨권 구매 제한 `{raffle['daily_limit']}장`을 모두 사용했습니다.",
+                ephemeral=True,
+            )
+            return
+
+        if quantity > remaining_count:
             await interaction.response.send_message(
                 f"오늘은 `{remaining_count}장`까지만 더 구매할 수 있습니다.",
                 ephemeral=True,
             )
             return
 
-        total_amount = raffle["price"] * self.quantity
+        total_amount = raffle["price"] * quantity
         if not can_afford(interaction.user.id, total_amount):
             await interaction.response.send_message(
                 f"잔액이 부족합니다. 필요 금액: `{format_money(total_amount)}`",
@@ -8872,16 +8931,16 @@ class RafflePurchaseView(discord.ui.View):
 
         self.resolved = True
         add_balance(interaction.user.id, -total_amount)
-        add_raffle_purchase(raffle["id"], interaction.guild.id, interaction.user.id, self.quantity, total_amount)
+        add_raffle_purchase(raffle["id"], interaction.guild.id, interaction.user.id, quantity, total_amount)
 
         self.disable_all_items()
         member_name = interaction.user.display_name if isinstance(interaction.user, discord.Member) else interaction.user.name
         embed = discord.Embed(title="🎟 추첨권 구매 완료", color=0x2ECC71)
         embed.add_field(name="구매자", value=member_name, inline=False)
         embed.add_field(name="추첨권", value=raffle["title"], inline=False)
-        embed.add_field(name="구매 수량", value=f"`{self.quantity}장`", inline=True)
+        embed.add_field(name="구매 수량", value=f"`{quantity}장`", inline=True)
         embed.add_field(name="차감 금액", value=f"`{format_money(total_amount)}`", inline=True)
-        embed.add_field(name="오늘 구매량", value=f"`{already_bought + self.quantity}/{raffle['daily_limit']}장`", inline=True)
+        embed.add_field(name="오늘 구매량", value=f"`{already_bought + quantity}/{raffle['daily_limit']}장`", inline=True)
         embed.add_field(name="현재 잔액", value=f"`{format_money(get_balance(interaction.user.id))}`", inline=False)
         await interaction.response.edit_message(embed=embed, view=self)
 
@@ -12174,16 +12233,10 @@ async def raffle_create(interaction: discord.Interaction):
     await interaction.response.send_modal(RaffleTicketCreateModal())
 
 
-@bot.tree.command(name="추첨권구매", description="서버 재화로 추첨권을 구매합니다.")
-@app_commands.rename(quantity="수량")
-@app_commands.describe(quantity="구매할 수량")
-async def raffle_buy(interaction: discord.Interaction, quantity: int):
+@bot.tree.command(name="추첨권구매", description="추첨권을 선택하고 수량을 입력해 구매합니다.")
+async def raffle_buy(interaction: discord.Interaction):
     if interaction.guild is None:
         await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
-        return
-
-    if quantity <= 0:
-        await interaction.response.send_message("구매 수량은 1장 이상이어야 합니다.", ephemeral=True)
         return
 
     active_raffles = get_active_raffles(interaction.guild.id)
@@ -12194,8 +12247,8 @@ async def raffle_buy(interaction: discord.Interaction, quantity: int):
     embed = discord.Embed(
         title="🎟 추첨권 구매",
         description=(
-            f"구매 수량: `{quantity}장`\n"
-            "아래 선택 메뉴에서 구매할 추첨권을 골라주세요."
+            "먼저 구매할 추첨권을 선택해주세요.\n"
+            "선택 후 해당 추첨권의 오늘 남은 한도를 확인하고 수량을 입력할 수 있습니다."
         ),
         color=0xF1C40F,
     )
@@ -12207,7 +12260,7 @@ async def raffle_buy(interaction: discord.Interaction, quantity: int):
         embed.set_footer(text="선택 메뉴 제한으로 최근 등록된 25개 추첨권만 표시됩니다.")
     await interaction.response.send_message(
         embed=embed,
-        view=RafflePurchaseView(interaction.user.id, quantity, active_raffles),
+        view=RafflePurchaseView(interaction.user.id, active_raffles),
     )
 
 
