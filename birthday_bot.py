@@ -4,6 +4,7 @@ import random
 import sqlite3
 import asyncio
 import shutil
+import tempfile
 import re
 import json
 import io
@@ -292,6 +293,7 @@ STORAGE_CLEANUP_INTERVAL_HOURS = 24
 KILL_BET_AUTO_EXPIRE_HOURS = 6
 NON_BUSINESS_DAILY_TRANSFER_LIMIT = 100_000_000
 YOUTUBE_COOKIE_FILE = "/data/youtube-cookies.txt"
+MUSIC_TEMP_DIR = Path(tempfile.gettempdir()) / "maribot_music"
 
 intents = discord.Intents.default()
 intents.members = True
@@ -305,6 +307,7 @@ business_group = app_commands.Group(name="사업자", description="사업자 등
 bot.tree.add_command(business_group)
 active_recruits = {}
 single_song_tokens: dict[int, int] = {}
+single_song_files: dict[int, str] = {}
 
 # ============================================================
 # 데이터베이스 초기화
@@ -13121,7 +13124,14 @@ async def resolve_single_track_audio(url: str) -> dict:
             pass
 
     def extract():
+        MUSIC_TEMP_DIR.mkdir(parents=True, exist_ok=True)
         cookie_exists = os.path.exists(YOUTUBE_COOKIE_FILE)
+        downloaded_files = []
+
+        def download_hook(status):
+            if status.get("status") == "finished" and status.get("filename"):
+                downloaded_files.append(status["filename"])
+
         base_options = {
             "quiet": True,
             "no_warnings": True,
@@ -13130,6 +13140,8 @@ async def resolve_single_track_audio(url: str) -> dict:
             "cachedir": False,
             "extractor_retries": 3,
             "fragment_retries": 3,
+            "outtmpl": str(MUSIC_TEMP_DIR / "%(id)s-%(epoch)s.%(ext)s"),
+            "progress_hooks": [download_hook],
             "http_headers": {
                 "User-Agent": (
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -13158,12 +13170,10 @@ async def resolve_single_track_audio(url: str) -> dict:
             ["tv_embedded"],
         ]
         format_candidates = [
+            "ba[ext=m4a]/ba[ext=webm]/bestaudio/best",
             "bestaudio*/best*",
             "best*[vcodec=none]/bestaudio*/best*",
-            "bestaudio[acodec!=none]/bestaudio/best[acodec!=none]/best",
-            "ba[ext=m4a]/ba[ext=webm]/ba/best",
-            "best[acodec!=none]/best",
-            None,
+            "best",
         ]
 
         info = None
@@ -13178,7 +13188,7 @@ async def resolve_single_track_audio(url: str) -> dict:
 
                 with yt_dlp.YoutubeDL(options) as ydl:
                     try:
-                        info = ydl.extract_info(url, download=False)
+                        info = ydl.extract_info(url, download=True)
                         break
                     except yt_dlp.utils.DownloadError as e:
                         error_text = str(e)
@@ -13210,26 +13220,50 @@ async def resolve_single_track_audio(url: str) -> dict:
                 raise last_error
             raise RuntimeError("재생 정보를 가져오지 못했습니다.")
 
-        stream_url = info.get("url")
-        if not stream_url:
-            formats = info.get("formats") or []
-            audio_formats = [
-                item for item in formats
-                if item.get("url") and item.get("acodec") not in (None, "none")
-            ]
-            audio_formats.sort(key=lambda item: item.get("abr") or item.get("tbr") or 0, reverse=True)
-            stream_url = audio_formats[0]["url"] if audio_formats else None
-        if not stream_url:
-            raise RuntimeError("재생 가능한 오디오 스트림을 찾지 못했습니다.")
+        file_path = None
+        requested_downloads = info.get("requested_downloads") or []
+        for download_info in requested_downloads:
+            candidate = download_info.get("filepath") or download_info.get("filename")
+            if candidate and os.path.exists(candidate):
+                file_path = candidate
+                break
+
+        if file_path is None:
+            for candidate in reversed(downloaded_files):
+                if candidate and os.path.exists(candidate):
+                    file_path = candidate
+                    break
+
+        if file_path is None:
+            prepared_filename = ydl.prepare_filename(info)
+            if prepared_filename and os.path.exists(prepared_filename):
+                file_path = prepared_filename
+
+        if file_path is None:
+            raise RuntimeError("오디오 파일을 다운로드했지만 저장된 파일을 찾지 못했습니다.")
 
         return {
             "title": info.get("title") or "제목 없음",
-            "stream_url": stream_url,
+            "file_path": file_path,
             "webpage_url": info.get("webpage_url") or url,
-            "http_headers": info.get("http_headers") or {},
         }
 
     return await asyncio.to_thread(extract)
+
+
+def cleanup_music_file(file_path: str | None):
+    if not file_path:
+        return
+    try:
+        path = Path(file_path)
+        if path.exists() and path.is_file() and MUSIC_TEMP_DIR in path.parents:
+            path.unlink()
+    except Exception as e:
+        print(f"노래 임시 파일 삭제 실패: {type(e).__name__}: {e}")
+
+
+def cleanup_guild_music_file(guild_id: int):
+    cleanup_music_file(single_song_files.pop(guild_id, None))
 
 
 async def disconnect_music_if_alone(guild: discord.Guild):
@@ -13244,6 +13278,7 @@ async def disconnect_music_if_alone(guild: discord.Guild):
     if voice_client.is_playing() or voice_client.is_paused():
         voice_client.stop()
     single_song_tokens.pop(guild.id, None)
+    cleanup_guild_music_file(guild.id)
     await voice_client.disconnect(force=True)
 
 
@@ -13260,6 +13295,7 @@ async def disconnect_music_after_finish(guild: discord.Guild, song_token: int):
         return
 
     single_song_tokens.pop(guild.id, None)
+    cleanup_guild_music_file(guild.id)
     await voice_client.disconnect(force=True)
 
 
@@ -13322,19 +13358,9 @@ async def play_single_song(interaction: discord.Interaction, url: str):
     try:
         audio_info = await resolve_single_track_audio(url)
         ffmpeg_path = get_ffmpeg_executable_path()
-        header_options = ""
-        http_headers = audio_info.get("http_headers") or {}
-        if http_headers:
-            header_text = "".join(f"{key}: {value}\r\n" for key, value in http_headers.items())
-            escaped_header_text = header_text.replace("'", r"'\''")
-            header_options = f" -headers '{escaped_header_text}'"
         source = discord.FFmpegOpusAudio(
-            audio_info["stream_url"],
+            audio_info["file_path"],
             executable=ffmpeg_path,
-            before_options=(
-                "-reconnect 1 -reconnect_streamed 1 -reconnect_at_eof 1 "
-                f"-reconnect_delay_max 5{header_options}"
-            ),
             options="-vn -loglevel error",
         )
     except Exception as e:
@@ -13346,15 +13372,22 @@ async def play_single_song(interaction: discord.Interaction, url: str):
 
     if voice_client.is_playing() or voice_client.is_paused():
         voice_client.stop()
+    cleanup_guild_music_file(interaction.guild.id)
+    current_file_path = audio_info["file_path"]
+    single_song_files[interaction.guild.id] = current_file_path
 
     def after_play(error):
         if error:
             print(f"노래 재생 오류: {error}")
+        cleanup_music_file(current_file_path)
+        if single_song_files.get(interaction.guild.id) == current_file_path:
+            single_song_files.pop(interaction.guild.id, None)
         bot.loop.create_task(disconnect_music_after_finish(interaction.guild, song_token))
 
     try:
         voice_client.play(source, after=after_play)
     except Exception as e:
+        cleanup_guild_music_file(interaction.guild.id)
         await interaction.followup.send(f"재생 시작 중 오류가 발생했습니다: `{type(e).__name__}: {e}`")
         return
 
@@ -13384,6 +13417,7 @@ async def stop_single_song(interaction: discord.Interaction):
     if voice_client.is_playing() or voice_client.is_paused():
         voice_client.stop()
     single_song_tokens.pop(interaction.guild.id, None)
+    cleanup_guild_music_file(interaction.guild.id)
     await voice_client.disconnect(force=True)
     await interaction.response.send_message("노래 재생을 정지하고 음성채널에서 나갔습니다.")
 
