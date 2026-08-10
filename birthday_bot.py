@@ -266,15 +266,6 @@ SEOTDA_SPECIAL_RANKS = {
     (4, 6): ("세륙", 7950),
 }
 
-TIME_SLOT_CHOICES = ["morning", "afternoon", "evening", "night", "dawn"]
-TIME_SLOT_LABELS = {
-    "morning": "오전반",
-    "afternoon": "오후반",
-    "evening": "저녁반",
-    "night": "심야반",
-    "dawn": "새벽반",
-}
-
 DEFAULT_RULE_BUTTON_TEXT = "원활한 게임을 위해 서버 규칙을 확인해주세요.\n확인 후 아래 버튼을 눌러주세요!"
 DEFAULT_UPGRADE_PANEL_TEXT = (
     "등업 요청 패널입니다.\n\n"
@@ -330,9 +321,6 @@ cursor.execute(
 )
 cursor.execute(
     "CREATE TABLE IF NOT EXISTS guild_templates(guild_id TEXT NOT NULL, template_name TEXT NOT NULL, content TEXT NOT NULL, PRIMARY KEY (guild_id, template_name))"
-)
-cursor.execute(
-    "CREATE TABLE IF NOT EXISTS guild_time_roles(guild_id TEXT NOT NULL, slot_name TEXT NOT NULL, role_id TEXT NOT NULL, PRIMARY KEY (guild_id, slot_name))"
 )
 
 cursor.execute("PRAGMA table_info(probation_roles)")
@@ -1327,43 +1315,6 @@ async def create_team_voice_channel_for_member(member: discord.Member, trigger_c
             await created_channel.delete(reason="임시 팀 음성채널 이동 실패로 삭제")
         except Exception:
             pass
-
-
-def set_time_role(guild_id: int, slot_name: str, role_id: int):
-    cursor.execute(
-        "INSERT OR REPLACE INTO guild_time_roles(guild_id, slot_name, role_id) VALUES (?, ?, ?)",
-        (str(guild_id), slot_name, str(role_id)),
-    )
-    conn.commit()
-
-
-def get_time_role_id(guild_id: int, slot_name: str):
-    cursor.execute(
-        "SELECT role_id FROM guild_time_roles WHERE guild_id=? AND slot_name=?",
-        (str(guild_id), slot_name),
-    )
-    row = cursor.fetchone()
-    if not row:
-        return None
-    try:
-        return int(row[0])
-    except ValueError:
-        return None
-
-
-def get_all_time_roles(guild_id: int):
-    cursor.execute(
-        "SELECT slot_name, role_id FROM guild_time_roles WHERE guild_id=? ORDER BY slot_name ASC",
-        (str(guild_id),),
-    )
-    rows = cursor.fetchall()
-    result = {}
-    for slot_name, role_id in rows:
-        try:
-            result[slot_name] = int(role_id)
-        except ValueError:
-            continue
-    return result
 
 
 def set_welcome_message(guild_id: int, role_id: int, content: str):
@@ -6304,64 +6255,6 @@ class UpgradeTicketView(discord.ui.View):
         await interaction.channel.delete()
 
 
-class TimeRoleView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    async def add_role(self, interaction: discord.Interaction, slot_name: str):
-        role_id = get_time_role_id(interaction.guild.id, slot_name)
-        if role_id is None:
-            await interaction.response.send_message("해당 시간대 역할이 아직 설정되지 않았습니다.", ephemeral=True)
-            return
-
-        role = interaction.guild.get_role(role_id)
-        if role is None:
-            await interaction.response.send_message("설정된 역할을 찾을 수 없습니다.", ephemeral=True)
-            return
-
-        if role in interaction.user.roles:
-            await interaction.response.send_message("이미 선택한 시간대입니다.", ephemeral=True)
-            return
-
-        await interaction.user.add_roles(role)
-        await interaction.response.send_message(f"{role.name} 역할을 추가했습니다.", ephemeral=True)
-
-    @discord.ui.button(label="오전반", style=discord.ButtonStyle.primary, custom_id="time_morning")
-    async def morning(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.add_role(interaction, "morning")
-
-    @discord.ui.button(label="오후반", style=discord.ButtonStyle.primary, custom_id="time_afternoon")
-    async def afternoon(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.add_role(interaction, "afternoon")
-
-    @discord.ui.button(label="저녁반", style=discord.ButtonStyle.primary, custom_id="time_evening")
-    async def evening(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.add_role(interaction, "evening")
-
-    @discord.ui.button(label="심야반", style=discord.ButtonStyle.secondary, custom_id="time_night")
-    async def night(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.add_role(interaction, "night")
-
-    @discord.ui.button(label="새벽반", style=discord.ButtonStyle.secondary, custom_id="time_dawn")
-    async def dawn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.add_role(interaction, "dawn")
-
-    @discord.ui.button(label="리셋", style=discord.ButtonStyle.danger, custom_id="time_reset")
-    async def reset(self, interaction: discord.Interaction, button: discord.ui.Button):
-        role_map = get_all_time_roles(interaction.guild.id)
-        removed = []
-        for role_id in role_map.values():
-            role = interaction.guild.get_role(role_id)
-            if role and role in interaction.user.roles:
-                await interaction.user.remove_roles(role)
-                removed.append(role.name)
-
-        if removed:
-            await interaction.response.send_message(f"제거된 역할: {', '.join(removed)}", ephemeral=True)
-        else:
-            await interaction.response.send_message("제거할 시간대 역할이 없습니다.", ephemeral=True)
-
-
 class CoinFlipView(discord.ui.View):
     def __init__(self, user_id: int, bet_amount: int):
         super().__init__(timeout=COIN_FLIP_TIMEOUT)
@@ -11143,19 +11036,6 @@ async def set_upgrade_guest_role(interaction: discord.Interaction, role: discord
     await interaction.response.send_message(f"게스트 등업 역할을 {role.mention} 으로 설정했습니다.", ephemeral=True)
 
 
-@settings_group.command(name="시간대역할", description="시간대 버튼에 연결할 역할을 설정합니다.")
-@app_commands.checks.has_permissions(administrator=True)
-@app_commands.describe(slot_name="morning / afternoon / evening / night / dawn")
-async def set_time_role_command(interaction: discord.Interaction, slot_name: str, role: discord.Role):
-    slot_name = slot_name.lower().strip()
-    if slot_name not in TIME_SLOT_CHOICES:
-        await interaction.response.send_message("slot_name은 morning, afternoon, evening, night, dawn 중 하나여야 합니다.", ephemeral=True)
-        return
-
-    set_time_role(interaction.guild.id, slot_name, role.id)
-    await interaction.response.send_message(f"{TIME_SLOT_LABELS[slot_name]} 역할을 {role.mention} 으로 설정했습니다.", ephemeral=True)
-
-
 @settings_group.command(name="환영dm", description="유저에게 보낼 환영 DM 문구를 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_welcome_dm_template(interaction: discord.Interaction):
@@ -11267,14 +11147,6 @@ async def show_role_settings(interaction: discord.Interaction):
     embed = discord.Embed(title="역할 설정", color=0x3498DB)
     for label, key in keys:
         embed.add_field(name=label, value=fmt(get_guild_setting(guild_id, key)), inline=False)
-
-    time_roles = get_all_time_roles(guild_id)
-    time_lines = []
-    for slot_name in TIME_SLOT_CHOICES:
-        role_id = time_roles.get(slot_name)
-        label = TIME_SLOT_LABELS[slot_name]
-        time_lines.append(f"{label}: {'<@&' + str(role_id) + '>' if role_id else '미설정'}")
-    embed.add_field(name="시간대 역할", value="\n".join(time_lines), inline=False)
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -11445,21 +11317,6 @@ async def upgrade_panel(interaction: discord.Interaction):
         embed=embed,
         view=UpgradePanelView(),
         success_message="등업 패널 생성 완료",
-    )
-
-
-@bot.tree.command(name="시간설정패널", description="시간대 역할 선택 패널을 생성합니다.")
-async def time_panel(interaction: discord.Interaction):
-    embed = discord.Embed(
-        title="플레이 시간대 설정",
-        description="원하는 시간대를 선택해주세요.\n중복 선택 가능합니다.",
-        color=0x5865F2,
-    )
-    await send_panel_to_current_channel(
-        interaction,
-        embed=embed,
-        view=TimeRoleView(),
-        success_message="시간 설정 패널 생성 완료",
     )
 
 
@@ -14568,7 +14425,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
             "`/세팅 몰빵결과채널`\n"
             "`/세팅 가이드안내`, `/세팅 환영메시지채널`\n"
             "`/세팅 규칙역할`, `/세팅 신입역할`, `/신용불량자역할`\n"
-            "`/세팅 클랜등업역할`, `/세팅 게스트등업역할`, `/세팅 시간대역할`"
+            "`/세팅 클랜등업역할`, `/세팅 게스트등업역할`"
         ),
         inline=False,
     )
@@ -14584,7 +14441,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
     admin_embed.add_field(
         name="🎛 메시지 / 패널 생성",
         value=(
-            "`/규칙버튼`, `/등업패널`, `/시간설정패널`, `/문의패널`\n"
+            "`/규칙버튼`, `/등업패널`, `/문의패널`\n"
             "`/성과급패널`, `/고정메시지`, `/고정메시지해제`, `/고정메시지확인`, `/내전공지`"
         ),
         inline=False,
@@ -14676,7 +14533,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
     general_embed.add_field(
         name="👥 구인 / 팀 / 기타",
         value=(
-            "`/구인`, `/종겜구인`, `/팀`, `/팀섞기로그`, `/음성로그`, `/끼리끼리조회`, `/시간설정패널`\n"
+            "`/구인`, `/종겜구인`, `/팀`, `/팀섞기로그`, `/음성로그`, `/끼리끼리조회`\n"
             "`/노래재생`, `/노래정지`\n"
             "`/등업패널`, `/규칙버튼`, `/닉네임패널생성`"
         ),
@@ -15699,7 +15556,6 @@ async def on_ready():
 
     bot.add_view(RuleConfirmView())
     bot.add_view(UpgradePanelView())
-    bot.add_view(TimeRoleView())
     bot.add_view(InquiryPanelView())
     bot.add_view(ScrimSignupView())
     bot.add_view(VoiceBonusPanelView())
