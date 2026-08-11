@@ -13198,6 +13198,12 @@ async def resolve_single_track_audio(url: str) -> dict:
 
     def extract():
         MUSIC_TEMP_DIR.mkdir(parents=True, exist_ok=True)
+        if shutil.which("deno") is None:
+            raise RuntimeError(
+                "YouTube 재생에 필요한 Deno를 찾지 못했습니다. "
+                "nixpacks.toml 변경사항을 반영해 Railway를 다시 배포해주세요."
+            )
+
         cookie_exists = os.path.exists(YOUTUBE_COOKIE_FILE)
         downloaded_files = []
 
@@ -13211,77 +13217,68 @@ async def resolve_single_track_audio(url: str) -> dict:
             "noplaylist": True,
             "default_search": "auto",
             "cachedir": False,
+            "retries": 3,
             "extractor_retries": 3,
             "fragment_retries": 3,
-            "outtmpl": str(MUSIC_TEMP_DIR / "%(id)s-%(epoch)s.%(ext)s"),
+            "socket_timeout": 20,
+            "concurrent_fragment_downloads": 1,
+            "overwrites": True,
+            "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
+            "outtmpl": str(MUSIC_TEMP_DIR / "%(id)s-%(epoch)s-%(format_id)s.%(ext)s"),
             "progress_hooks": [download_hook],
             "http_headers": {
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/126.0.0.0 Safari/537.36"
-                ),
                 "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
             },
+            "js_runtimes": {"deno": {}},
             "logger": QuietYtdlpLogger(),
         }
-        if cookie_exists:
-            base_options["cookiefile"] = YOUTUBE_COOKIE_FILE
 
-        player_client_candidates = [
-            ["web"],
-            ["web_safari"],
-            ["mweb"],
-            ["android"],
-            ["ios"],
-            ["tv_embedded"],
-        ] if cookie_exists else [
-            ["android"],
-            ["ios"],
-            ["web"],
-            ["mweb"],
-            ["tv_embedded"],
-        ]
-        format_candidates = [
-            "ba[ext=m4a]/ba[ext=webm]/bestaudio/best",
-            "bestaudio*/best*",
-            "best*[vcodec=none]/bestaudio*/best*",
-            "best",
-        ]
+        attempts = []
+        if cookie_exists:
+            attempts.extend([
+                (True, None),
+                (True, ["web_safari"]),
+            ])
+        attempts.extend([
+            (False, None),
+            (False, ["web_safari"]),
+            (False, ["web_embedded"]),
+        ])
 
         info = None
+        prepared_filename = None
         last_error = None
         blocked_by_youtube = False
-        for player_clients in player_client_candidates:
-            for format_selector in format_candidates:
-                options = dict(base_options)
+        for use_cookie, player_clients in attempts:
+            downloaded_files.clear()
+            options = dict(base_options)
+            if use_cookie:
+                options["cookiefile"] = YOUTUBE_COOKIE_FILE
+            if player_clients:
                 options["extractor_args"] = {"youtube": {"player_client": player_clients}}
-                if format_selector:
-                    options["format"] = format_selector
 
-                with yt_dlp.YoutubeDL(options) as ydl:
-                    try:
-                        info = ydl.extract_info(url, download=True)
-                        break
-                    except yt_dlp.utils.DownloadError as e:
-                        error_text = str(e)
-                        if "Sign in to confirm" in error_text or "not a bot" in error_text:
-                            blocked_by_youtube = True
-                            last_error = RuntimeError(
-                                "YouTube가 Railway 서버 요청을 봇으로 판단해 차단했습니다. "
-                                "쿠키가 등록되어 있어도 만료되었거나 Railway 서버 IP와 맞지 않으면 다시 차단될 수 있습니다. "
-                                "`/유튜브쿠키확인`으로 상태를 확인하고 필요하면 `/유튜브쿠키등록`으로 새 cookies.txt를 등록해주세요."
-                            )
-                            continue
-                        if "not made this video available in your country" in error_text:
-                            raise RuntimeError("이 영상은 서버 위치에서 재생할 수 없는 지역 제한 영상입니다.")
-                        if "Requested format is not available" in error_text:
-                            last_error = RuntimeError("이 영상에서 재생 가능한 오디오 포맷을 찾지 못했습니다. 다른 업로드 링크를 사용해주세요.")
-                            continue
-                        last_error = e
+            with yt_dlp.YoutubeDL(options) as ydl:
+                try:
+                    info = ydl.extract_info(url, download=True)
+                    prepared_filename = ydl.prepare_filename(info) if info else None
+                    break
+                except yt_dlp.utils.DownloadError as e:
+                    error_text = str(e)
+                    if "Sign in to confirm" in error_text or "not a bot" in error_text:
+                        blocked_by_youtube = True
+                        last_error = RuntimeError(
+                            "YouTube가 Railway 서버 요청을 봇으로 판단해 차단했습니다. "
+                            "Deno와 공개 영상용 무쿠키 재시도까지 실패했습니다. "
+                            "이 경우 Railway 공용 IP 자체가 차단된 상태일 수 있습니다."
+                        )
                         continue
-            if info:
-                break
+                    if "not made this video available in your country" in error_text:
+                        raise RuntimeError("이 영상은 서버 위치에서 재생할 수 없는 지역 제한 영상입니다.")
+                    if "Requested format is not available" in error_text:
+                        last_error = RuntimeError("이 영상에서 재생 가능한 오디오 포맷을 찾지 못했습니다. 다른 업로드 링크를 사용해주세요.")
+                        continue
+                    last_error = e
+                    continue
 
         if blocked_by_youtube and not info:
             raise last_error
@@ -13307,10 +13304,8 @@ async def resolve_single_track_audio(url: str) -> dict:
                     file_path = candidate
                     break
 
-        if file_path is None:
-            prepared_filename = ydl.prepare_filename(info)
-            if prepared_filename and os.path.exists(prepared_filename):
-                file_path = prepared_filename
+        if file_path is None and prepared_filename and os.path.exists(prepared_filename):
+            file_path = prepared_filename
 
         if file_path is None:
             raise RuntimeError("오디오 파일을 다운로드했지만 저장된 파일을 찾지 못했습니다.")
