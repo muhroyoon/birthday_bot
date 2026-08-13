@@ -223,8 +223,8 @@ GOLDEN_LABOR_GACHA_RESULTS = [
     ("20% 감소", 0.20, 6400),
     ("아오지 즉시 탈출", 1.00, 400),
 ]
-GOLDEN_LABOR_GACHA_DROP_RATE = 0.03
-GOLDEN_LABOR_GACHA_PITY = 40
+GOLDEN_LABOR_GACHA_DROP_RATE = 0.02
+GOLDEN_LABOR_GACHA_PITY = 100
 
 BACCARAT_OUTCOMES = [
     {"name": "플레이어", "weight": 4462, "multiplier": 2.03},
@@ -5891,7 +5891,7 @@ def build_labor_gacha_embed(
             name="사용 방법",
             value=(
                 "`일반가챠 사용`은 고정 횟수를 부채 구간 배율만큼 감소시킵니다.\n"
-                "일반가챠 사용 시 `3%` 확률로 황금가챠권을 얻으며, 40회 천장이 적용됩니다.\n"
+                "일반가챠 사용 시 `2%` 확률로 황금가챠권을 얻으며, 100회 천장이 적용됩니다.\n"
                 "`황금가챠 사용`은 남은 노동량을 퍼센트 단위로 감소시킵니다."
             ),
             inline=False,
@@ -10811,7 +10811,7 @@ class LaborGachaView(discord.ui.View):
                     self.user_id,
                 )
                 if awarded_golden:
-                    source = "40회 천장" if guaranteed_golden else "3% 확률 당첨"
+                    source = "100회 천장" if guaranteed_golden else "2% 확률 당첨"
                     result_lines.append(f"추가 획득: `황금가챠권 1장` ({source})")
                 else:
                     pity_count = get_golden_labor_gacha_pity_count(self.guild_id, self.user_id)
