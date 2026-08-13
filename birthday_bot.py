@@ -107,7 +107,7 @@ LOAN_GRADE_DECAY_DAYS = 2
 CREDIT_LEVEL_LIMIT_STEP = 5_000_000
 CREDIT_LEVEL_INTEREST_RATE = 10
 DEFAULT_VOICE_BONUS_HOURLY_AMOUNT = "250000"
-VOICE_BONUS_BLACKLIST_TICKETS_PER_HOUR = 5
+VOICE_BONUS_BLACKLIST_TICKETS_PER_HOUR = 10
 ATTENDANCE_CHANNEL_ID = 1483339751674089544
 ATTENDANCE_MIDNIGHT_CHANNEL_ID = 1377672440783704219
 ATTENDANCE_GUILD_ID = 1377672440276058214
@@ -201,19 +201,30 @@ INITIAL_CREDIT_GRADE = INITIAL_CREDIT_LEVEL
 
 LABOR_GACHA_RESULTS = [
     ("꽝", 0, 35000),
-    ("20회 감소", 20, 15000),
-    ("40회 감소", 40, 14000),
-    ("70회 감소", 70, 12000),
-    ("100회 감소", 100, 9000),
-    ("150회 감소", 150, 6000),
-    ("200회 감소", 200, 4000),
-    ("300회 감소", 300, 2500),
-    ("500회 감소", 500, 1500),
-    ("700회 감소", 700, 600),
-    ("1500회 감소", 1500, 250),
-    ("2000회 감소", 2000, 149),
-    ("10000회 감소", 10000, 1),
+    ("20회 감소", 20, 20000),
+    ("50회 감소", 50, 18000),
+    ("100회 감소", 100, 12000),
+    ("200회 감소", 200, 7000),
+    ("300회 감소", 300, 4000),
+    ("500회 감소", 500, 2000),
+    ("1000회 감소", 1000, 1000),
+    ("2000회 감소", 2000, 600),
+    ("5000회 감소", 5000, 300),
+    ("10000회 감소", 10000, 100),
 ]
+
+GOLDEN_LABOR_GACHA_RESULTS = [
+    ("1% 감소", 0.01, 12000),
+    ("3% 감소", 0.03, 20000),
+    ("5% 감소", 0.05, 20000),
+    ("8% 감소", 0.08, 16000),
+    ("12% 감소", 0.12, 12000),
+    ("20% 감소", 0.20, 11000),
+    ("30% 감소", 0.30, 8500),
+    ("아오지 즉시 탈출", 1.00, 500),
+]
+GOLDEN_LABOR_GACHA_DROP_RATE = 0.03
+GOLDEN_LABOR_GACHA_PITY = 40
 
 BACCARAT_OUTCOMES = [
     {"name": "플레이어", "weight": 4462, "multiplier": 2.03},
@@ -550,7 +561,10 @@ cursor.execute(
         user_id TEXT NOT NULL,
         debt_amount INTEGER NOT NULL,
         required_count INTEGER NOT NULL,
+        initial_required_count INTEGER NOT NULL DEFAULT 0,
+        initial_debt_amount INTEGER NOT NULL DEFAULT 0,
         completed_count INTEGER NOT NULL DEFAULT 0,
+        last_daily_gacha_date TEXT,
         status TEXT NOT NULL DEFAULT 'active',
         created_at TEXT NOT NULL,
         resolved_at TEXT,
@@ -559,16 +573,50 @@ cursor.execute(
     """
 )
 
+cursor.execute("PRAGMA table_info(labor_penalties)")
+labor_penalty_columns = [row[1] for row in cursor.fetchall()]
+if "initial_required_count" not in labor_penalty_columns:
+    cursor.execute("ALTER TABLE labor_penalties ADD COLUMN initial_required_count INTEGER NOT NULL DEFAULT 0")
+if "initial_debt_amount" not in labor_penalty_columns:
+    cursor.execute("ALTER TABLE labor_penalties ADD COLUMN initial_debt_amount INTEGER NOT NULL DEFAULT 0")
+if "last_daily_gacha_date" not in labor_penalty_columns:
+    cursor.execute("ALTER TABLE labor_penalties ADD COLUMN last_daily_gacha_date TEXT")
+cursor.execute(
+    """
+    UPDATE labor_penalties
+    SET initial_required_count=required_count
+    WHERE initial_required_count IS NULL OR initial_required_count<=0
+    """
+)
+cursor.execute(
+    """
+    UPDATE labor_penalties
+    SET initial_debt_amount=debt_amount
+    WHERE initial_debt_amount IS NULL OR initial_debt_amount<=0
+    """
+)
+conn.commit()
+
 cursor.execute(
     """
     CREATE TABLE IF NOT EXISTS labor_gacha_tickets(
         guild_id TEXT NOT NULL,
         user_id TEXT NOT NULL,
         ticket_count INTEGER NOT NULL DEFAULT 0,
+        golden_ticket_count INTEGER NOT NULL DEFAULT 0,
+        golden_pity_count INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (guild_id, user_id)
     )
     """
 )
+
+cursor.execute("PRAGMA table_info(labor_gacha_tickets)")
+labor_gacha_ticket_columns = [row[1] for row in cursor.fetchall()]
+if "golden_ticket_count" not in labor_gacha_ticket_columns:
+    cursor.execute("ALTER TABLE labor_gacha_tickets ADD COLUMN golden_ticket_count INTEGER NOT NULL DEFAULT 0")
+if "golden_pity_count" not in labor_gacha_ticket_columns:
+    cursor.execute("ALTER TABLE labor_gacha_tickets ADD COLUMN golden_pity_count INTEGER NOT NULL DEFAULT 0")
+conn.commit()
 
 cursor.execute(
     """
@@ -4447,13 +4495,15 @@ def build_credit_embed(member: discord.abc.User, guild_id: int | None = None) ->
     if labor_penalty is not None:
         remaining = max(0, labor_penalty["required_count"] - labor_penalty["completed_count"])
         ticket_count = get_labor_gacha_ticket_count(guild_id, member.id) if guild_id is not None else 0
+        golden_ticket_count = get_golden_labor_gacha_ticket_count(guild_id, member.id) if guild_id is not None else 0
         embed.add_field(
             name="노동 진행 현황",
             value=(
                 f"완료: `{labor_penalty['completed_count']}회`\n"
                 f"필요: `{labor_penalty['required_count']}회`\n"
                 f"남은 횟수: `{remaining}회`\n"
-                f"노동가챠권: `{ticket_count}장`"
+                f"일반가챠권: `{ticket_count}장`\n"
+                f"황금가챠권: `{golden_ticket_count}장`"
             ),
             inline=False,
         )
@@ -5191,11 +5241,12 @@ def create_or_replace_labor_penalty(guild_id: int, user_id: int, debt_amount: in
     cursor.execute(
         """
         INSERT OR REPLACE INTO labor_penalties(
-            guild_id, user_id, debt_amount, required_count, completed_count, status, created_at, resolved_at
+            guild_id, user_id, debt_amount, required_count, initial_required_count, initial_debt_amount,
+            completed_count, last_daily_gacha_date, status, created_at, resolved_at
         )
-        VALUES (?, ?, ?, ?, 0, 'active', ?, NULL)
+        VALUES (?, ?, ?, ?, ?, ?, 0, NULL, 'active', ?, NULL)
         """,
-        (str(guild_id), str(user_id), debt_amount, required_count, dt_to_db(get_kst_now())),
+        (str(guild_id), str(user_id), debt_amount, required_count, required_count, debt_amount, dt_to_db(get_kst_now())),
     )
     conn.commit()
 
@@ -5203,7 +5254,8 @@ def create_or_replace_labor_penalty(guild_id: int, user_id: int, debt_amount: in
 def get_active_labor_penalty(guild_id: int, user_id: int):
     cursor.execute(
         """
-        SELECT debt_amount, required_count, completed_count, created_at
+        SELECT debt_amount, required_count, completed_count, created_at,
+               initial_required_count, initial_debt_amount
         FROM labor_penalties
         WHERE guild_id=? AND user_id=? AND status='active'
         """,
@@ -5218,6 +5270,8 @@ def get_active_labor_penalty(guild_id: int, user_id: int):
         "required_count": int(row[1]),
         "completed_count": int(row[2]),
         "created_at": row[3],
+        "initial_required_count": int(row[4] or row[1]),
+        "initial_debt_amount": int(row[5] or row[0]),
     }
 
 
@@ -5300,6 +5354,24 @@ def get_labor_gacha_ticket_count(guild_id: int, user_id: int) -> int:
     return int(row[0]) if row else 0
 
 
+def get_golden_labor_gacha_ticket_count(guild_id: int, user_id: int) -> int:
+    cursor.execute(
+        "SELECT golden_ticket_count FROM labor_gacha_tickets WHERE guild_id=? AND user_id=?",
+        (str(guild_id), str(user_id)),
+    )
+    row = cursor.fetchone()
+    return int(row[0]) if row else 0
+
+
+def get_golden_labor_gacha_pity_count(guild_id: int, user_id: int) -> int:
+    cursor.execute(
+        "SELECT golden_pity_count FROM labor_gacha_tickets WHERE guild_id=? AND user_id=?",
+        (str(guild_id), str(user_id)),
+    )
+    row = cursor.fetchone()
+    return int(row[0]) if row else 0
+
+
 def add_labor_gacha_tickets(guild_id: int, user_id: int, amount: int):
     cursor.execute(
         """
@@ -5307,6 +5379,19 @@ def add_labor_gacha_tickets(guild_id: int, user_id: int, amount: int):
         VALUES (?, ?, ?)
         ON CONFLICT(guild_id, user_id)
         DO UPDATE SET ticket_count=ticket_count + excluded.ticket_count
+        """,
+        (str(guild_id), str(user_id), amount),
+    )
+    conn.commit()
+
+
+def add_golden_labor_gacha_tickets(guild_id: int, user_id: int, amount: int):
+    cursor.execute(
+        """
+        INSERT INTO labor_gacha_tickets(guild_id, user_id, golden_ticket_count)
+        VALUES (?, ?, ?)
+        ON CONFLICT(guild_id, user_id)
+        DO UPDATE SET golden_ticket_count=golden_ticket_count + excluded.golden_ticket_count
         """,
         (str(guild_id), str(user_id), amount),
     )
@@ -5331,15 +5416,30 @@ def remove_labor_gacha_tickets(guild_id: int, user_id: int, amount: int) -> int:
     return remove_count
 
 
-def clear_labor_gacha_tickets(guild_id: int, user_id: int) -> int:
-    current_count = get_labor_gacha_ticket_count(guild_id, user_id)
-    if current_count <= 0:
+def remove_golden_labor_gacha_tickets(guild_id: int, user_id: int, amount: int) -> int:
+    current_count = get_golden_labor_gacha_ticket_count(guild_id, user_id)
+    remove_count = min(max(0, amount), current_count)
+    if remove_count <= 0:
         return 0
 
     cursor.execute(
         """
         UPDATE labor_gacha_tickets
-        SET ticket_count=0
+        SET golden_ticket_count=golden_ticket_count-?
+        WHERE guild_id=? AND user_id=?
+        """,
+        (remove_count, str(guild_id), str(user_id)),
+    )
+    conn.commit()
+    return remove_count
+
+
+def clear_labor_gacha_tickets(guild_id: int, user_id: int) -> int:
+    current_count = get_labor_gacha_ticket_count(guild_id, user_id)
+    cursor.execute(
+        """
+        UPDATE labor_gacha_tickets
+        SET ticket_count=0, golden_ticket_count=0, golden_pity_count=0
         WHERE guild_id=? AND user_id=?
         """,
         (str(guild_id), str(user_id)),
@@ -5361,8 +5461,25 @@ def consume_labor_gacha_ticket(guild_id: int, user_id: int) -> bool:
         """,
         (str(guild_id), str(user_id)),
     )
+    if cursor.rowcount <= 0:
+        conn.commit()
+        return False
     conn.commit()
-    return cursor.rowcount > 0
+    return True
+
+
+def consume_golden_labor_gacha_ticket(guild_id: int, user_id: int) -> bool:
+    cursor.execute(
+        """
+        UPDATE labor_gacha_tickets
+        SET golden_ticket_count=golden_ticket_count-1
+        WHERE guild_id=? AND user_id=? AND golden_ticket_count>0
+        """,
+        (str(guild_id), str(user_id)),
+    )
+    consumed = cursor.rowcount > 0
+    conn.commit()
+    return consumed
 
 
 def roll_labor_gacha():
@@ -5375,6 +5492,50 @@ def roll_labor_gacha():
             return result_label, reduce_count
 
     return "꽝", 0
+
+
+def get_labor_gacha_debt_multiplier(initial_debt_amount: int) -> float:
+    if initial_debt_amount < 500_000_000:
+        return 1.5
+    if initial_debt_amount < 1_000_000_000:
+        return 2.0
+    if initial_debt_amount < 2_000_000_000:
+        return 3.0
+    if initial_debt_amount < 4_000_000_000:
+        return 5.0
+    if initial_debt_amount < 6_000_000_000:
+        return 7.0
+    return 10.0
+
+
+def try_award_golden_labor_gacha_ticket(guild_id: int, user_id: int) -> tuple[bool, bool]:
+    pity_count = get_golden_labor_gacha_pity_count(guild_id, user_id)
+    guaranteed = pity_count + 1 >= GOLDEN_LABOR_GACHA_PITY
+    awarded = guaranteed or random.random() < GOLDEN_LABOR_GACHA_DROP_RATE
+    cursor.execute(
+        """
+        INSERT INTO labor_gacha_tickets(
+            guild_id, user_id, golden_ticket_count, golden_pity_count
+        ) VALUES (?, ?, ?, ?)
+        ON CONFLICT(guild_id, user_id) DO UPDATE SET
+            golden_ticket_count=golden_ticket_count + excluded.golden_ticket_count,
+            golden_pity_count=excluded.golden_pity_count
+        """,
+        (str(guild_id), str(user_id), 1 if awarded else 0, 0 if awarded else pity_count + 1),
+    )
+    conn.commit()
+    return awarded, guaranteed
+
+
+def roll_golden_labor_gacha(remaining_count: int) -> tuple[str, int]:
+    selected = random.choices(
+        GOLDEN_LABOR_GACHA_RESULTS,
+        weights=[item[2] for item in GOLDEN_LABOR_GACHA_RESULTS],
+        k=1,
+    )[0]
+    result_label, reduction_rate, _weight = selected
+    reduction_count = remaining_count if reduction_rate >= 1 else math.ceil(remaining_count * reduction_rate)
+    return result_label, reduction_count
 
 
 def delete_labor_penalty(guild_id: int, user_id: int):
@@ -5659,8 +5820,11 @@ def build_labor_embed(
     )
     if guild_id is not None:
         embed.add_field(
-            name="보유 노동가챠권",
-            value=f"`{get_labor_gacha_ticket_count(guild_id, member.id)}장`",
+            name="보유 가챠권",
+            value=(
+                f"일반: `{get_labor_gacha_ticket_count(guild_id, member.id)}장`\n"
+                f"황금: `{get_golden_labor_gacha_ticket_count(guild_id, member.id)}장`"
+            ),
             inline=False,
         )
     if mine_result is None:
@@ -5685,6 +5849,53 @@ def build_labor_embed(
         result_lines.append(f"남은 노동 횟수: `{remaining}회`")
         embed.color = mine_result["mine_color"]
         embed.add_field(name="채굴 결과", value="\n".join(result_lines), inline=False)
+    return embed
+
+
+def build_labor_gacha_embed(
+    member: discord.Member,
+    penalty: dict,
+    guild_id: int,
+    result_lines: list[str] | None = None,
+    color: int = 0xF1C40F,
+) -> discord.Embed:
+    remaining = max(0, penalty["required_count"] - penalty["completed_count"])
+    multiplier = get_labor_gacha_debt_multiplier(penalty["initial_debt_amount"])
+    embed = discord.Embed(
+        title="🎟 아오지 노동가챠",
+        description=f"{member.mention}님의 가챠 패널입니다.",
+        color=color,
+    )
+    embed.add_field(
+        name="노동 현황",
+        value=(
+            f"남은 노동: `{remaining:,}회`\n"
+            f"등록 당시 부채: `{format_money(penalty['initial_debt_amount'])}`\n"
+            f"일반가챠 부채 보정: `x{multiplier:g}`"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="보유 가챠권",
+        value=(
+            f"일반가챠권: `{get_labor_gacha_ticket_count(guild_id, member.id)}장`\n"
+            f"황금가챠권: `{get_golden_labor_gacha_ticket_count(guild_id, member.id)}장`\n"
+            f"황금 천장: `{get_golden_labor_gacha_pity_count(guild_id, member.id)}/{GOLDEN_LABOR_GACHA_PITY}회`"
+        ),
+        inline=False,
+    )
+    if result_lines:
+        embed.add_field(name="가챠 결과", value="\n".join(result_lines), inline=False)
+    else:
+        embed.add_field(
+            name="사용 방법",
+            value=(
+                "`일반가챠 사용`은 고정 횟수를 부채 구간 배율만큼 감소시킵니다.\n"
+                "일반가챠 사용 시 `3%` 확률로 황금가챠권을 얻으며, 40회 천장이 적용됩니다.\n"
+                "`황금가챠 사용`은 남은 노동량을 퍼센트 단위로 감소시킵니다."
+            ),
+            inline=False,
+        )
     return embed
 
 def add_scrim_signup(message_id: int, user_id: int):
@@ -5780,7 +5991,7 @@ LABOR_MINE_TABLE = {
         "label": "아오지탄광",
         "color": 0xE67E22,
         "results": [
-            {"name": "석탄", "weight": 30, "progress": 1, "description": "석탄을 캐냈습니다. 작지만 확실하게 노동이 줄어듭니다.", "ticket_bonus": 0},
+            {"name": "석탄", "weight": 29, "progress": 1, "description": "석탄을 캐냈습니다. 작지만 확실하게 노동이 줄어듭니다.", "ticket_bonus": 0},
             {"name": "철광석", "weight": 25, "progress": 2, "description": "철광석을 발견했습니다. 삽질한 보람이 느껴집니다.", "ticket_bonus": 0},
             {"name": "은광석", "weight": 20, "progress": 3, "description": "은광석을 캤습니다. 오늘은 제법 손맛이 좋습니다.", "ticket_bonus": 0},
             {"name": "금광석", "weight": 15, "progress": 4, "description": "금광석을 발견했습니다. 탄광장도 탐낼 만한 성과입니다.", "ticket_bonus": 0},
@@ -5788,7 +5999,7 @@ LABOR_MINE_TABLE = {
             {"name": "고대 광맥", "weight": 2, "progress": 10, "description": "묵직한 고대 광맥을 터뜨렸습니다. 노동이 크게 줄어듭니다.", "ticket_bonus": 0},
             {"name": "전설의 광맥", "weight": 1, "progress": 20, "description": "전설급 광맥을 발견했습니다. 아오지의 공기가 달라졌습니다.", "ticket_bonus": 0},
             {"name": "심연의 보석", "weight": 1, "progress": 25, "description": "심연 깊은 곳에서 보석을 캐냈습니다. 믿기 힘든 대박입니다.", "ticket_bonus": 0},
-            {"name": "노동가챠권 발견", "weight": 1, "progress": 1, "description": "탄광 틈새에서 노동가챠권을 찾아냈습니다. 추가 보상이 지급됩니다.", "ticket_bonus": 1},
+            {"name": "노동가챠권 발견", "weight": 2, "progress": 1, "description": "탄광 틈새에서 노동가챠권을 찾아냈습니다. 추가 보상이 지급됩니다.", "ticket_bonus": 1},
         ],
     },
 }
@@ -10513,6 +10724,132 @@ class LaborWorkView(discord.ui.View):
         await self.run_mining(interaction, "aogi")
 
 
+class LaborGachaView(discord.ui.View):
+    def __init__(self, guild_id: int, user_id: int):
+        super().__init__(timeout=None)
+        self.guild_id = guild_id
+        self.user_id = user_id
+        self.refresh_buttons()
+
+    def refresh_buttons(self, resolved: bool = False):
+        for item in self.children:
+            if not isinstance(item, discord.ui.Button):
+                continue
+            if resolved:
+                item.disabled = True
+            elif item.custom_id == "labor_gacha_normal":
+                item.disabled = get_labor_gacha_ticket_count(self.guild_id, self.user_id) <= 0
+            elif item.custom_id == "labor_gacha_golden":
+                item.disabled = get_golden_labor_gacha_ticket_count(self.guild_id, self.user_id) <= 0
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.user_id:
+            return True
+        await interaction.response.send_message("이 가챠 패널은 명령어를 사용한 본인만 이용할 수 있습니다.", ephemeral=True)
+        return False
+
+    async def run_gacha(self, interaction: discord.Interaction, ticket_type: str):
+        session_key = (self.guild_id, self.user_id)
+        if session_key in labor_click_locks:
+            await interaction.response.send_message("이미 다른 노동 처리를 진행 중입니다. 잠시 후 다시 눌러주세요.", ephemeral=True)
+            return
+
+        labor_click_locks.add(session_key)
+        try:
+            penalty = ensure_active_labor_penalty(self.guild_id, self.user_id)
+            if penalty is None:
+                await interaction.response.send_message("진행 중인 노동 패널티가 없습니다.", ephemeral=True)
+                return
+
+            remaining_before = max(0, penalty["required_count"] - penalty["completed_count"])
+            awarded_golden = False
+            guaranteed_golden = False
+
+            if ticket_type == "golden":
+                if not consume_golden_labor_gacha_ticket(self.guild_id, self.user_id):
+                    await interaction.response.send_message("보유한 황금가챠권이 없습니다.", ephemeral=True)
+                    return
+                result_label, reduce_count = roll_golden_labor_gacha(remaining_before)
+                applied_count = min(remaining_before, reduce_count)
+                result_lines = [
+                    "사용한 가챠권: `황금가챠권 1장`",
+                    f"결과: **{result_label}**",
+                    f"감소한 노동: `{applied_count:,}회`",
+                ]
+            else:
+                if not consume_labor_gacha_ticket(self.guild_id, self.user_id):
+                    await interaction.response.send_message("보유한 일반가챠권이 없습니다.", ephemeral=True)
+                    return
+                result_label, base_reduce_count = roll_labor_gacha()
+                multiplier = get_labor_gacha_debt_multiplier(penalty["initial_debt_amount"])
+                reduce_count = int(base_reduce_count * multiplier)
+                applied_count = min(remaining_before, reduce_count)
+                result_lines = [
+                    "사용한 가챠권: `일반가챠권 1장`",
+                    f"결과: **{result_label}**",
+                    f"부채 보정: `x{multiplier:g}`",
+                    f"감소한 노동: `{applied_count:,}회`",
+                ]
+
+            if applied_count > 0:
+                updated_penalty, resolved = apply_labor_progress(
+                    self.guild_id,
+                    self.user_id,
+                    applied_count,
+                )
+            else:
+                updated_penalty = get_active_labor_penalty(self.guild_id, self.user_id) or penalty
+                resolved = False
+
+            if updated_penalty is None:
+                await interaction.response.send_message("노동가챠 처리 중 오류가 발생했습니다.", ephemeral=True)
+                return
+
+            if ticket_type == "normal" and not resolved:
+                awarded_golden, guaranteed_golden = try_award_golden_labor_gacha_ticket(
+                    self.guild_id,
+                    self.user_id,
+                )
+                if awarded_golden:
+                    source = "40회 천장" if guaranteed_golden else "3% 확률 당첨"
+                    result_lines.append(f"추가 획득: `황금가챠권 1장` ({source})")
+                else:
+                    pity_count = get_golden_labor_gacha_pity_count(self.guild_id, self.user_id)
+                    result_lines.append(f"황금 천장 누적: `{pity_count}/{GOLDEN_LABOR_GACHA_PITY}회`")
+
+            if resolved:
+                result_lines.append("**노동 완료! 신용불량자 상태가 해제되었습니다.**")
+                await sync_blacklist_role(interaction.user, False)
+
+            self.refresh_buttons(resolved=resolved)
+            embed = build_labor_gacha_embed(
+                interaction.user,
+                updated_penalty,
+                self.guild_id,
+                result_lines=result_lines,
+                color=0x2ECC71 if resolved else (0xF4C542 if ticket_type == "golden" else 0x3498DB),
+            )
+            await interaction.response.edit_message(embed=embed, view=self)
+        finally:
+            labor_click_locks.discard(session_key)
+
+    @discord.ui.button(
+        label="일반가챠 사용",
+        style=discord.ButtonStyle.primary,
+        custom_id="labor_gacha_normal",
+    )
+    async def use_normal(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.run_gacha(interaction, "normal")
+
+    @discord.ui.button(
+        label="황금가챠 사용",
+        style=discord.ButtonStyle.success,
+        custom_id="labor_gacha_golden",
+    )
+    async def use_golden(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.run_gacha(interaction, "golden")
+
+
 class PromissoryNoteModal(discord.ui.Modal):
     principal_amount = discord.ui.TextInput(
         label="원금",
@@ -14019,56 +14356,9 @@ async def labor_gacha(interaction: discord.Interaction):
         await interaction.response.send_message("진행 중인 노동 패널티가 없습니다.", ephemeral=True)
         return
 
-    ticket_count = get_labor_gacha_ticket_count(interaction.guild.id, interaction.user.id)
-    if ticket_count <= 0:
-        await interaction.response.send_message("보유한 노동가챠권이 없습니다. 관리자에게 지급을 요청해주세요.", ephemeral=True)
-        return
-
-    if not consume_labor_gacha_ticket(interaction.guild.id, interaction.user.id):
-        await interaction.response.send_message("노동가챠권 사용에 실패했습니다. 다시 시도해주세요.", ephemeral=True)
-        return
-
-    result_label, reduce_count = roll_labor_gacha()
-    remaining_before = max(0, penalty["required_count"] - penalty["completed_count"])
-    reduction_count = 0
-    resolved = False
-    updated_penalty = penalty
-
-    if reduce_count > 0 and remaining_before > 0:
-        reduction_count = min(remaining_before, reduce_count)
-        updated_penalty, resolved = apply_labor_progress(interaction.guild.id, interaction.user.id, reduction_count)
-        if updated_penalty is None:
-            await interaction.response.send_message("노동가챠 처리 중 오류가 발생했습니다.", ephemeral=True)
-            return
-    else:
-        updated_penalty = get_active_labor_penalty(interaction.guild.id, interaction.user.id) or penalty
-
-    remaining_after = max(0, updated_penalty["required_count"] - updated_penalty["completed_count"])
-    embed = discord.Embed(title="🎟 노동가챠 결과", color=0xF1C40F)
-    embed.add_field(name="결과", value=result_label, inline=False)
-    embed.add_field(name="가챠 적용 전 남은 노동", value=f"`{remaining_before}회`", inline=True)
-    embed.add_field(name="감소한 노동 횟수", value=f"`{reduction_count}회`", inline=True)
-    embed.add_field(name="가챠 적용 후 남은 노동", value=f"`{remaining_after}회`", inline=True)
-    embed.add_field(
-        name="남은 가챠권",
-        value=f"`{get_labor_gacha_ticket_count(interaction.guild.id, interaction.user.id)}장`",
-        inline=False,
-    )
-
-    if resolved:
-        embed.color = 0x2ECC71
-        embed.add_field(
-            name="결과 안내",
-            value=f"노동이 모두 해제되어 신용불량자 상태가 종료되고 `{INITIAL_CREDIT_LEVEL}레벨`로 복귀했습니다.",
-            inline=False,
-        )
-        await sync_blacklist_role(interaction.user, False)
-    elif reduce_count == 0:
-        embed.add_field(name="결과 안내", value="이번에는 꽝입니다. 다음 가챠권을 노려보세요.", inline=False)
-    else:
-        embed.add_field(name="결과 안내", value=f"남은 노동 횟수가 `{reduction_count}회` 감소했습니다.", inline=False)
-
-    await interaction.response.send_message(embed=embed)
+    view = LaborGachaView(interaction.guild.id, interaction.user.id)
+    embed = build_labor_gacha_embed(interaction.user, penalty, interaction.guild.id)
+    await interaction.response.send_message(embed=embed, view=view)
 
 
 @bot.tree.command(name="대출상환", description="특정 대출 번호에 원하는 금액만큼 상환합니다.")
@@ -14705,24 +14995,51 @@ async def blacklist_user(interaction: discord.Interaction, member: discord.Membe
 
 @bot.tree.command(name="노동가챠권지급", description="특정 인원에게 노동가챠권을 지급합니다.")
 @app_commands.checks.has_permissions(administrator=True)
-@app_commands.rename(member="인원", amount="개수")
-async def grant_labor_gacha_ticket(interaction: discord.Interaction, member: discord.Member, amount: int):
+@app_commands.rename(member="인원", ticket_type="종류", amount="개수")
+@app_commands.choices(ticket_type=[
+    app_commands.Choice(name="일반가챠권", value="normal"),
+    app_commands.Choice(name="황금가챠권", value="golden"),
+])
+async def grant_labor_gacha_ticket(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    ticket_type: app_commands.Choice[str],
+    amount: int,
+):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
     if amount <= 0:
         await interaction.response.send_message("지급 개수는 1개 이상이어야 합니다.", ephemeral=True)
         return
 
-    add_labor_gacha_tickets(interaction.guild.id, member.id, amount)
-    current_count = get_labor_gacha_ticket_count(interaction.guild.id, member.id)
+    if ticket_type.value == "golden":
+        add_golden_labor_gacha_tickets(interaction.guild.id, member.id, amount)
+        current_count = get_golden_labor_gacha_ticket_count(interaction.guild.id, member.id)
+    else:
+        add_labor_gacha_tickets(interaction.guild.id, member.id, amount)
+        current_count = get_labor_gacha_ticket_count(interaction.guild.id, member.id)
     await interaction.response.send_message(
-        f"{member.mention}님에게 노동가챠권 `{amount}장`을 지급했습니다.\n현재 보유 수량: `{current_count}장`",
+        f"{member.mention}님에게 {ticket_type.name} `{amount}장`을 지급했습니다.\n"
+        f"현재 {ticket_type.name} 보유 수량: `{current_count}장`",
         ephemeral=False,
     )
 
 
 @bot.tree.command(name="노동가챠권삭제", description="특정 인원의 노동가챠권을 회수합니다.")
 @app_commands.checks.has_permissions(administrator=True)
-@app_commands.rename(member="인원", amount="개수")
-async def remove_labor_gacha_ticket(interaction: discord.Interaction, member: discord.Member, amount: int):
+@app_commands.rename(member="인원", ticket_type="종류", amount="개수")
+@app_commands.choices(ticket_type=[
+    app_commands.Choice(name="일반가챠권", value="normal"),
+    app_commands.Choice(name="황금가챠권", value="golden"),
+])
+async def remove_labor_gacha_ticket(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    ticket_type: app_commands.Choice[str],
+    amount: int,
+):
     if interaction.guild is None:
         await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
         return
@@ -14731,18 +15048,25 @@ async def remove_labor_gacha_ticket(interaction: discord.Interaction, member: di
         await interaction.response.send_message("삭제 개수는 1개 이상이어야 합니다.", ephemeral=True)
         return
 
-    before_count = get_labor_gacha_ticket_count(interaction.guild.id, member.id)
+    if ticket_type.value == "golden":
+        before_count = get_golden_labor_gacha_ticket_count(interaction.guild.id, member.id)
+    else:
+        before_count = get_labor_gacha_ticket_count(interaction.guild.id, member.id)
     if before_count <= 0:
         await interaction.response.send_message(
-            f"{member.mention}님은 보유한 노동가챠권이 없습니다.",
+            f"{member.mention}님은 보유한 {ticket_type.name}이 없습니다.",
             ephemeral=True,
         )
         return
 
-    removed_count = remove_labor_gacha_tickets(interaction.guild.id, member.id, amount)
-    current_count = get_labor_gacha_ticket_count(interaction.guild.id, member.id)
+    if ticket_type.value == "golden":
+        removed_count = remove_golden_labor_gacha_tickets(interaction.guild.id, member.id, amount)
+        current_count = get_golden_labor_gacha_ticket_count(interaction.guild.id, member.id)
+    else:
+        removed_count = remove_labor_gacha_tickets(interaction.guild.id, member.id, amount)
+        current_count = get_labor_gacha_ticket_count(interaction.guild.id, member.id)
     await interaction.response.send_message(
-        f"{member.mention}님의 노동가챠권 `{removed_count}장`을 삭제했습니다.\n"
+        f"{member.mention}님의 {ticket_type.name} `{removed_count}장`을 삭제했습니다.\n"
         f"이전 보유 수량: `{before_count}장`\n"
         f"현재 보유 수량: `{current_count}장`",
         ephemeral=False,
