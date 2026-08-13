@@ -5496,16 +5496,16 @@ def roll_labor_gacha():
 
 def get_labor_gacha_debt_multiplier(initial_debt_amount: int) -> float:
     if initial_debt_amount < 500_000_000:
-        return 1.5
+        return 1.0
     if initial_debt_amount < 1_000_000_000:
-        return 2.0
+        return 1.2
     if initial_debt_amount < 2_000_000_000:
-        return 3.0
+        return 1.5
     if initial_debt_amount < 4_000_000_000:
-        return 5.0
+        return 2.0
     if initial_debt_amount < 6_000_000_000:
-        return 7.0
-    return 10.0
+        return 2.5
+    return 3.0
 
 
 def try_award_golden_labor_gacha_ticket(guild_id: int, user_id: int) -> tuple[bool, bool]:
