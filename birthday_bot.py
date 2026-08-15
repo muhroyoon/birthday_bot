@@ -251,6 +251,7 @@ LOAN_GRADE_INTEREST = {
 }
 
 labor_click_locks: set[tuple[int, int]] = set()
+active_number_baseball_users: set[tuple[int, int]] = set()
 
 SLOT_SYMBOL_EMOJIS = {
     "체리": "🍒",
@@ -5956,6 +5957,8 @@ GAME_LABELS = {
 
 BLACKJACK_TIMEOUT = 90
 BLACKJACK_CARD_VALUES = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+BLACKJACK_WIN_MULTIPLIER = 2.05
+BLACKJACK_NATURAL_MULTIPLIER = 2.65
 NUMBER_BASEBALL_DIGITS = 4
 NUMBER_BASEBALL_ATTEMPTS = 8
 NUMBER_BASEBALL_COST = 100_000
@@ -5971,19 +5974,19 @@ HORSE_RACE_TABLE = [
 MINESWEEPER_SIZE = 4
 MINESWEEPER_MINE_COUNT = 3
 MINESWEEPER_MULTIPLIERS = {
-    1: 1.15,
-    2: 1.30,
-    3: 1.50,
-    4: 1.75,
-    5: 2.05,
-    6: 2.45,
-    7: 3.00,
-    8: 3.80,
-    9: 5.00,
-    10: 6.50,
-    11: 8.50,
-    12: 11.00,
-    13: 15.00,
+    1: 1.23,
+    2: 1.54,
+    3: 1.96,
+    4: 2.55,
+    5: 3.39,
+    6: 4.67,
+    7: 6.67,
+    8: 10.00,
+    9: 16.00,
+    10: 28.00,
+    11: 56.00,
+    12: 140.00,
+    13: 560.00,
 }
 
 LABOR_MINE_TABLE = {
@@ -7068,6 +7071,7 @@ class BlackjackView(discord.ui.View):
         self.player_cards = [draw_blackjack_card(), draw_blackjack_card()]
         self.dealer_cards = [draw_blackjack_card(), draw_blackjack_card()]
         self.resolved = False
+        self.message: discord.Message | None = None
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
@@ -7130,7 +7134,7 @@ class BlackjackView(discord.ui.View):
             color = 0xE74C3C
         elif dealer_value > 21 or player_value > dealer_value:
             is_natural = len(self.player_cards) == 2 and player_value == 21
-            multiplier = 2.5 if is_natural else 2.0
+            multiplier = BLACKJACK_NATURAL_MULTIPLIER if is_natural else BLACKJACK_WIN_MULTIPLIER
             payout = int(self.bet_amount * multiplier)
             add_balance(self.user_id, payout)
             result_text = f"승리했습니다! `{format_money(payout)}`을 획득했습니다."
@@ -7169,9 +7173,58 @@ class BlackjackView(discord.ui.View):
         if self.resolved:
             return
         self.resolved = True
-        add_balance(self.user_id, self.bet_amount)
+
+        while blackjack_hand_value(self.dealer_cards) < 17:
+            self.dealer_cards.append(draw_blackjack_card())
+
+        player_value = blackjack_hand_value(self.player_cards)
+        dealer_value = blackjack_hand_value(self.dealer_cards)
+        payout = 0
+        if player_value > 21:
+            result_label = "시간 초과 패배"
+            result_text = f"시간이 초과되어 현재 패로 자동 정산했습니다. 버스트로 `{format_money(self.bet_amount)}`을 잃었습니다."
+            color = 0xE74C3C
+        elif dealer_value > 21 or player_value > dealer_value:
+            is_natural = len(self.player_cards) == 2 and player_value == 21
+            multiplier = BLACKJACK_NATURAL_MULTIPLIER if is_natural else BLACKJACK_WIN_MULTIPLIER
+            payout = int(self.bet_amount * multiplier)
+            add_balance(self.user_id, payout)
+            result_label = "시간 초과 자동 승리"
+            result_text = f"시간이 초과되어 자동으로 멈췄습니다. `{format_money(payout)}`을 획득했습니다."
+            color = 0x2ECC71
+        elif player_value == dealer_value:
+            payout = self.bet_amount
+            add_balance(self.user_id, payout)
+            result_label = "시간 초과 무승부"
+            result_text = f"시간이 초과되어 자동으로 멈췄습니다. 무승부로 `{format_money(payout)}`을 돌려받았습니다."
+            color = 0x3498DB
+        else:
+            result_label = "시간 초과 패배"
+            result_text = f"시간이 초과되어 자동으로 멈췄습니다. 딜러 승리로 `{format_money(self.bet_amount)}`을 잃었습니다."
+            color = 0xE74C3C
+
         for item in self.children:
             item.disabled = True
+
+        guild = bot.get_guild(self.guild_id)
+        member = guild.get_member(self.user_id) if guild else None
+        add_game_history(
+            self.guild_id,
+            "블랙잭",
+            (
+                f"{member.display_name if member else self.user_id} - 내 패:{' '.join(self.player_cards)}({player_value}) / "
+                f"딜러:{' '.join(self.dealer_cards)}({dealer_value}) / {result_label}"
+            ),
+        )
+        if self.message is not None:
+            try:
+                await self.message.edit(
+                    embed=self.build_embed(reveal_dealer=True, result_text=result_text, color=color),
+                    attachments=[self.build_table_file(reveal_dealer=True)],
+                    view=self,
+                )
+            except discord.HTTPException:
+                pass
 
     @discord.ui.button(label="카드 받기", style=discord.ButtonStyle.primary)
     async def hit(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -7328,6 +7381,7 @@ class NumberBaseballView(discord.ui.View):
         self.answer = generate_number_baseball_answer()
         self.records: list[tuple[str, str]] = []
         self.resolved = False
+        self.message: discord.Message | None = None
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
@@ -7364,6 +7418,7 @@ class NumberBaseballView(discord.ui.View):
 
     async def finish(self, interaction: discord.Interaction, result_text: str, result_label: str, color: int):
         self.resolved = True
+        active_number_baseball_users.discard((self.guild_id, self.user_id))
         for item in self.children:
             item.disabled = True
 
@@ -7425,9 +7480,36 @@ class NumberBaseballView(discord.ui.View):
         if self.resolved:
             return
         self.resolved = True
-        add_balance(self.user_id, self.bet_amount)
+        active_number_baseball_users.discard((self.guild_id, self.user_id))
+
+        if not self.records:
+            add_balance(self.user_id, self.bet_amount)
+            result_text = "입력 기록 없이 시간이 초과되어 참가비를 반환했습니다."
+            result_label = "시작 전 시간 초과"
+            color = 0x95A5A6
+        else:
+            result_text = f"제한 시간이 초과되어 실패했습니다. `{format_money(self.bet_amount)}`을 잃었습니다."
+            result_label = "시간 초과 실패"
+            color = 0xE74C3C
+
         for item in self.children:
             item.disabled = True
+
+        guild = bot.get_guild(self.guild_id)
+        member = guild.get_member(self.user_id) if guild else None
+        add_game_history(
+            self.guild_id,
+            "숫자야구",
+            f"{member.display_name if member else self.user_id} - 정답:{self.answer} / 시도:{len(self.records)}회 / {result_label}",
+        )
+        if self.message is not None:
+            try:
+                await self.message.edit(
+                    embed=self.build_embed(result_text=result_text, color=color),
+                    view=self,
+                )
+            except discord.HTTPException:
+                pass
 
     @discord.ui.button(label="숫자 입력", style=discord.ButtonStyle.primary)
     async def guess_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -7467,6 +7549,7 @@ class MinesweeperView(discord.ui.View):
         self.bet_amount = bet_amount
         self.safe_count = 0
         self.resolved = False
+        self.message: discord.Message | None = None
         total_cells = MINESWEEPER_SIZE * MINESWEEPER_SIZE
         self.mine_positions = set(random.sample(range(total_cells), MINESWEEPER_MINE_COUNT))
 
@@ -7574,8 +7657,37 @@ class MinesweeperView(discord.ui.View):
         if self.resolved:
             return
         self.resolved = True
-        add_balance(self.user_id, self.bet_amount)
+
+        if self.safe_count <= 0:
+            payout = self.bet_amount
+            add_balance(self.user_id, payout)
+            title = "⌛ 지뢰찾기 시작 전 시간 초과"
+            description = f"안전 칸을 열기 전에 시간이 초과되어 `{format_money(payout)}`을 반환했습니다."
+            result_label = "시작 전 시간 초과"
+            color = 0x95A5A6
+        else:
+            payout = self.current_payout()
+            add_balance(self.user_id, payout)
+            title = "⌛ 지뢰찾기 자동 수익 확정"
+            description = f"시간이 초과되어 현재 배당으로 `{format_money(payout)}`을 자동 수령했습니다."
+            result_label = f"시간 초과 {self.current_multiplier():.2f}배 정산"
+            color = 0x2ECC71
+
         self.disable_all_buttons()
+        guild = bot.get_guild(self.guild_id)
+        member = guild.get_member(self.user_id) if guild else None
+        add_game_history(
+            self.guild_id,
+            "지뢰찾기",
+            f"{member.display_name if member else self.user_id} - 안전:{self.safe_count}개 / {result_label}",
+        )
+        if self.message is not None:
+            embed = self.build_embed(title=title, description=description, color=color)
+            embed.add_field(name="현재 잔액", value=format_money(get_balance(self.user_id)), inline=False)
+            try:
+                await self.message.edit(embed=embed, view=self)
+            except discord.HTTPException:
+                pass
 
 
 class SupplyDropView(discord.ui.View):
@@ -7719,6 +7831,7 @@ class SeotdaResultView(discord.ui.View):
         if opponent_is_bot:
             add_balance(challenger.id, -self.next_amount)
             match_view = SeotdaMatchView(self.guild_id, self.winner_id, None, self.next_amount)
+            match_view.message = interaction.message
             embed = match_view.build_embed(interaction.guild, interaction.client.user)
             file = match_view.build_table_file(reveal_count=1)
             embed.add_field(name="상대", value="봇", inline=False)
@@ -7786,6 +7899,7 @@ class SeotdaMatchView(discord.ui.View):
         self.challenger_bet_amount = 0
         self.opponent_bet_amount = 0
         self.resolved = False
+        self.message: discord.Message | None = None
 
     def _is_bot_match(self) -> bool:
         return self.opponent_id is None
@@ -7831,6 +7945,11 @@ class SeotdaMatchView(discord.ui.View):
         return build_seotda_table_file(self.challenger_cards, self.opponent_cards, reveal_count)
 
     def _bot_should_bet(self) -> bool:
+        challenger_score = evaluate_seotda_hand(self.challenger_cards)["score"]
+        opponent_score = evaluate_seotda_hand(self.opponent_cards)["score"]
+        if opponent_score >= challenger_score:
+            return True
+
         first_month, is_kwang = self.opponent_cards[0]
         if is_kwang:
             bet_chance = 0.94
@@ -8029,6 +8148,47 @@ class SeotdaMatchView(discord.ui.View):
     async def die(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._handle_choice(interaction, "die")
 
+    async def on_timeout(self):
+        if self.resolved:
+            return
+
+        self.resolved = True
+        challenger_refund = self.amount + self.challenger_bet_amount
+        add_balance(self.challenger_id, challenger_refund)
+
+        opponent_refund = 0
+        if self.opponent_id is not None:
+            opponent_refund = self.amount + self.opponent_bet_amount
+            add_balance(self.opponent_id, opponent_refund)
+
+        for item in self.children:
+            item.disabled = True
+
+        guild = bot.get_guild(self.guild_id)
+        challenger = guild.get_member(self.challenger_id) if guild else None
+        opponent = guild.get_member(self.opponent_id) if guild and self.opponent_id is not None else None
+        refund_lines = [f"{challenger.mention if challenger else '도전자'}: `{format_money(challenger_refund)}` 반환"]
+        if self.opponent_id is not None:
+            refund_lines.append(f"{opponent.mention if opponent else '상대방'}: `{format_money(opponent_refund)}` 반환")
+
+        embed = discord.Embed(
+            title="⌛ 섯다 시간 초과",
+            description="선택 시간이 초과되어 이번 판을 취소하고 실제 납부한 금액을 반환했습니다.",
+            color=0x95A5A6,
+        )
+        embed.add_field(name="반환 내역", value="\n".join(refund_lines), inline=False)
+        add_game_history(
+            self.guild_id,
+            "섯다",
+            f"{challenger.display_name if challenger else self.challenger_id} vs "
+            f"{opponent.display_name if opponent else '봇'} / 시간 초과 취소",
+        )
+        if self.message is not None:
+            try:
+                await self.message.edit(embed=embed, view=self)
+            except discord.HTTPException:
+                pass
+
 
 class SeotdaChallengeView(discord.ui.View):
     def __init__(self, challenger_id: int, opponent_id: int, amount: int):
@@ -8068,6 +8228,7 @@ class SeotdaChallengeView(discord.ui.View):
         add_balance(opponent.id, -self.amount)
 
         match_view = SeotdaMatchView(interaction.guild.id, self.challenger_id, self.opponent_id, self.amount)
+        match_view.message = interaction.message
         embed = match_view.build_embed(interaction.guild, interaction.client.user)
         file = match_view.build_table_file(reveal_count=1)
         await interaction.response.edit_message(embed=embed, attachments=[file], view=match_view)
@@ -12984,6 +13145,10 @@ async def blackjack(interaction: discord.Interaction, amount: int):
     add_balance(interaction.user.id, -amount)
     view = BlackjackView(interaction.guild.id, interaction.user.id, amount)
     await interaction.response.send_message(embed=view.build_embed(), file=view.build_table_file(), view=view)
+    try:
+        view.message = await interaction.original_response()
+    except discord.HTTPException:
+        pass
 
 
 @bot.tree.command(name="경마", description="입력한 금액으로 원하는 말에 베팅합니다.")
@@ -13028,6 +13193,10 @@ async def number_baseball(interaction: discord.Interaction):
         await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
         return
     amount = NUMBER_BASEBALL_COST
+    session_key = (interaction.guild.id, interaction.user.id)
+    if session_key in active_number_baseball_users:
+        await interaction.response.send_message("이미 진행 중인 숫자야구가 있습니다.", ephemeral=True)
+        return
     if not can_afford(interaction.user.id, amount):
         await interaction.response.send_message(
             f"숫자야구 참가비 `{format_money(amount)}`이 부족합니다.",
@@ -13036,8 +13205,18 @@ async def number_baseball(interaction: discord.Interaction):
         return
 
     add_balance(interaction.user.id, -amount)
+    active_number_baseball_users.add(session_key)
     view = NumberBaseballView(interaction.guild.id, interaction.user.id, amount)
-    await interaction.response.send_message(embed=view.build_embed(), view=view)
+    try:
+        await interaction.response.send_message(embed=view.build_embed(), view=view)
+    except Exception:
+        active_number_baseball_users.discard(session_key)
+        add_balance(interaction.user.id, amount)
+        raise
+    try:
+        view.message = await interaction.original_response()
+    except discord.HTTPException:
+        pass
 
 
 @bot.tree.command(name="지뢰찾기", description="입력한 금액으로 지뢰를 피해 보상을 쌓습니다.")
@@ -13057,6 +13236,10 @@ async def minesweeper(interaction: discord.Interaction, amount: int):
     add_balance(interaction.user.id, -amount)
     view = MinesweeperView(interaction.guild.id, interaction.user.id, amount)
     await interaction.response.send_message(embed=view.build_embed(), view=view)
+    try:
+        view.message = await interaction.original_response()
+    except discord.HTTPException:
+        pass
 
 
 @bot.tree.command(name="팀", description="랜덤 팀을 생성합니다.")
@@ -13981,8 +14164,8 @@ async def probability_table(interaction: discord.Interaction):
         name="블랙잭",
         value=(
             "딜러와 21에 가까운 패를 겨룹니다.\n"
-            "일반 승리 / 2배\n"
-            "첫 두 장으로 21 달성 / 2.5배\n"
+            f"일반 승리 / {BLACKJACK_WIN_MULTIPLIER}배\n"
+            f"첫 두 장으로 21 달성 / {BLACKJACK_NATURAL_MULTIPLIER}배\n"
             "무승부 / 원금 반환"
         ),
         inline=False,
@@ -14029,9 +14212,9 @@ async def probability_table(interaction: discord.Interaction):
         name="지뢰찾기",
         value=(
             f"{MINESWEEPER_SIZE}x{MINESWEEPER_SIZE} 보드 / 지뢰 {MINESWEEPER_MINE_COUNT}개\n"
-            "안전 칸을 열수록 배당 상승\n"
-            "1개 1.15배 / 3개 1.50배 / 5개 2.05배\n"
-            "8개 3.80배 / 10개 6.50배 / 13개 15배\n"
+            "안전 칸을 열수록 생존 확률에 맞춰 배당 상승\n"
+            "1개 1.23배 / 3개 1.96배 / 5개 3.39배\n"
+            "8개 10배 / 10개 28배 / 13개 560배\n"
             "지뢰 클릭 시 베팅금 손실"
         ),
         inline=False,
@@ -14675,6 +14858,10 @@ async def seotda(interaction: discord.Interaction, amount: int, member: discord.
         embed.add_field(name="상대", value="봇", inline=False)
         file = match_view.build_table_file(reveal_count=1)
         await interaction.response.send_message(embed=embed, file=file, view=match_view)
+        try:
+            match_view.message = await interaction.original_response()
+        except discord.HTTPException:
+            pass
         return
 
     if member.bot:
