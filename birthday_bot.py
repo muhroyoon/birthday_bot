@@ -321,6 +321,7 @@ bot.tree.add_command(business_group)
 active_recruits = {}
 single_song_tokens: dict[int, int] = {}
 single_song_files: dict[int, str] = {}
+single_song_extract_lock = asyncio.Lock()
 
 # ============================================================
 # 데이터베이스 초기화
@@ -13737,9 +13738,10 @@ async def resolve_single_track_audio(url: str) -> dict:
             "noplaylist": True,
             "default_search": "auto",
             "cachedir": False,
-            "retries": 3,
-            "extractor_retries": 3,
-            "fragment_retries": 3,
+            # A blocked Railway IP gets worse when one click fans out into many retries.
+            "retries": 1,
+            "extractor_retries": 1,
+            "fragment_retries": 1,
             "socket_timeout": 20,
             "concurrent_fragment_downloads": 1,
             "overwrites": True,
@@ -13755,15 +13757,9 @@ async def resolve_single_track_audio(url: str) -> dict:
 
         attempts = []
         if cookie_exists:
-            attempts.extend([
-                (True, None),
-                (True, ["web_safari"]),
-            ])
-        attempts.extend([
-            (False, None),
-            (False, ["web_safari"]),
-            (False, ["web_embedded"]),
-        ])
+            attempts.append((True, ["mweb"]))
+        # Public videos may still work without an account cookie if the cookie session is challenged.
+        attempts.append((False, ["mweb"]))
 
         info = None
         prepared_filename = None
@@ -13774,8 +13770,12 @@ async def resolve_single_track_audio(url: str) -> dict:
             options = dict(base_options)
             if use_cookie:
                 options["cookiefile"] = YOUTUBE_COOKIE_FILE
-            if player_clients:
-                options["extractor_args"] = {"youtube": {"player_client": player_clients}}
+            options["extractor_args"] = {
+                "youtube": {"player_client": player_clients or ["mweb"]},
+                "youtubepot-bgutilscript": {
+                    "server_home": ["/opt/bgutil-ytdlp-pot-provider/server"],
+                },
+            }
 
             with yt_dlp.YoutubeDL(options) as ydl:
                 try:
@@ -13788,8 +13788,8 @@ async def resolve_single_track_audio(url: str) -> dict:
                         blocked_by_youtube = True
                         last_error = RuntimeError(
                             "YouTube가 Railway 서버 요청을 봇으로 판단해 차단했습니다. "
-                            "Deno와 공개 영상용 무쿠키 재시도까지 실패했습니다. "
-                            "이 경우 Railway 공용 IP 자체가 차단된 상태일 수 있습니다."
+                            "PO Token과 공개 영상용 무쿠키 재시도까지 실패했습니다. "
+                            "새 쿠키도 곧 다시 막힌다면 Railway 공용 IP 자체가 차단된 상태일 수 있습니다."
                         )
                         continue
                     if "not made this video available in your country" in error_text:
@@ -13836,7 +13836,9 @@ async def resolve_single_track_audio(url: str) -> dict:
             "webpage_url": info.get("webpage_url") or url,
         }
 
-    return await asyncio.to_thread(extract)
+    # Railway에서 동시 추출 요청이 몰리면 YouTube 차단이 빨라질 수 있다.
+    async with single_song_extract_lock:
+        return await asyncio.to_thread(extract)
 
 
 def cleanup_music_file(file_path: str | None):
