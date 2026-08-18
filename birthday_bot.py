@@ -16075,10 +16075,19 @@ async def savings_auto_claim_loop():
         claim_saving(int(saving_id))
 
 
-@tasks.loop(minutes=1)
-async def attendance_daily_loop():
-    refresh_attendance_data()
+def get_daily_attendance_release_at(now: datetime, guild_id: int) -> datetime:
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    daily_random = random.Random(f"attendance:{guild_id}:{now.date().isoformat()}")
+    return midnight + timedelta(seconds=daily_random.randint(0, 60))
+
+
+@tasks.loop(seconds=1)
+async def attendance_panel_loop():
     now = get_kst_now()
+    if now.hour != 0:
+        return
+
+    refresh_attendance_data()
     today = format_attendance_date(now.date())
 
     for guild in bot.guilds:
@@ -16089,41 +16098,55 @@ async def attendance_daily_loop():
         guild_today_order = guild_data["today_order"]
         guild_meta = guild_data["meta"]
 
-        if now.hour == 0 and now.minute == 0 and guild_meta.get("last_auto_attendance_date") != today:
-            guild_today_order.setdefault(today, [])
-            guild_meta["last_auto_attendance_date"] = today
-            save_attendance_data()
+        release_at = get_daily_attendance_release_at(now, guild.id)
+        if now < release_at or guild_meta.get("last_auto_attendance_date") == today:
+            continue
 
-            attendance_channel_id = get_attendance_channel_id(guild.id)
-            notice_channel_id = get_attendance_midnight_channel_id(guild.id)
-            attendance_channel = bot.get_channel(attendance_channel_id) if attendance_channel_id is not None else None
-            notice_channel = bot.get_channel(notice_channel_id) if notice_channel_id is not None else None
+        guild_today_order.setdefault(today, [])
+        guild_meta["last_auto_attendance_date"] = today
+        save_attendance_data()
 
-            attendance_embed = discord.Embed(
-                title=f"📅 {today} 출석하기",
-                description=build_daily_attendance_description(guild, guild_today_order[today]),
-                color=0x00FFCC,
+        attendance_channel_id = get_attendance_channel_id(guild.id)
+        notice_channel_id = get_attendance_midnight_channel_id(guild.id)
+        attendance_channel = bot.get_channel(attendance_channel_id) if attendance_channel_id is not None else None
+        notice_channel = bot.get_channel(notice_channel_id) if notice_channel_id is not None else None
+
+        attendance_embed = discord.Embed(
+            title=f"📅 {today} 출석하기",
+            description=build_daily_attendance_description(guild, guild_today_order[today]),
+            color=0x00FFCC,
+        )
+        if isinstance(attendance_channel, discord.TextChannel):
+            await attendance_channel.send(
+                content="@here",
+                embed=attendance_embed,
+                view=DailyAttendanceView(),
+                allowed_mentions=discord.AllowedMentions(everyone=True),
             )
-            if isinstance(attendance_channel, discord.TextChannel):
-                await attendance_channel.send(
-                    content="@here",
-                    embed=attendance_embed,
-                    view=DailyAttendanceView(),
-                    allowed_mentions=discord.AllowedMentions(everyone=True),
-                )
 
-            notice_embed = discord.Embed(
-                title="🌙 출석 초기화 완료!",
-                description="🔥 오늘의 1등은 누구??\n\n지금 바로 출석하세요!!",
-                color=0x5865F2,
+        notice_embed = discord.Embed(
+            title="🌙 출석 초기화 완료!",
+            description="🔥 오늘의 1등은 누구??\n\n지금 바로 출석하세요!!",
+            color=0x5865F2,
+        )
+        if isinstance(notice_channel, discord.TextChannel):
+            await notice_channel.send(
+                content="@here",
+                embed=notice_embed,
+                view=MoveToAttendanceView(guild.id),
+                allowed_mentions=discord.AllowedMentions(everyone=True),
             )
-            if isinstance(notice_channel, discord.TextChannel):
-                await notice_channel.send(
-                    content="@here",
-                    embed=notice_embed,
-                    view=MoveToAttendanceView(guild.id),
-                    allowed_mentions=discord.AllowedMentions(everyone=True),
-                )
+
+
+@tasks.loop(minutes=1)
+async def attendance_daily_loop():
+    refresh_attendance_data()
+    now = get_kst_now()
+    today = format_attendance_date(now.date())
+
+    for guild in bot.guilds:
+        guild_data = get_attendance_guild_data(guild.id)
+        guild_meta = guild_data["meta"]
 
         has_guest_settings = (
             guild.id == ATTENDANCE_GUILD_ID
@@ -16200,6 +16223,9 @@ async def on_ready():
 
     if not savings_auto_claim_loop.is_running():
         savings_auto_claim_loop.start()
+
+    if not attendance_panel_loop.is_running():
+        attendance_panel_loop.start()
 
     if not attendance_daily_loop.is_running():
         attendance_daily_loop.start()
