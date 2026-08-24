@@ -261,6 +261,7 @@ SLOT_SYMBOL_EMOJIS = {
     "클로버": "🍀",
     "7": "7️⃣",
 }
+SLOT_IMAGE_ATTACHMENT = "mari_slot.png"
 
 DUCKMONG_FAKE_NAMES = [
     "보안관",
@@ -6638,34 +6639,83 @@ def load_playing_card_image(card: str | None, hidden: bool = False) -> Image.Ima
     return create_fallback_playing_card_image(card, hidden)
 
 
-def create_playing_cards_table_image(rows: list[list[tuple[str | None, bool]]]) -> bytes:
-    card_size = (106, 154)
-    gap = 10
+def create_playing_cards_table_image(
+    rows: list[list[tuple[str | None, bool]]],
+    row_labels: list[str] | None = None,
+    row_scores: list[str | int] | None = None,
+    title: str = "MARI CARD TABLE",
+) -> bytes:
+    card_size = (122, 178)
+    gap = 14
+    side_padding = 34
+    header_height = 74
+    row_header_height = 47
+    row_padding = 18
     row_gap = 18
-    padding = 16
     max_cards = max((len(row) for row in rows), default=1)
-    width = padding * 2 + max_cards * card_size[0] + max(max_cards - 1, 0) * gap
-    height = padding * 2 + len(rows) * card_size[1] + max(len(rows) - 1, 0) * row_gap
-    canvas = Image.new("RGBA", (width, height), (43, 45, 54, 255))
+    cards_width = max_cards * card_size[0] + max(max_cards - 1, 0) * gap
+    width = max(760, cards_width + side_padding * 2 + 24)
+    row_height = row_header_height + card_size[1] + row_padding * 2
+    height = header_height + len(rows) * row_height + max(len(rows) - 1, 0) * row_gap + 28
+    canvas = Image.new("RGBA", (width, height), (15, 17, 25, 255))
+    draw = ImageDraw.Draw(canvas, "RGBA")
 
+    draw.rounded_rectangle((10, 10, width - 10, height - 10), radius=28, fill=(25, 28, 39, 255), outline=(83, 89, 111, 255), width=3)
+    draw.text((width // 2, 43), title, fill=(245, 199, 65), font=get_seotda_image_font(34, True), anchor="mm")
+
+    accent_colors = [(55, 139, 230, 255), (226, 72, 78, 255)]
     for row_index, row in enumerate(rows):
+        accent = accent_colors[row_index % len(accent_colors)]
+        panel_x = side_padding
+        panel_y = header_height + row_index * (row_height + row_gap)
+        panel_right = width - side_padding
+        panel_bottom = panel_y + row_height
+        draw.rounded_rectangle(
+            (panel_x, panel_y, panel_right, panel_bottom),
+            radius=22,
+            fill=(11, 13, 20, 242),
+            outline=accent,
+            width=4,
+        )
+
+        label = row_labels[row_index] if row_labels and row_index < len(row_labels) else f"HAND {row_index + 1}"
+        score = row_scores[row_index] if row_scores and row_index < len(row_scores) else "-"
+        draw.text((panel_x + 22, panel_y + 27), label, fill=(242, 244, 248), font=get_seotda_image_font(25, True), anchor="lm")
+        score_text = f"SCORE  {score}"
+        score_font = get_seotda_image_font(22, True)
+        score_box = draw.textbbox((0, 0), score_text, font=score_font)
+        score_width = score_box[2] - score_box[0] + 32
+        draw.rounded_rectangle(
+            (panel_right - score_width - 16, panel_y + 10, panel_right - 16, panel_y + 44),
+            radius=12,
+            fill=accent,
+        )
+        draw.text((panel_right - 16 - score_width // 2, panel_y + 27), score_text, fill=(255, 255, 255), font=score_font, anchor="mm")
+
         row_width = len(row) * card_size[0] + max(len(row) - 1, 0) * gap
         start_x = (width - row_width) // 2
-        y = padding + row_index * (card_size[1] + row_gap)
+        card_y = panel_y + row_header_height + row_padding
         for card_index, (card, hidden) in enumerate(row):
             card_image = load_playing_card_image(card, hidden=hidden)
             card_image.thumbnail(card_size, Image.Resampling.LANCZOS)
-            x = start_x + card_index * (card_size[0] + gap) + (card_size[0] - card_image.width) // 2
-            canvas.alpha_composite(card_image, (x, y + (card_size[1] - card_image.height) // 2))
+            slot_x = start_x + card_index * (card_size[0] + gap)
+            x = slot_x + (card_size[0] - card_image.width) // 2
+            y = card_y + (card_size[1] - card_image.height) // 2
+            canvas.alpha_composite(card_image, (x, y))
 
     output = io.BytesIO()
     canvas.convert("RGB").save(output, format="PNG", optimize=True)
     return output.getvalue()
 
 
-def build_playing_cards_file(rows: list[list[tuple[str | None, bool]]]) -> discord.File:
+def build_playing_cards_file(
+    rows: list[list[tuple[str | None, bool]]],
+    row_labels: list[str] | None = None,
+    row_scores: list[str | int] | None = None,
+    title: str = "MARI CARD TABLE",
+) -> discord.File:
     return discord.File(
-        io.BytesIO(create_playing_cards_table_image(rows)),
+        io.BytesIO(create_playing_cards_table_image(rows, row_labels, row_scores, title)),
         filename=PLAYING_CARD_ATTACHMENT,
     )
 
@@ -6789,10 +6839,15 @@ class BaccaratView(discord.ui.View):
             "바카라",
             f"{interaction.user.display_name} - 선택:{choice} / 결과:{result} / {'승리' if win else '원금 반환' if push else '패배'}",
         )
-        file = build_playing_cards_file([
-            [(card, False) for card in player_cards],
-            [(card, False) for card in banker_cards],
-        ])
+        file = build_playing_cards_file(
+            [
+                [(card, False) for card in player_cards],
+                [(card, False) for card in banker_cards],
+            ],
+            row_labels=["PLAYER", "BANKER"],
+            row_scores=[player_score, banker_score],
+            title="MARI BACCARAT",
+        )
         await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
 
     async def on_timeout(self):
@@ -7118,10 +7173,17 @@ class BlackjackView(discord.ui.View):
         return embed
 
     def build_table_file(self, reveal_dealer: bool = False) -> discord.File:
-        return build_playing_cards_file([
-            [(card, False) for card in self.player_cards],
-            [(card, index == 1 and not reveal_dealer) for index, card in enumerate(self.dealer_cards)],
-        ])
+        player_value = blackjack_hand_value(self.player_cards)
+        dealer_value = blackjack_hand_value(self.dealer_cards) if reveal_dealer else "?"
+        return build_playing_cards_file(
+            [
+                [(card, False) for card in self.player_cards],
+                [(card, index == 1 and not reveal_dealer) for index, card in enumerate(self.dealer_cards)],
+            ],
+            row_labels=["YOUR HAND", "DEALER"],
+            row_scores=[player_value, dealer_value],
+            title="MARI BLACKJACK",
+        )
 
     async def settle(self, interaction: discord.Interaction, reason: str):
         if self.resolved:
@@ -13038,32 +13100,106 @@ async def resolve_manual_credit_debt_command(interaction: discord.Interaction, d
 # 게임 명령어
 # ----------------------------
 
-def build_slot_machine_display(center_symbols: list[str], symbols: list[str]) -> str:
-    top_symbols = [random.choice(symbols) for _ in range(3)]
-    bottom_symbols = [random.choice(symbols) for _ in range(3)]
+def draw_slot_symbol(draw: ImageDraw.ImageDraw, symbol: str, box: tuple[int, int, int, int]):
+    left, top, right, bottom = box
+    center_x = (left + right) // 2
+    center_y = (top + bottom) // 2
+    scale = min(right - left, bottom - top)
 
-    def display_row(row: list[str]) -> str:
-        return "┃ " + " ┃ ".join(SLOT_SYMBOL_EMOJIS.get(symbol, symbol) for symbol in row) + " ┃"
+    if symbol == "7":
+        font = get_seotda_image_font(int(scale * 0.72), True)
+        draw.text((center_x + 3, center_y + 4), "7", fill=(92, 16, 22), font=font, anchor="mm")
+        draw.text((center_x, center_y), "7", fill=(239, 55, 63), stroke_width=3, stroke_fill=(255, 214, 72), font=font, anchor="mm")
+        return
 
-    return "\n".join(
-        [
-            "┏━━━━┳━━━━┳━━━━┓",
-            display_row(top_symbols),
-            "┣━━━━╋━━━━╋━━━━┫",
-            display_row(center_symbols),
-            "┣━━━━╋━━━━╋━━━━┫",
-            display_row(bottom_symbols),
-            "┗━━━━┻━━━━┻━━━━┛",
-        ]
+    if symbol == "체리":
+        radius = int(scale * 0.17)
+        draw.line((center_x - radius, center_y - radius, center_x, center_y - int(scale * 0.34)), fill=(64, 139, 69), width=max(4, scale // 24))
+        draw.line((center_x + radius, center_y - radius, center_x, center_y - int(scale * 0.34)), fill=(64, 139, 69), width=max(4, scale // 24))
+        draw.ellipse((center_x - radius * 2, center_y - radius // 2, center_x, center_y + radius * 3 // 2), fill=(220, 35, 54), outline=(132, 17, 31), width=3)
+        draw.ellipse((center_x, center_y - radius // 2, center_x + radius * 2, center_y + radius * 3 // 2), fill=(242, 47, 65), outline=(132, 17, 31), width=3)
+        return
+
+    if symbol == "레몬":
+        radius_x = int(scale * 0.28)
+        radius_y = int(scale * 0.20)
+        draw.ellipse((center_x - radius_x, center_y - radius_y, center_x + radius_x, center_y + radius_y), fill=(250, 211, 45), outline=(207, 154, 24), width=4)
+        draw.polygon([(center_x + radius_x - 3, center_y), (center_x + radius_x + 13, center_y - 8), (center_x + radius_x + 10, center_y + 8)], fill=(250, 211, 45))
+        draw.ellipse((center_x - radius_x // 2, center_y - radius_y // 2, center_x - radius_x // 3, center_y - radius_y // 3), fill=(255, 242, 133))
+        return
+
+    if symbol == "포도":
+        radius = int(scale * 0.10)
+        grape_positions = [(-1, -1), (0, -1), (1, -1), (-0.5, 0), (0.5, 0), (0, 1)]
+        for offset_x, offset_y in grape_positions:
+            x = center_x + int(offset_x * radius * 1.7)
+            y = center_y + int(offset_y * radius * 1.7)
+            draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=(131, 72, 190), outline=(78, 39, 127), width=3)
+        draw.line((center_x, center_y - radius * 2, center_x + radius, center_y - radius * 3), fill=(68, 139, 74), width=5)
+        return
+
+    if symbol == "사과":
+        radius = int(scale * 0.25)
+        draw.ellipse((center_x - radius, center_y - radius + 4, center_x + radius, center_y + radius), fill=(230, 47, 59), outline=(143, 23, 31), width=4)
+        draw.line((center_x, center_y - radius + 8, center_x + 4, center_y - radius - 18), fill=(105, 65, 32), width=6)
+        draw.ellipse((center_x + 2, center_y - radius - 20, center_x + 28, center_y - radius + 1), fill=(69, 168, 79))
+        return
+
+    radius = int(scale * 0.14)
+    clover_green = (51, 184, 92)
+    for offset_x, offset_y in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+        x = center_x + offset_x * radius
+        y = center_y + offset_y * radius
+        draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=clover_green, outline=(25, 112, 55), width=3)
+    draw.line((center_x, center_y + radius, center_x + radius, center_y + radius * 3), fill=(25, 112, 55), width=6)
+
+
+def create_slot_machine_image(center_symbols: list[str], symbols: list[str]) -> bytes:
+    rows = [
+        [random.choice(symbols) for _ in range(3)],
+        center_symbols,
+        [random.choice(symbols) for _ in range(3)],
+    ]
+    width, height = 720, 490
+    canvas = Image.new("RGB", (width, height), (15, 17, 25))
+    draw = ImageDraw.Draw(canvas)
+    draw.rounded_rectangle((12, 12, width - 12, height - 12), radius=28, fill=(25, 28, 39), outline=(231, 181, 42), width=4)
+    draw.text((width // 2, 49), "MARI SLOT", fill=(255, 218, 91), font=get_seotda_image_font(38, True), anchor="mm")
+
+    grid_left, grid_top = 72, 88
+    cell_width, cell_height = 192, 116
+    for row_index, row in enumerate(rows):
+        for column_index, symbol in enumerate(row):
+            x = grid_left + column_index * cell_width
+            y = grid_top + row_index * cell_height
+            is_center = row_index == 1
+            fill = (252, 249, 235) if is_center else (229, 231, 235)
+            outline = (245, 189, 45) if is_center else (104, 109, 126)
+            draw.rounded_rectangle((x, y, x + cell_width - 12, y + cell_height - 10), radius=16, fill=fill, outline=outline, width=5 if is_center else 3)
+            draw_slot_symbol(draw, symbol, (x + 23, y + 10, x + cell_width - 35, y + cell_height - 20))
+
+    draw.rounded_rectangle((72, 445, width - 72, 467), radius=10, fill=(117, 24, 33))
+    draw.rectangle((width // 2 - 95, 445, width // 2 + 95, 467), fill=(239, 187, 43))
+
+    output = io.BytesIO()
+    canvas.save(output, format="PNG", optimize=True)
+    return output.getvalue()
+
+
+def build_slot_image_file(center_symbols: list[str], symbols: list[str]) -> discord.File:
+    return discord.File(
+        io.BytesIO(create_slot_machine_image(center_symbols, symbols)),
+        filename=SLOT_IMAGE_ATTACHMENT,
     )
 
 
-def build_slot_spin_embed(center_symbols: list[str], symbols: list[str], status: str) -> discord.Embed:
+def build_slot_spin_embed(status: str) -> discord.Embed:
     embed = discord.Embed(
         title="🎰 MARI SLOT",
-        description=f"{build_slot_machine_display(center_symbols, symbols)}\n\n**{status}**",
+        description=f"**{status}**",
         color=0xF1C40F,
     )
+    embed.set_image(url=f"attachment://{SLOT_IMAGE_ATTACHMENT}")
     embed.set_footer(text="릴이 모두 멈출 때까지 기다려주세요.")
     return embed
 
@@ -13141,7 +13277,8 @@ async def slot(interaction: discord.Interaction, amount: int):
 
     rolling_symbols = [random.choice(symbols) for _ in range(3)]
     await interaction.response.send_message(
-        embed=build_slot_spin_embed(rolling_symbols, symbols, "릴 회전 중 · · ·")
+        embed=build_slot_spin_embed("릴 회전 중 · · ·"),
+        file=build_slot_image_file(rolling_symbols, symbols),
     )
     message = await interaction.original_response()
 
@@ -13153,23 +13290,27 @@ async def slot(interaction: discord.Interaction, amount: int):
             for index in range(3)
         ]
         await message.edit(
-            embed=build_slot_spin_embed(rolling_symbols, symbols, stop_messages[reel_index])
+            embed=build_slot_spin_embed(stop_messages[reel_index]),
+            attachments=[build_slot_image_file(rolling_symbols, symbols)],
         )
 
     await asyncio.sleep(0.35)
     embed = discord.Embed(
         title=f"🎰 MARI SLOT · {result_title}",
         description=(
-            f"{build_slot_machine_display(result, symbols)}\n\n"
             f"### {result_title}\n{result_text}"
         ),
         color=color,
     )
+    embed.set_image(url=f"attachment://{SLOT_IMAGE_ATTACHMENT}")
     embed.add_field(name="베팅", value=format_money(amount), inline=True)
     embed.add_field(name="당첨금", value=format_money(winnings), inline=True)
     embed.add_field(name="현재 잔액", value=format_money(balance_now), inline=True)
     embed.set_footer(text="행운은 다음 회전에도 계속됩니다.")
-    await message.edit(embed=embed)
+    await message.edit(
+        embed=embed,
+        attachments=[build_slot_image_file(result, symbols)],
+    )
 
 
 
