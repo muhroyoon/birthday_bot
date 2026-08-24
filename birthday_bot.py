@@ -270,6 +270,15 @@ DUCKMONG_FAKE_NAMES = [
     "연예인",
     "한탕주의자",
 ]
+DUCKMONG_ASSET_DIR = Path(__file__).resolve().parent / "assets" / "duckmong"
+DUCKMONG_LINEUP_PATH = DUCKMONG_ASSET_DIR / "character_lineup.png"
+DUCKMONG_LINEUP_ATTACHMENT = "duckmong_characters.png"
+DUCKMONG_RESULT_ATTACHMENT = "duckmong_result.png"
+DUCKMONG_CHARACTER_CROPS = [
+    (95, 105, 455, 980),
+    (370, 0, 790, 995),
+    (700, 55, 1060, 990),
+]
 
 SEOTDA_SPECIAL_RANKS = {
     (1, 2): ("알리", 8000),
@@ -6950,7 +6959,7 @@ class RockPaperScissorsMatchView(discord.ui.View):
         embed.add_field(name="도전자 잔액", value=format_money(get_balance(self.challenger_id)), inline=True)
         if not self._is_bot_match():
             embed.add_field(name="상대 잔액", value=format_money(get_balance(self.opponent_id)), inline=True)
-        await interaction.response.edit_message(embed=embed, view=self)
+        await interaction.response.edit_message(embed=embed, view=self, attachments=attachments)
 
     async def on_timeout(self):
         if self.resolved:
@@ -10465,6 +10474,85 @@ class KillBetManualScoreSelectView(discord.ui.View):
         )
 
 
+def build_duckmong_result_file(fake_names: list[str], hidden_results: dict[str, str]) -> discord.File | None:
+    if not DUCKMONG_LINEUP_PATH.exists():
+        print(f"덕몽 캐릭터 이미지 파일 없음: {DUCKMONG_LINEUP_PATH}")
+        return None
+
+    source = Image.open(DUCKMONG_LINEUP_PATH).convert("RGBA")
+    width, height = 960, 470
+    canvas = Image.new("RGBA", (width, height), (18, 20, 29, 255))
+    draw = ImageDraw.Draw(canvas, "RGBA")
+    draw.rounded_rectangle(
+        (12, 12, width - 12, height - 12),
+        radius=28,
+        fill=(27, 30, 43, 255),
+        outline=(91, 98, 125, 255),
+        width=3,
+    )
+    draw.text(
+        (width // 2, 42),
+        "IDENTITY REVEAL",
+        fill=(248, 204, 70),
+        font=get_seotda_image_font(34, True),
+        anchor="mm",
+    )
+
+    role_labels = {"오리": "DUCK", "거위": "GOOSE", "팰리컨": "PELICAN"}
+    role_colors = {
+        "오리": (46, 204, 113, 255),
+        "거위": (231, 76, 60, 255),
+        "팰리컨": (52, 152, 219, 255),
+    }
+    card_width = 274
+    card_height = 360
+    gap = 22
+    start_x = (width - (card_width * 3 + gap * 2)) // 2
+
+    for index, (fake_name, crop_box) in enumerate(zip(fake_names, DUCKMONG_CHARACTER_CROPS), start=1):
+        role = hidden_results[fake_name]
+        role_color = role_colors[role]
+        x = start_x + (index - 1) * (card_width + gap)
+        y = 78
+        draw.rounded_rectangle(
+            (x, y, x + card_width, y + card_height),
+            radius=22,
+            fill=(12, 14, 22, 245),
+            outline=role_color,
+            width=5,
+        )
+
+        portrait = source.crop(crop_box)
+        portrait.thumbnail((card_width - 24, 265), Image.Resampling.LANCZOS)
+        portrait_x = x + (card_width - portrait.width) // 2
+        portrait_y = y + 18 + (265 - portrait.height)
+        canvas.alpha_composite(portrait, (portrait_x, portrait_y))
+
+        draw.rectangle(
+            (x + 5, y + 286, x + card_width - 5, y + card_height - 5),
+            fill=(9, 11, 18, 238),
+        )
+        draw.text(
+            (x + card_width // 2, y + 306),
+            f"CARD {index}",
+            fill=(183, 188, 205),
+            font=get_seotda_image_font(18, True),
+            anchor="mm",
+        )
+        draw.text(
+            (x + card_width // 2, y + 338),
+            role_labels[role],
+            fill=role_color,
+            font=get_seotda_image_font(27, True),
+            anchor="mm",
+        )
+
+    output = io.BytesIO()
+    canvas.convert("RGB").save(output, format="PNG", quality=92, optimize=True)
+    output.seek(0)
+    return discord.File(output, filename=DUCKMONG_RESULT_ATTACHMENT)
+
+
 class DuckmongView(discord.ui.View):
     def __init__(self, user_id: int, bet_amount: int, fake_names: list[str], hidden_results: dict[str, str]):
         super().__init__(timeout=60)
@@ -10474,8 +10562,8 @@ class DuckmongView(discord.ui.View):
         self.hidden_results = hidden_results
         self.resolved = False
 
-        for fake_name in fake_names:
-            self.add_item(DuckmongChoiceButton(fake_name))
+        for index, fake_name in enumerate(fake_names, start=1):
+            self.add_item(DuckmongChoiceButton(fake_name, index))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
@@ -10509,20 +10597,29 @@ class DuckmongView(discord.ui.View):
         for item in self.children:
             item.disabled = True
 
-        reveal_lines = []
-        for name in self.fake_names:
-            reveal_lines.append(f"{name} -> {self.hidden_results[name]}")
-
         embed = discord.Embed(
-            title="🦆 오리를 찾아라 결과",
+            title="🦆 DUCKMONG · 정체 공개",
             description=(
                 f"선택한 직업: **{fake_name}**\n"
-                f"{result_text}\n\n"
-                f"배치 결과:\n" + "\n".join(reveal_lines)
+                f"{result_text}"
             ),
             color=color,
         )
+        role_icons = {"오리": "🦆", "거위": "🪿", "팰리컨": "🐦"}
+        for index, name in enumerate(self.fake_names, start=1):
+            role = self.hidden_results[name]
+            embed.add_field(
+                name=f"{index}️⃣ {name}",
+                value=f"{role_icons[role]} **{role}**",
+                inline=True,
+            )
         embed.add_field(name="현재 잔액", value=format_money(get_balance(self.user_id)), inline=False)
+
+        result_file = build_duckmong_result_file(self.fake_names, self.hidden_results)
+        attachments = []
+        if result_file is not None:
+            attachments.append(result_file)
+            embed.set_image(url=f"attachment://{DUCKMONG_RESULT_ATTACHMENT}")
 
         add_game_history(
             interaction.guild.id,
@@ -10530,7 +10627,7 @@ class DuckmongView(discord.ui.View):
             f"{interaction.user.display_name} - 선택:{fake_name} / 결과:{result_type}"
         )
 
-        await interaction.response.edit_message(embed=embed, view=self)
+        await interaction.response.edit_message(embed=embed, view=self, attachments=attachments)
 
     async def on_timeout(self):
         if self.resolved:
@@ -10542,8 +10639,9 @@ class DuckmongView(discord.ui.View):
 
 
 class DuckmongChoiceButton(discord.ui.Button):
-    def __init__(self, fake_name: str):
-        super().__init__(label=fake_name, style=discord.ButtonStyle.primary)
+    def __init__(self, fake_name: str, index: int):
+        number_emojis = ["1️⃣", "2️⃣", "3️⃣"]
+        super().__init__(label=fake_name, emoji=number_emojis[index - 1], style=discord.ButtonStyle.primary)
         self.fake_name = fake_name
 
     async def callback(self, interaction: discord.Interaction):
@@ -12940,6 +13038,35 @@ async def resolve_manual_credit_debt_command(interaction: discord.Interaction, d
 # 게임 명령어
 # ----------------------------
 
+def build_slot_machine_display(center_symbols: list[str], symbols: list[str]) -> str:
+    top_symbols = [random.choice(symbols) for _ in range(3)]
+    bottom_symbols = [random.choice(symbols) for _ in range(3)]
+
+    def display_row(row: list[str]) -> str:
+        return "┃ " + " ┃ ".join(SLOT_SYMBOL_EMOJIS.get(symbol, symbol) for symbol in row) + " ┃"
+
+    return "\n".join(
+        [
+            "┏━━━━┳━━━━┳━━━━┓",
+            display_row(top_symbols),
+            "┣━━━━╋━━━━╋━━━━┫",
+            display_row(center_symbols),
+            "┣━━━━╋━━━━╋━━━━┫",
+            display_row(bottom_symbols),
+            "┗━━━━┻━━━━┻━━━━┛",
+        ]
+    )
+
+
+def build_slot_spin_embed(center_symbols: list[str], symbols: list[str], status: str) -> discord.Embed:
+    embed = discord.Embed(
+        title="🎰 MARI SLOT",
+        description=f"{build_slot_machine_display(center_symbols, symbols)}\n\n**{status}**",
+        color=0xF1C40F,
+    )
+    embed.set_footer(text="릴이 모두 멈출 때까지 기다려주세요.")
+    return embed
+
 @bot.tree.command(name="슬롯", description="입력한 금액으로 슬롯머신을 돌립니다.")
 async def slot(interaction: discord.Interaction, amount: int):
     if not await ensure_not_blacklisted_for_gambling(interaction):
@@ -12963,8 +13090,6 @@ async def slot(interaction: discord.Interaction, amount: int):
         second = first if random.random() < 0.05 else random.choice(symbols)
         third = first if random.random() < 0.05 else random.choice(symbols)
         result = [first, second, third]
-    result_display = " | ".join(SLOT_SYMBOL_EMOJIS.get(symbol, symbol) for symbol in result)
-
     multiplier = 0
 
     if len(set(result)) == 1:
@@ -12996,13 +13121,16 @@ async def slot(interaction: discord.Interaction, amount: int):
     balance_now = get_balance(interaction.user.id)
 
     if multiplier == 0:
-        desc = f"{result_display}\n\n아쉽네요... `{format_money(amount)}`을 잃었습니다.\n현재 잔액: `{format_money(balance_now)}`"
+        result_title = "꽝"
+        result_text = f"아쉽네요. `{format_money(amount)}`을 잃었습니다."
         color = 0xE74C3C
     elif len(set(result)) == 1:
-        desc = f"{result_display}\n\n대박! `{multiplier}배` 당첨으로 `{format_money(winnings)}`을 획득했습니다.\n현재 잔액: `{format_money(balance_now)}`"
+        result_title = "JACKPOT!"
+        result_text = f"`{multiplier}배` 당첨으로 `{format_money(winnings)}`을 획득했습니다."
         color = 0x2ECC71
     else:
-        desc = f"{result_display}\n\n2개 일치! `{multiplier}배` 보상으로 `{format_money(winnings)}`을 획득했습니다.\n현재 잔액: `{format_money(balance_now)}`"
+        result_title = "2개 일치"
+        result_text = f"`{multiplier}배` 보상으로 `{format_money(winnings)}`을 획득했습니다."
         color = 0x3498DB
 
     add_game_history(
@@ -13011,8 +13139,37 @@ async def slot(interaction: discord.Interaction, amount: int):
         f"{interaction.user.display_name} - {' | '.join(result)} - {('꽝' if multiplier == 0 else f'{multiplier}배')}"
     )
 
-    embed = discord.Embed(title="🎰 슬롯 결과", description=desc, color=color)
-    await interaction.response.send_message(embed=embed)
+    rolling_symbols = [random.choice(symbols) for _ in range(3)]
+    await interaction.response.send_message(
+        embed=build_slot_spin_embed(rolling_symbols, symbols, "릴 회전 중 · · ·")
+    )
+    message = await interaction.original_response()
+
+    stop_messages = ["첫 번째 릴 정지", "두 번째 릴 정지", "마지막 릴 정지!"]
+    for reel_index in range(3):
+        await asyncio.sleep(0.55)
+        rolling_symbols = [
+            result[index] if index <= reel_index else random.choice(symbols)
+            for index in range(3)
+        ]
+        await message.edit(
+            embed=build_slot_spin_embed(rolling_symbols, symbols, stop_messages[reel_index])
+        )
+
+    await asyncio.sleep(0.35)
+    embed = discord.Embed(
+        title=f"🎰 MARI SLOT · {result_title}",
+        description=(
+            f"{build_slot_machine_display(result, symbols)}\n\n"
+            f"### {result_title}\n{result_text}"
+        ),
+        color=color,
+    )
+    embed.add_field(name="베팅", value=format_money(amount), inline=True)
+    embed.add_field(name="당첨금", value=format_money(winnings), inline=True)
+    embed.add_field(name="현재 잔액", value=format_money(balance_now), inline=True)
+    embed.set_footer(text="행운은 다음 회전에도 계속됩니다.")
+    await message.edit(embed=embed)
 
 
 
@@ -14815,22 +14972,36 @@ async def duckmong(interaction: discord.Interaction, amount: int):
     hidden_results = {fake_name: hidden_roles[idx] for idx, fake_name in enumerate(fake_names)}
 
     embed = discord.Embed(
-        title="🦆 오리를 찾아라",
+        title="🦆 DUCKMONG · 오리를 찾아라",
         description=(
             f"베팅 금액: `{format_money(amount)}`\n\n"
-            "세 직업 중 하나를 골라주세요.\n"
-            "그 안에는 오리, 거위, 팰리컨이 하나씩 숨어 있습니다.\n\n"
-            "오리: 베팅금액만큼 추가 획득\n"
-            "거위: 전부 잃음\n"
-            "팰리컨: 원금 반환"
+            "아래 세 직업 중 진짜 **오리**가 숨어 있는 카드를 골라주세요.\n"
+            "각 카드에는 오리, 거위, 팰리컨이 하나씩 배치되어 있습니다."
         ),
         color=0xF1C40F,
     )
-
-    await interaction.response.send_message(
-        embed=embed,
-        view=DuckmongView(interaction.user.id, amount, fake_names, hidden_results),
+    embed.add_field(name="🦆 오리", value="베팅금액만큼 추가 획득", inline=True)
+    embed.add_field(name="🪿 거위", value="베팅금액 전부 잃음", inline=True)
+    embed.add_field(name="🐦 팰리컨", value="베팅금액 원금 반환", inline=True)
+    embed.add_field(
+        name="후보 카드",
+        value="\n".join(f"{index}️⃣ **{name}**" for index, name in enumerate(fake_names, start=1)),
+        inline=False,
     )
+    embed.set_footer(text="제한 시간 60초 · 선택한 뒤에는 변경할 수 없습니다.")
+
+    send_kwargs = {
+        "embed": embed,
+        "view": DuckmongView(interaction.user.id, amount, fake_names, hidden_results),
+    }
+    if DUCKMONG_LINEUP_PATH.exists():
+        embed.set_image(url=f"attachment://{DUCKMONG_LINEUP_ATTACHMENT}")
+        send_kwargs["file"] = discord.File(
+            str(DUCKMONG_LINEUP_PATH),
+            filename=DUCKMONG_LINEUP_ATTACHMENT,
+        )
+
+    await interaction.response.send_message(**send_kwargs)
 
 
 @bot.tree.command(name="섯다", description="봇 또는 다른 유저와 일반 섯다 족보로 대결합니다.")
