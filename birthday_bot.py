@@ -8,6 +8,7 @@ import tempfile
 import re
 import json
 import io
+import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -14103,7 +14104,7 @@ def get_youtube_cookie_status_text() -> str:
     )
 
 
-async def resolve_single_track_audio(url: str) -> dict:
+async def resolve_single_track_audio(url: str, guild_id: int) -> dict:
     try:
         import yt_dlp
     except ImportError:
@@ -14121,6 +14122,9 @@ async def resolve_single_track_audio(url: str) -> dict:
 
     def extract():
         MUSIC_TEMP_DIR.mkdir(parents=True, exist_ok=True)
+        guild_music_dir = MUSIC_TEMP_DIR / str(guild_id)
+        guild_music_dir.mkdir(parents=True, exist_ok=True)
+        request_id = uuid.uuid4().hex
         if shutil.which("deno") is None:
             raise RuntimeError(
                 "YouTube 재생에 필요한 Deno를 찾지 못했습니다. "
@@ -14148,7 +14152,7 @@ async def resolve_single_track_audio(url: str) -> dict:
             "concurrent_fragment_downloads": 1,
             "overwrites": True,
             "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
-            "outtmpl": str(MUSIC_TEMP_DIR / "%(id)s-%(epoch)s-%(format_id)s.%(ext)s"),
+            "outtmpl": str(guild_music_dir / f"{request_id}-%(id)s-%(format_id)s.%(ext)s"),
             "progress_hooks": [download_hook],
             "http_headers": {
                 "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
@@ -14250,6 +14254,10 @@ def cleanup_music_file(file_path: str | None):
         path = Path(file_path)
         if path.exists() and path.is_file() and MUSIC_TEMP_DIR in path.parents:
             path.unlink()
+            try:
+                path.parent.rmdir()
+            except OSError:
+                pass
     except Exception as e:
         print(f"노래 임시 파일 삭제 실패: {type(e).__name__}: {e}")
 
@@ -14366,13 +14374,19 @@ async def play_single_song(interaction: discord.Interaction, url: str):
         if voice_client is None:
             voice_client = await voice_channel.connect(timeout=10, reconnect=False)
         elif voice_client.channel != voice_channel:
-            await voice_client.move_to(voice_channel)
+            current_channel = voice_client.channel
+            await interaction.followup.send(
+                f"현재 {current_channel.mention}에서 노래를 재생하고 있어 다른 채널로 이동할 수 없습니다.\n"
+                "기존 재생을 종료하려면 `/노래정지`를 사용해주세요.",
+                ephemeral=True,
+            )
+            return
     except Exception as e:
         await interaction.followup.send(f"음성채널에 연결하지 못했습니다: `{type(e).__name__}: {e}`")
         return
 
     try:
-        audio_info = await resolve_single_track_audio(url)
+        audio_info = await resolve_single_track_audio(url, interaction.guild.id)
         ffmpeg_path = get_ffmpeg_executable_path()
         source = discord.FFmpegOpusAudio(
             audio_info["file_path"],
@@ -14394,7 +14408,9 @@ async def play_single_song(interaction: discord.Interaction, url: str):
 
     def after_play(error):
         if error:
-            print(f"노래 재생 오류: {error}")
+            print(f"노래 재생 오류 (서버 {interaction.guild.id}): {error}")
+        else:
+            print(f"노래 재생 종료 (서버 {interaction.guild.id}): {audio_info['title']}")
         cleanup_music_file(current_file_path)
         if single_song_files.get(interaction.guild.id) == current_file_path:
             single_song_files.pop(interaction.guild.id, None)
@@ -14402,6 +14418,10 @@ async def play_single_song(interaction: discord.Interaction, url: str):
 
     try:
         voice_client.play(source, after=after_play)
+        print(
+            f"노래 재생 시작 (서버 {interaction.guild.id}, 채널 {voice_channel.id}): "
+            f"{audio_info['title']}"
+        )
     except Exception as e:
         cleanup_guild_music_file(interaction.guild.id)
         await interaction.followup.send(f"재생 시작 중 오류가 발생했습니다: `{type(e).__name__}: {e}`")
