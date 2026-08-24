@@ -965,6 +965,17 @@ cursor.execute(
 
 cursor.execute(
     """
+    CREATE TABLE IF NOT EXISTS recruit_channels(
+        guild_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (guild_id, channel_id)
+    )
+    """
+)
+
+cursor.execute(
+    """
     CREATE TABLE IF NOT EXISTS kill_bet_sessions(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         guild_id TEXT NOT NULL,
@@ -1265,6 +1276,50 @@ def get_team_voice_create_channel_ids(guild_id: int) -> list[int]:
 
 def is_team_voice_create_channel(guild_id: int, channel_id: int) -> bool:
     return channel_id in get_team_voice_create_channel_ids(guild_id)
+
+
+def add_recruit_channel(guild_id: int, channel_id: int):
+    cursor.execute(
+        """
+        INSERT OR REPLACE INTO recruit_channels(guild_id, channel_id, created_at)
+        VALUES (?, ?, ?)
+        """,
+        (str(guild_id), str(channel_id), dt_to_db(get_kst_now())),
+    )
+    conn.commit()
+
+
+def remove_recruit_channel(guild_id: int, channel_id: int):
+    cursor.execute(
+        "DELETE FROM recruit_channels WHERE guild_id=? AND channel_id=?",
+        (str(guild_id), str(channel_id)),
+    )
+    conn.commit()
+
+
+def get_recruit_channel_ids(guild_id: int) -> list[int]:
+    cursor.execute(
+        "SELECT channel_id FROM recruit_channels WHERE guild_id=? ORDER BY created_at ASC",
+        (str(guild_id),),
+    )
+    channel_ids = []
+    for (channel_id,) in cursor.fetchall():
+        try:
+            channel_ids.append(int(channel_id))
+        except ValueError:
+            continue
+
+    legacy_channel_id = get_guild_setting_channel_id(guild_id, "recruit_channel_id")
+    if legacy_channel_id is not None and legacy_channel_id not in channel_ids:
+        add_recruit_channel(guild_id, legacy_channel_id)
+        delete_guild_setting(guild_id, "recruit_channel_id")
+        channel_ids.append(legacy_channel_id)
+
+    return channel_ids
+
+
+def is_recruit_channel(guild_id: int, channel_id: int) -> bool:
+    return channel_id in get_recruit_channel_ids(guild_id)
 
 
 def add_temporary_voice_channel(guild_id: int, channel_id: int):
@@ -11547,11 +11602,57 @@ async def set_rule_log_channel(interaction: discord.Interaction):
     await interaction.response.send_message(f"규칙 로그 채널을 {interaction.channel.mention} 으로 설정했습니다.", ephemeral=True)
 
 
-@settings_group.command(name="구인채널", description="현재 채널을 구인 채널로 설정합니다.")
+@settings_group.command(name="구인채널", description="구인 명령어를 사용할 채널을 등록하거나 해제합니다.")
+@app_commands.rename(action="작업", channel="채널")
+@app_commands.describe(action="등록 또는 해제를 선택합니다.", channel="대상 채널. 비워두면 현재 채널을 사용합니다.")
+@app_commands.choices(
+    action=[
+        app_commands.Choice(name="등록", value="add"),
+        app_commands.Choice(name="해제", value="remove"),
+    ]
+)
 @app_commands.checks.has_permissions(administrator=True)
-async def set_recruit_channel(interaction: discord.Interaction):
-    set_guild_setting(interaction.guild.id, "recruit_channel_id", str(interaction.channel.id))
-    await interaction.response.send_message(f"구인 채널을 {interaction.channel.mention} 으로 설정했습니다.", ephemeral=True)
+async def set_recruit_channel(
+    interaction: discord.Interaction,
+    action: str = "add",
+    channel: discord.TextChannel | None = None,
+):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    target_channel = channel or interaction.channel
+    if not isinstance(target_channel, discord.TextChannel):
+        await interaction.response.send_message("텍스트 채널을 선택해주세요.", ephemeral=True)
+        return
+
+    channel_ids = get_recruit_channel_ids(interaction.guild.id)
+    if action == "remove":
+        if target_channel.id not in channel_ids:
+            await interaction.response.send_message(
+                f"{target_channel.mention}은 등록된 구인 채널이 아닙니다.",
+                ephemeral=True,
+            )
+            return
+        remove_recruit_channel(interaction.guild.id, target_channel.id)
+        action_text = "해제"
+    else:
+        if target_channel.id in channel_ids:
+            await interaction.response.send_message(
+                f"{target_channel.mention}은 이미 구인 채널로 등록되어 있습니다.",
+                ephemeral=True,
+            )
+            return
+        add_recruit_channel(interaction.guild.id, target_channel.id)
+        action_text = "등록"
+
+    updated_channel_ids = get_recruit_channel_ids(interaction.guild.id)
+    channel_list = "\n".join(f"• <#{channel_id}>" for channel_id in updated_channel_ids) or "등록된 채널 없음"
+    await interaction.response.send_message(
+        f"{target_channel.mention} 구인 채널 {action_text}을 완료했습니다.\n\n"
+        f"**현재 구인 채널**\n{channel_list}",
+        ephemeral=True,
+    )
 
 
 @settings_group.command(name="대출알림채널", description="현재 채널을 대출 상환 알림 채널로 설정합니다.")
@@ -11843,7 +11944,6 @@ async def show_settings(interaction: discord.Interaction):
         ("등업 로그", "upgrade_log_channel_id"),
         ("퇴장 로그", "leave_log_channel_id"),
         ("규칙 로그", "rule_log_channel_id"),
-        ("구인 채널", "recruit_channel_id"),
         ("대출 알림", "loan_reminder_channel_id"),
         ("음성 로그", "voice_activity_log_channel_id"),
         ("출석 채널", "attendance_channel_id"),
@@ -11860,6 +11960,10 @@ async def show_settings(interaction: discord.Interaction):
     embed = discord.Embed(title="채널 설정", color=0x5865F2)
     for label, key in keys:
         embed.add_field(name=label, value=fmt(get_guild_setting(guild_id, key)), inline=False)
+
+    recruit_channel_ids = get_recruit_channel_ids(guild_id)
+    recruit_channel_text = "\n".join(f"<#{channel_id}>" for channel_id in recruit_channel_ids)
+    embed.add_field(name="구인 채널", value=recruit_channel_text or "미설정", inline=False)
 
     guest_role_id = get_guild_setting_role_id(guild_id, "guest_role_id")
     attendance_role_ids = get_attendance_eligible_role_ids(guild_id)
@@ -14189,12 +14293,20 @@ async def disconnect_music_after_finish(guild: discord.Guild, song_token: int):
 
 @bot.tree.command(name="구인", description="배그 구인")
 async def recruit(interaction: discord.Interaction, message: str):
-    recruit_channel_id = get_guild_setting_channel_id(interaction.guild.id, "recruit_channel_id")
-    if recruit_channel_id is None:
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    recruit_channel_ids = get_recruit_channel_ids(interaction.guild.id)
+    if not recruit_channel_ids:
         await interaction.response.send_message("구인 채널이 아직 설정되지 않았습니다.", ephemeral=True)
         return
-    if interaction.channel.id != recruit_channel_id:
-        await interaction.response.send_message("구인 채널에서만 사용 가능합니다.", ephemeral=True)
+    if interaction.channel.id not in recruit_channel_ids:
+        channel_mentions = " ".join(f"<#{channel_id}>" for channel_id in recruit_channel_ids)
+        await interaction.response.send_message(
+            f"등록된 구인 채널에서만 사용할 수 있습니다.\n{channel_mentions}",
+            ephemeral=True,
+        )
         return
     if not interaction.user.voice:
         await interaction.response.send_message("음성채널에 먼저 들어가주세요.", ephemeral=True)
@@ -14214,6 +14326,22 @@ async def recruit(interaction: discord.Interaction, message: str):
 
 @bot.tree.command(name="종겜구인", description="원하는 게임으로 구인 글 작성")
 async def general_recruit(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    recruit_channel_ids = get_recruit_channel_ids(interaction.guild.id)
+    if not recruit_channel_ids:
+        await interaction.response.send_message("구인 채널이 아직 설정되지 않았습니다.", ephemeral=True)
+        return
+    if interaction.channel.id not in recruit_channel_ids:
+        channel_mentions = " ".join(f"<#{channel_id}>" for channel_id in recruit_channel_ids)
+        await interaction.response.send_message(
+            f"등록된 구인 채널에서만 사용할 수 있습니다.\n{channel_mentions}",
+            ephemeral=True,
+        )
+        return
+
     await interaction.response.send_modal(GeneralRecruitModal())
 
 
