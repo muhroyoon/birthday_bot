@@ -4903,6 +4903,32 @@ def get_voice_bonus_duration_seconds(guild_id: int, user_id: int, start_dt: date
     return sum(max(0, int((item["end"] - item["start"]).total_seconds())) for item in intervals)
 
 
+async def claim_daily_support_money(interaction: discord.Interaction, *, ephemeral_success: bool = False):
+    today = get_kst_now().strftime("%Y-%m-%d")
+    cursor.execute("SELECT last_claim_date FROM daily_claims WHERE user_id=?", (str(interaction.user.id),))
+    row = cursor.fetchone()
+    if row and row[0] == today:
+        await interaction.response.send_message(
+            "오늘은 이미 기초생활수급비를 받았습니다. 내일 다시 시도해주세요.",
+            ephemeral=True,
+        )
+        return
+
+    ensure_wallet(interaction.user.id)
+    add_balance(interaction.user.id, DAILY_REWARD)
+    cursor.execute(
+        "INSERT OR REPLACE INTO daily_claims(user_id, last_claim_date) VALUES (?, ?)",
+        (str(interaction.user.id), today),
+    )
+    conn.commit()
+
+    embed = discord.Embed(title="🏠 기초생활수급비 지급 완료", color=0x2ECC71)
+    embed.add_field(name="지급 금액", value=f"`{format_money(DAILY_REWARD)}`", inline=True)
+    embed.add_field(name="현재 잔액", value=f"`{format_money(get_balance(interaction.user.id))}`", inline=True)
+    embed.set_footer(text="기초생활수급비는 매일 1회 받을 수 있습니다.")
+    await interaction.response.send_message(embed=embed, ephemeral=ephemeral_success)
+
+
 def create_raffle_ticket(guild_id: int, title: str, price: int, daily_limit: int, created_by: int):
     cursor.execute(
         """
@@ -8878,6 +8904,18 @@ class VoiceBonusPanelView(discord.ui.View):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+class DailySupportPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="수급비 받기", style=discord.ButtonStyle.success, custom_id="daily_support_claim")
+    async def claim_support(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild is None:
+            await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+            return
+        await claim_daily_support_money(interaction, ephemeral_success=True)
+
+
 class DailyAttendanceView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -12208,31 +12246,35 @@ async def voice_bonus_panel(interaction: discord.Interaction):
     )
 
 
+@bot.tree.command(name="기초생활수급비패널", description="기초생활수급비 수령 버튼 패널을 생성합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def daily_support_panel(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="🏠 기초생활수급비",
+        description=(
+            "아래 버튼을 눌러 오늘의 기초생활수급비를 받아주세요.\n\n"
+            f"지급 금액: `{format_money(DAILY_REWARD)}`\n"
+            "수령 횟수: `하루 1회`\n"
+            "초기화 시간: `매일 00:00 (한국 시간)`"
+        ),
+        color=0x2ECC71,
+    )
+    embed.set_footer(text="수급비 받기 버튼을 누르면 개인에게만 지급 결과가 표시됩니다.")
+    await send_panel_to_current_channel(
+        interaction,
+        embed=embed,
+        view=DailySupportPanelView(),
+        success_message="기초생활수급비 패널을 생성했습니다.",
+    )
+
+
 # ----------------------------
 # 재화 / 적금 명령어
 # ----------------------------
-
-@bot.tree.command(name="기초생활수급비", description="하루에 한 번 기초생활수급비 500,000마리를 받습니다.")
-async def daily_money(interaction: discord.Interaction):
-    today = get_kst_now().strftime("%Y-%m-%d")
-    cursor.execute("SELECT last_claim_date FROM daily_claims WHERE user_id=?", (str(interaction.user.id),))
-    row = cursor.fetchone()
-    if row and row[0] == today:
-        await interaction.response.send_message("오늘은 이미 지원금을 받았습니다. 내일 다시 시도해주세요.", ephemeral=True)
-        return
-
-    ensure_wallet(interaction.user.id)
-    add_balance(interaction.user.id, DAILY_REWARD)
-    cursor.execute(
-        "INSERT OR REPLACE INTO daily_claims(user_id, last_claim_date) VALUES (?, ?)",
-        (str(interaction.user.id), today),
-    )
-    conn.commit()
-
-    await interaction.response.send_message(
-        f"오늘의 기초생활수급비 `{format_money(DAILY_REWARD)}`을 받았습니다.\n현재 잔액: `{format_money(get_balance(interaction.user.id))}`"
-    )
-
 
 @bot.tree.command(name="잔액", description="현재 보유 금액을 확인합니다.")
 async def balance(interaction: discord.Interaction):
@@ -15387,7 +15429,7 @@ async def gambling_commands(interaction: discord.Interaction):
     embed.add_field(
         name="재화 관리",
         value=(
-            "`/기초생활수급비` - 하루 1회 지원금 받기\n"
+            "기초생활수급비 패널 - 하루 1회 버튼으로 지원금 받기\n"
             "`/잔액` - 현재 잔액 확인\n"
             "`/랭킹` - 서버 자산/신용레벨 순위 확인\n"
             "`/송금` - 비고와 함께 다른 유저에게 돈 보내기\n"
@@ -15496,7 +15538,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="🎛 메시지 / 패널 생성",
         value=(
             "`/규칙버튼`, `/등업패널`, `/문의패널`\n"
-            "`/성과급패널`, `/고정메시지`, `/고정메시지해제`, `/고정메시지확인`, `/내전공지`"
+            "`/성과급패널`, `/기초생활수급비패널`, `/고정메시지`, `/고정메시지해제`, `/고정메시지확인`, `/내전공지`"
         ),
         inline=False,
     )
@@ -15555,7 +15597,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
     general_embed.add_field(
         name="🏠 기본 / 정보",
         value=(
-            "`/기초생활수급비`, `/잔액`, `/랭킹`, `/송금`, `/송금내역`\n"
+            "기초생활수급비 패널, `/잔액`, `/랭킹`, `/송금`, `/송금내역`\n"
             "`/사업자 목록`, `/추첨권구매`, `/추첨권현황`\n"
             "`/도박명령어`, `/확률표`, `/족보`"
         ),
@@ -16677,6 +16719,7 @@ async def on_ready():
     bot.add_view(InquiryPanelView())
     bot.add_view(ScrimSignupView())
     bot.add_view(VoiceBonusPanelView())
+    bot.add_view(DailySupportPanelView())
     bot.add_view(DailyAttendanceView())
     bot.add_view(GuestRefreshView())
 
