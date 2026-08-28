@@ -595,6 +595,18 @@ cursor.execute(
 
 cursor.execute(
     """
+    CREATE TABLE IF NOT EXISTS casino_hub_panels(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        message_id TEXT,
+        created_at TEXT NOT NULL
+    )
+    """
+)
+
+cursor.execute(
+    """
     CREATE TABLE IF NOT EXISTS transfer_logs(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         guild_id TEXT NOT NULL,
@@ -1739,6 +1751,56 @@ def get_all_casino_panels(guild_id: int):
     ]
 
 
+def add_casino_hub_panel(guild_id: int, channel_id: int, message_id: int) -> int:
+    cursor.execute(
+        """
+        INSERT INTO casino_hub_panels(guild_id, channel_id, message_id, created_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (str(guild_id), str(channel_id), str(message_id), dt_to_db(get_kst_now())),
+    )
+    conn.commit()
+    return int(cursor.lastrowid)
+
+
+def update_casino_hub_panel_message(panel_id: int, message_id: int):
+    cursor.execute(
+        "UPDATE casino_hub_panels SET message_id=? WHERE id=?",
+        (str(message_id), panel_id),
+    )
+    conn.commit()
+
+
+def delete_casino_hub_panel(guild_id: int, message_id: int):
+    cursor.execute(
+        "DELETE FROM casino_hub_panels WHERE guild_id=? AND message_id=?",
+        (str(guild_id), str(message_id)),
+    )
+    conn.commit()
+
+
+def get_casino_hub_panels(guild_id: int, channel_id: int | None = None):
+    query = "SELECT id, channel_id, message_id FROM casino_hub_panels WHERE guild_id=?"
+    params: list[str] = [str(guild_id)]
+    if channel_id is not None:
+        query += " AND channel_id=?"
+        params.append(str(channel_id))
+    query += " ORDER BY id"
+    cursor.execute(query, tuple(params))
+    return [
+        {
+            "id": int(row[0]),
+            "channel_id": int(row[1]),
+            "message_id": int(row[2]) if row[2] else None,
+        }
+        for row in cursor.fetchall()
+    ]
+
+
+def is_casino_hub_panel_message(message: discord.Message) -> bool:
+    return any((embed.footer.text or "") == "MARIBOT CASINO HUB" for embed in message.embeds)
+
+
 def is_casino_panel_message(message: discord.Message, game_key: str | None = None) -> bool:
     for embed in message.embeds:
         footer_text = embed.footer.text or ""
@@ -1794,6 +1856,65 @@ async def restore_casino_panels():
             if not message_is_valid:
                 try:
                     await refresh_casino_panel(channel, game_key)
+                except (discord.Forbidden, discord.HTTPException):
+                    continue
+
+
+async def refresh_casino_hub_panels(channel: discord.TextChannel):
+    panels = get_casino_hub_panels(channel.guild.id, channel.id)
+    if not panels:
+        return
+
+    lock_key = (channel.guild.id, channel.id)
+    lock = casino_panel_locks.setdefault(lock_key, asyncio.Lock())
+    async with lock:
+        for panel in panels:
+            if panel["message_id"]:
+                try:
+                    old_message = await channel.fetch_message(panel["message_id"])
+                    await old_message.delete()
+                except discord.NotFound:
+                    pass
+                except (discord.Forbidden, discord.HTTPException):
+                    return
+
+        for panel in panels:
+            new_message = await channel.send(
+                embed=build_casino_hub_embed(),
+                view=CasinoHubPanelView(),
+            )
+            update_casino_hub_panel_message(panel["id"], new_message.id)
+
+
+async def restore_casino_hub_panels():
+    for guild in bot.guilds:
+        checked_channels: set[int] = set()
+        for panel in get_casino_hub_panels(guild.id):
+            channel_id = panel["channel_id"]
+            if channel_id in checked_channels:
+                continue
+            checked_channels.add(channel_id)
+            channel = guild.get_channel(channel_id)
+            if not isinstance(channel, discord.TextChannel):
+                continue
+
+            channel_panels = get_casino_hub_panels(guild.id, channel_id)
+            all_valid = True
+            for channel_panel in channel_panels:
+                if not channel_panel["message_id"]:
+                    all_valid = False
+                    break
+                try:
+                    message = await channel.fetch_message(channel_panel["message_id"])
+                    if not is_casino_hub_panel_message(message):
+                        all_valid = False
+                        break
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    all_valid = False
+                    break
+            if not all_valid:
+                try:
+                    await refresh_casino_hub_panels(channel)
                 except (discord.Forbidden, discord.HTTPException):
                     continue
 
@@ -9193,6 +9314,29 @@ def build_casino_panel_embed(game_key: str) -> discord.Embed:
     return embed
 
 
+def build_casino_hub_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="🎰 MARIBOT CASINO",
+        description=(
+            "원하는 게임을 아래 선택 메뉴에서 골라주세요.\n"
+            "게임별 시작, 확률, 이용 방법과 잔액 확인 기능이 제공됩니다."
+        ),
+        color=0xF1C40F,
+    )
+    embed.add_field(
+        name="게임 목록",
+        value=(
+            "슬롯 · 동전 · 바카라 · 보급 · 덕몽 · 블랙잭\n"
+            "가위바위보 · 경마 · 숫자야구 · 지뢰찾기 · 섯다 · 몰빵게임"
+        ),
+        inline=False,
+    )
+    embed.add_field(name="게임 결과", value="채널 전체 공개", inline=True)
+    embed.add_field(name="게임 선택 화면", value="선택한 사람에게만 공개", inline=True)
+    embed.set_footer(text="MARIBOT CASINO HUB")
+    return embed
+
+
 def get_casino_odds_text(game_key: str) -> str:
     odds_texts = {
         "slot": (
@@ -9258,6 +9402,62 @@ def get_casino_odds_text(game_key: str) -> str:
         ),
     }
     return odds_texts.get(game_key, "표시할 확률 정보가 없습니다.")
+
+
+class CasinoGameSelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(
+                label=game["name"],
+                value=game_key,
+                description=game["description"][:100],
+                emoji=game["emoji"],
+            )
+            for game_key, game in CASINO_GAMES.items()
+        ]
+        super().__init__(
+            placeholder="플레이할 게임을 선택해주세요.",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="casino:hub:game_select",
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        game_key = self.values[0]
+        if game_key not in CASINO_GAMES:
+            await interaction.response.send_message("등록되지 않은 게임입니다.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            embed=build_casino_panel_embed(game_key),
+            view=CasinoGamePanelView(game_key),
+            ephemeral=True,
+        )
+
+
+class CasinoHubPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(CasinoGameSelect())
+
+    @discord.ui.button(
+        label="패널 삭제",
+        style=discord.ButtonStyle.danger,
+        emoji="🗑️",
+        custom_id="casino:hub:delete",
+        row=1,
+    )
+    async def delete_panel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild is None or interaction.user.id != interaction.guild.owner_id:
+            await interaction.response.send_message("서버 소유자만 이 패널을 삭제할 수 있습니다.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        delete_casino_hub_panel(interaction.guild.id, interaction.message.id)
+        try:
+            await interaction.message.delete()
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            pass
+        await interaction.followup.send("통합 카지노 패널을 삭제했습니다.", ephemeral=True)
 
 
 async def invoke_casino_game(
@@ -12803,112 +13003,78 @@ async def daily_support_panel(interaction: discord.Interaction):
     )
 
 
-async def sync_casino_channels(
-    guild: discord.Guild,
-    category: discord.CategoryChannel | None = None,
-) -> tuple[discord.CategoryChannel, list[str], list[str]]:
-    if category is None:
-        category = discord.utils.get(guild.categories, name=CASINO_CATEGORY_NAME)
-    if category is None:
-        if not guild.me.guild_permissions.manage_channels:
-            raise PermissionError("카지노 카테고리를 만들려면 채널 관리 권한이 필요합니다.")
-        category = await guild.create_category(CASINO_CATEGORY_NAME, reason="마리봇 카지노 패널 설치")
-
-    created_games = []
-    updated_games = []
-    for game_key, game in CASINO_GAMES.items():
-        panel = get_casino_panel(guild.id, game_key)
-        channel = guild.get_channel(panel["channel_id"]) if panel else None
-        if not isinstance(channel, discord.TextChannel):
-            channel = discord.utils.get(category.text_channels, name=game["channel_name"])
-
-        if channel is None:
-            if not guild.me.guild_permissions.manage_channels:
-                raise PermissionError("카지노 게임 채널을 만들려면 채널 관리 권한이 필요합니다.")
-            channel = await guild.create_text_channel(
-                game["channel_name"],
-                category=category,
-                topic=f"마리봇 {game['name']} 전용 게임 채널",
-                reason="마리봇 카지노 게임 채널 생성",
-            )
-            created_games.append(game["name"])
-            previous_message_id = None
-        else:
-            updated_games.append(game["name"])
-            previous_message_id = (
-                panel["message_id"]
-                if panel and panel["channel_id"] == channel.id
-                else None
-            )
-
-        set_casino_panel(guild.id, game_key, channel.id, previous_message_id)
-        await refresh_casino_panel(channel, game_key)
-
-    return category, created_games, updated_games
-
-
-async def run_casino_panel_sync(
-    interaction: discord.Interaction,
-    category: discord.CategoryChannel | None,
-    action_name: str,
-):
+async def ensure_casino_panel_owner(interaction: discord.Interaction) -> bool:
     if interaction.guild is None:
         await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return False
+    if interaction.user.id != interaction.guild.owner_id:
+        await interaction.response.send_message("통합 카지노 패널은 서버 소유자만 관리할 수 있습니다.", ephemeral=True)
+        return False
+    return True
+
+
+@bot.tree.command(name="도박패널설치", description="현재 채널에 통합 카지노 패널을 추가로 설치합니다.")
+async def install_casino_panels(interaction: discord.Interaction):
+    if not await ensure_casino_panel_owner(interaction):
         return
+    if not isinstance(interaction.channel, discord.TextChannel):
+        await interaction.response.send_message("일반 텍스트 채널에서만 설치할 수 있습니다.", ephemeral=True)
+        return
+
     await interaction.response.defer(ephemeral=True, thinking=True)
     try:
-        synced_category, created_games, updated_games = await sync_casino_channels(
-            interaction.guild,
-            category,
+        message = await interaction.channel.send(
+            embed=build_casino_hub_embed(),
+            view=CasinoHubPanelView(),
         )
-    except PermissionError:
-        await interaction.followup.send(
-            "카지노 채널을 구성할 권한이 없습니다. 마리봇에게 채널 관리, 메시지 보내기, 링크 첨부 권한을 부여해주세요.",
-            ephemeral=True,
+        panel_id = add_casino_hub_panel(
+            interaction.guild.id,
+            interaction.channel.id,
+            message.id,
         )
-        return
-    except discord.Forbidden:
+    except (discord.Forbidden, discord.HTTPException) as error:
         await interaction.followup.send(
-            "카지노 채널 또는 패널을 생성할 수 없습니다. 마리봇의 채널 권한을 확인해주세요.",
-            ephemeral=True,
-        )
-        return
-    except discord.HTTPException as error:
-        await interaction.followup.send(
-            f"카지노 패널을 구성하는 중 Discord 오류가 발생했습니다: {error}",
+            f"통합 카지노 패널을 설치하지 못했습니다. 채널 권한을 확인해주세요. ({error})",
             ephemeral=True,
         )
         return
 
-    lines = [
-        f"카지노 패널 {action_name}이 완료되었습니다.",
-        f"카테고리: {synced_category.mention}",
-        f"신규 생성: {', '.join(created_games) if created_games else '없음'}",
-        f"패널 갱신: {', '.join(updated_games) if updated_games else '없음'}",
-    ]
-    await interaction.followup.send("\n".join(lines), ephemeral=True)
+    await interaction.followup.send(
+        f"통합 카지노 패널을 {interaction.channel.mention}에 설치했습니다. (패널 #{panel_id})",
+        ephemeral=True,
+    )
 
 
-@bot.tree.command(name="도박패널설치", description="게임별 카지노 채널과 영구 패널을 설치합니다.")
-@app_commands.rename(category="카테고리")
-@app_commands.describe(category="기존 카테고리를 선택하면 그 안에 설치합니다. 비워두면 자동 생성합니다.")
-@app_commands.checks.has_permissions(administrator=True)
-async def install_casino_panels(
-    interaction: discord.Interaction,
-    category: discord.CategoryChannel | None = None,
-):
-    await run_casino_panel_sync(interaction, category, "설치")
+@bot.tree.command(name="도박패널동기화", description="설치된 모든 통합 카지노 패널을 최신 상태로 갱신합니다.")
+async def sync_casino_panels(interaction: discord.Interaction):
+    if not await ensure_casino_panel_owner(interaction):
+        return
 
+    panels = get_casino_hub_panels(interaction.guild.id)
+    if not panels:
+        await interaction.response.send_message(
+            "설치된 통합 카지노 패널이 없습니다. 원하는 채널에서 `/도박패널설치`를 먼저 실행해주세요.",
+            ephemeral=True,
+        )
+        return
 
-@bot.tree.command(name="도박패널동기화", description="신규 게임 채널을 추가하고 기존 카지노 패널을 갱신합니다.")
-@app_commands.rename(category="카테고리")
-@app_commands.describe(category="비워두면 기존 카지노 카테고리와 패널 정보를 사용합니다.")
-@app_commands.checks.has_permissions(administrator=True)
-async def sync_casino_panels(
-    interaction: discord.Interaction,
-    category: discord.CategoryChannel | None = None,
-):
-    await run_casino_panel_sync(interaction, category, "동기화")
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    channel_ids = sorted({panel["channel_id"] for panel in panels})
+    refreshed_channels = 0
+    for channel_id in channel_ids:
+        channel = interaction.guild.get_channel(channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            continue
+        try:
+            await refresh_casino_hub_panels(channel)
+            refreshed_channels += 1
+        except (discord.Forbidden, discord.HTTPException):
+            continue
+
+    await interaction.followup.send(
+        f"통합 카지노 패널 `{len(panels)}개`를 `{refreshed_channels}개 채널`에서 동기화했습니다.",
+        ephemeral=True,
+    )
 
 
 # ----------------------------
@@ -15988,8 +16154,8 @@ async def gambling_commands(interaction: discord.Interaction):
     embed.add_field(
         name="도박 / 게임",
         value=(
-            "각 게임은 마리 카지노 카테고리의 전용 채널에서 이용할 수 있습니다.\n"
-            "채널 하단의 게임 패널에서 베팅 시작 또는 대결 버튼을 눌러주세요.\n\n"
+            "통합 카지노 패널에서 원하는 게임을 선택해 이용할 수 있습니다.\n"
+            "게임 선택 후 베팅 시작 또는 대결 버튼을 눌러주세요.\n\n"
             "슬롯 · 동전 · 바카라 · 보급 · 덕몽 · 블랙잭\n"
             "가위바위보 · 경마 · 숫자야구 · 지뢰찾기 · 섯다 · 몰빵게임"
         ),
@@ -16044,7 +16210,8 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="🎛 메시지 / 패널 생성",
         value=(
             "`/규칙버튼`, `/등업패널`, `/문의패널`\n"
-            "`/성과급패널`, `/기초생활수급비패널`, `/도박패널설치`, `/도박패널동기화`\n"
+            "`/성과급패널`, `/기초생활수급비패널`\n"
+            "`/도박패널설치`, `/도박패널동기화` (서버 소유자 전용)\n"
             "`/고정메시지`, `/고정메시지해제`, `/고정메시지확인`, `/내전공지`"
         ),
         inline=False,
@@ -16122,7 +16289,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
     general_embed.add_field(
         name="🎮 도박 / 게임",
         value=(
-            "마리 카지노의 게임별 전용 채널에서 패널 버튼으로 이용\n"
+            "통합 카지노 패널에서 게임을 선택한 뒤 버튼으로 이용\n"
             "슬롯, 동전, 바카라, 보급, 덕몽, 블랙잭\n"
             "가위바위보, 경마, 숫자야구, 지뢰찾기, 섯다, 몰빵게임"
         ),
@@ -16806,17 +16973,17 @@ async def on_message(message: discord.Message):
     is_self_message = bot.user is not None and message.author.id == bot.user.id
 
     if message.guild is not None:
-        casino_panel = get_casino_panel_by_channel(message.guild.id, message.channel.id)
-        if casino_panel:
-            if (
-                casino_panel.get("message_id")
-                and message.id == casino_panel["message_id"]
-            ) or is_casino_panel_message(message, casino_panel["game_key"]):
+        casino_hub_panels = get_casino_hub_panels(message.guild.id, message.channel.id)
+        if casino_hub_panels:
+            if any(
+                panel.get("message_id") == message.id
+                for panel in casino_hub_panels
+            ) or is_casino_hub_panel_message(message):
                 await bot.process_commands(message)
                 return
             try:
                 if isinstance(message.channel, discord.TextChannel):
-                    await refresh_casino_panel(message.channel, casino_panel["game_key"])
+                    await refresh_casino_hub_panels(message.channel)
             except Exception:
                 pass
         else:
@@ -17243,12 +17410,13 @@ async def on_ready():
     bot.add_view(DailySupportPanelView())
     bot.add_view(DailyAttendanceView())
     bot.add_view(GuestRefreshView())
+    bot.add_view(CasinoHubPanelView())
     for game_key in CASINO_GAMES:
         bot.add_view(CasinoGamePanelView(game_key))
 
 
     await restore_nickname_panels()
-    await restore_casino_panels()
+    await restore_casino_hub_panels()
     await backfill_probation_members()
     await sync_active_voice_sessions()
 
