@@ -9337,6 +9337,51 @@ def build_casino_hub_embed() -> discord.Embed:
     return embed
 
 
+def build_all_in_status_embed(guild: discord.Guild, viewer_id: int) -> discord.Embed:
+    today = get_today_kst_date_str()
+    entries = get_all_in_entries(today, guild.id)
+    pool_amount = sum(int(amount) for _, amount in entries)
+    viewer_entry = next(
+        (int(amount) for user_id, amount in entries if int(user_id) == viewer_id),
+        None,
+    )
+
+    embed = discord.Embed(
+        title="💰 오늘의 몰빵게임 현황",
+        description="오늘 참가자 중 한 명이 누적 당첨금을 가져갑니다.",
+        color=0xF1C40F,
+    )
+    embed.add_field(name="기준 날짜", value=f"`{today}`", inline=True)
+    embed.add_field(name="참가 인원", value=f"`{len(entries)}명`", inline=True)
+    embed.add_field(name="누적 당첨금", value=f"`{format_money(pool_amount)}`", inline=True)
+    embed.add_field(
+        name="내 참가 상태",
+        value=(
+            f"✅ 참여 완료 · `{format_money(viewer_entry)}`"
+            if viewer_entry is not None
+            else "❌ 아직 참여하지 않음"
+        ),
+        inline=False,
+    )
+
+    if entries:
+        participant_lines = []
+        for index, (user_id, amount) in enumerate(entries[:15], start=1):
+            member = guild.get_member(int(user_id))
+            participant_name = member.mention if member else f"ID `{user_id}`"
+            participant_lines.append(f"{index}. {participant_name} · `{format_money(int(amount))}`")
+        if len(entries) > 15:
+            participant_lines.append(f"외 `{len(entries) - 15}명`")
+        participant_text = "\n".join(participant_lines)
+    else:
+        participant_text = "아직 참가자가 없습니다."
+
+    embed.add_field(name="참가자", value=participant_text, inline=False)
+    embed.add_field(name="최소 참가 금액", value=format_money(ALL_IN_MIN_BET), inline=False)
+    embed.set_footer(text="아래 게임 시작 버튼에서 참가 금액을 입력할 수 있습니다.")
+    return embed
+
+
 def get_casino_odds_text(game_key: str) -> str:
     odds_texts = {
         "slot": (
@@ -9428,8 +9473,12 @@ class CasinoGameSelect(discord.ui.Select):
         if game_key not in CASINO_GAMES:
             await interaction.response.send_message("등록되지 않은 게임입니다.", ephemeral=True)
             return
+        if game_key == "all_in" and interaction.guild is not None:
+            embed = build_all_in_status_embed(interaction.guild, interaction.user.id)
+        else:
+            embed = build_casino_panel_embed(game_key)
         await interaction.response.send_message(
-            embed=build_casino_panel_embed(game_key),
+            embed=embed,
             view=CasinoGamePanelView(game_key),
             ephemeral=True,
         )
