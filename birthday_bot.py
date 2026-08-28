@@ -90,6 +90,7 @@ TOKEN = os.getenv("TOKEN")
 DAILY_REWARD = 500_000
 MIN_BET = 100
 ALL_IN_MIN_BET = 1_000_000
+NUMBER_BASEBALL_COST = 100_000
 COIN_FLIP_TIMEOUT = 60
 SEOTDA_TIMEOUT = 60
 MAX_PLAYERS = 4
@@ -333,6 +334,131 @@ active_recruits = {}
 single_song_tokens: dict[int, int] = {}
 single_song_files: dict[int, str] = {}
 single_song_extract_lock = asyncio.Lock()
+casino_panel_locks: dict[tuple[int, int], asyncio.Lock] = {}
+
+CASINO_CATEGORY_NAME = "🎰 마리 카지노"
+CASINO_GAMES = {
+    "slot": {
+        "name": "슬롯",
+        "emoji": "🎰",
+        "channel_name": "🎰・슬롯",
+        "command": "slot",
+        "mode": "amount",
+        "minimum": MIN_BET,
+        "description": "같은 그림을 맞춰 배당금을 획득하는 슬롯머신 게임입니다.",
+        "rules": "그림 3개 또는 2개가 일치하면 해당 배당이 적용됩니다. 최고 당첨은 7 트리플입니다.",
+    },
+    "coin": {
+        "name": "동전",
+        "emoji": "🪙",
+        "channel_name": "🪙・동전",
+        "command": "coin",
+        "mode": "amount",
+        "minimum": MIN_BET,
+        "description": "동전의 앞면과 뒷면 중 하나를 선택하는 간단한 게임입니다.",
+        "rules": "앞 또는 뒤를 맞히면 베팅금의 2배를 지급받습니다.",
+    },
+    "baccarat": {
+        "name": "바카라",
+        "emoji": "🃏",
+        "channel_name": "🃏・바카라",
+        "command": "baccarat",
+        "mode": "amount",
+        "minimum": MIN_BET,
+        "description": "플레이어, 뱅커, 타이 중 결과를 예상하는 카드 게임입니다.",
+        "rules": "베팅 금액을 입력한 뒤 플레이어, 뱅커, 타이 중 하나를 선택합니다.",
+    },
+    "blackjack": {
+        "name": "블랙잭",
+        "emoji": "♠️",
+        "channel_name": "♠️・블랙잭",
+        "command": "blackjack",
+        "mode": "amount",
+        "minimum": MIN_BET,
+        "description": "카드 합계를 21에 가깝게 만들어 딜러와 겨루는 게임입니다.",
+        "rules": "21을 넘지 않으면서 딜러보다 높은 합계를 만들면 승리합니다.",
+    },
+    "rock_paper_scissors": {
+        "name": "가위바위보",
+        "emoji": "✊",
+        "channel_name": "✊・가위바위보",
+        "command": "rock_paper_scissors",
+        "mode": "duel",
+        "minimum": MIN_BET,
+        "description": "마리봇 또는 다른 유저와 판돈을 걸고 대결합니다.",
+        "rules": "승자는 판돈을 가져가고 무승부일 경우 각자 원금을 돌려받습니다.",
+    },
+    "horse_race": {
+        "name": "경마",
+        "emoji": "🏇",
+        "channel_name": "🏇・경마",
+        "command": "horse_race",
+        "mode": "amount",
+        "minimum": MIN_BET,
+        "description": "출전한 말의 승률과 배당을 확인하고 우승마를 선택합니다.",
+        "rules": "베팅 후 응원할 말을 선택하며 우승 시 말마다 정해진 배당을 지급받습니다.",
+    },
+    "number_baseball": {
+        "name": "숫자야구",
+        "emoji": "⚾",
+        "channel_name": "⚾・숫자야구",
+        "command": "number_baseball",
+        "mode": "direct",
+        "minimum": NUMBER_BASEBALL_COST,
+        "description": "중복되지 않는 숫자를 추리해 정답을 맞히는 실력형 게임입니다.",
+        "rules": "숫자와 위치가 맞으면 스트라이크, 숫자만 맞으면 볼입니다. 참가비는 고정입니다.",
+    },
+    "minesweeper": {
+        "name": "지뢰찾기",
+        "emoji": "💣",
+        "channel_name": "💣・지뢰찾기",
+        "command": "minesweeper",
+        "mode": "amount",
+        "minimum": MIN_BET,
+        "description": "지뢰를 피해 안전한 칸을 열고 누적 보상을 확정하는 게임입니다.",
+        "rules": "안전한 칸을 열수록 배당이 증가하며 지뢰를 누르기 전에 수익을 확정할 수 있습니다.",
+    },
+    "supply_drop": {
+        "name": "보급",
+        "emoji": "📦",
+        "channel_name": "📦・보급",
+        "command": "supply_drop",
+        "mode": "amount",
+        "minimum": MIN_BET,
+        "description": "보급 상자를 열어 획득한 장비에 따른 보상을 받는 게임입니다.",
+        "rules": "빈 상자부터 풀세트 보급까지 결과에 따라 서로 다른 보상이 적용됩니다.",
+    },
+    "duckmong": {
+        "name": "덕몽",
+        "emoji": "🦆",
+        "channel_name": "🦆・덕몽",
+        "command": "duckmong",
+        "mode": "amount",
+        "minimum": MIN_BET,
+        "description": "세 후보 중 숨어 있는 진짜 오리를 찾아내는 게임입니다.",
+        "rules": "오리는 추가 획득, 팰리컨은 원금 반환, 거위는 베팅금을 잃습니다.",
+    },
+    "seotda": {
+        "name": "섯다",
+        "emoji": "🎴",
+        "channel_name": "🎴・섯다",
+        "command": "seotda",
+        "mode": "duel",
+        "minimum": MIN_BET,
+        "description": "마리봇 또는 다른 유저와 두 장 섯다로 대결합니다.",
+        "rules": "첫 패 공개 후 배팅 또는 다이를 선택하며 최종 족보가 높은 사람이 승리합니다.",
+    },
+    "all_in": {
+        "name": "몰빵게임",
+        "emoji": "💰",
+        "channel_name": "💰・몰빵게임",
+        "command": "join_all_in_game",
+        "mode": "amount",
+        "minimum": ALL_IN_MIN_BET,
+        "description": "참가자들의 금액을 모아 당첨자 한 명이 가져가는 일일 게임입니다.",
+        "rules": "하루 한 번 참여할 수 있으며 최소 참가 금액 이상을 자유롭게 입력할 수 있습니다.",
+    },
+}
 
 # ============================================================
 # 데이터베이스 초기화
@@ -450,6 +576,19 @@ cursor.execute(
         amount INTEGER NOT NULL,
         note TEXT,
         created_at TEXT NOT NULL
+    )
+    """
+)
+
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS casino_panels(
+        guild_id TEXT NOT NULL,
+        game_key TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        message_id TEXT,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (guild_id, game_key)
     )
     """
 )
@@ -1536,6 +1675,127 @@ async def refresh_sticky_message(channel: discord.TextChannel):
 
     new_message = await channel.send(sticky["content"])
     set_sticky_message(channel.guild.id, channel.id, sticky["content"], new_message.id)
+
+
+def set_casino_panel(guild_id: int, game_key: str, channel_id: int, message_id: int | None = None):
+    cursor.execute(
+        """
+        INSERT OR REPLACE INTO casino_panels(guild_id, game_key, channel_id, message_id, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            str(guild_id),
+            game_key,
+            str(channel_id),
+            str(message_id) if message_id else None,
+            dt_to_db(get_kst_now()),
+        ),
+    )
+    conn.commit()
+
+
+def get_casino_panel(guild_id: int, game_key: str):
+    cursor.execute(
+        "SELECT channel_id, message_id FROM casino_panels WHERE guild_id=? AND game_key=?",
+        (str(guild_id), game_key),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "game_key": game_key,
+        "channel_id": int(row[0]),
+        "message_id": int(row[1]) if row[1] else None,
+    }
+
+
+def get_casino_panel_by_channel(guild_id: int, channel_id: int):
+    cursor.execute(
+        "SELECT game_key, message_id FROM casino_panels WHERE guild_id=? AND channel_id=?",
+        (str(guild_id), str(channel_id)),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "game_key": row[0],
+        "channel_id": channel_id,
+        "message_id": int(row[1]) if row[1] else None,
+    }
+
+
+def get_all_casino_panels(guild_id: int):
+    cursor.execute(
+        "SELECT game_key, channel_id, message_id FROM casino_panels WHERE guild_id=? ORDER BY game_key",
+        (str(guild_id),),
+    )
+    return [
+        {
+            "game_key": row[0],
+            "channel_id": int(row[1]),
+            "message_id": int(row[2]) if row[2] else None,
+        }
+        for row in cursor.fetchall()
+    ]
+
+
+def is_casino_panel_message(message: discord.Message, game_key: str | None = None) -> bool:
+    for embed in message.embeds:
+        footer_text = embed.footer.text or ""
+        if not footer_text.startswith("MARIBOT CASINO • "):
+            continue
+        if game_key is None or footer_text == f"MARIBOT CASINO • {game_key}":
+            return True
+    return False
+
+
+async def refresh_casino_panel(channel: discord.TextChannel, game_key: str):
+    if game_key not in CASINO_GAMES:
+        return
+
+    lock_key = (channel.guild.id, channel.id)
+    lock = casino_panel_locks.setdefault(lock_key, asyncio.Lock())
+    async with lock:
+        panel = get_casino_panel(channel.guild.id, game_key)
+        old_message_id = panel.get("message_id") if panel else None
+        if old_message_id:
+            try:
+                old_message = await channel.fetch_message(old_message_id)
+                await old_message.delete()
+            except discord.NotFound:
+                pass
+            except (discord.Forbidden, discord.HTTPException):
+                return
+
+        new_message = await channel.send(
+            embed=build_casino_panel_embed(game_key),
+            view=CasinoGamePanelView(game_key),
+        )
+        set_casino_panel(channel.guild.id, game_key, channel.id, new_message.id)
+
+
+async def restore_casino_panels():
+    for guild in bot.guilds:
+        for panel in get_all_casino_panels(guild.id):
+            game_key = panel["game_key"]
+            if game_key not in CASINO_GAMES:
+                continue
+            channel = guild.get_channel(panel["channel_id"])
+            if not isinstance(channel, discord.TextChannel):
+                continue
+
+            message_is_valid = False
+            if panel["message_id"]:
+                try:
+                    message = await channel.fetch_message(panel["message_id"])
+                    message_is_valid = is_casino_panel_message(message, game_key)
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    message_is_valid = False
+            if not message_is_valid:
+                try:
+                    await refresh_casino_panel(channel, game_key)
+                except (discord.Forbidden, discord.HTTPException):
+                    continue
 
 
 # ============================================================
@@ -6060,7 +6320,6 @@ BLACKJACK_WIN_MULTIPLIER = 2.05
 BLACKJACK_NATURAL_MULTIPLIER = 2.65
 NUMBER_BASEBALL_DIGITS = 4
 NUMBER_BASEBALL_ATTEMPTS = 8
-NUMBER_BASEBALL_COST = 100_000
 HORSE_RACE_TABLE = [
     {"name": "즈미", "weight": 20, "payout": 5.0},
     {"name": "훈이", "weight": 18, "payout": 5.5},
@@ -8914,6 +9173,195 @@ class DailySupportPanelView(discord.ui.View):
             await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
             return
         await claim_daily_support_money(interaction, ephemeral_success=True)
+
+
+def build_casino_panel_embed(game_key: str) -> discord.Embed:
+    game = CASINO_GAMES[game_key]
+    minimum_label = "고정 참가비" if game["mode"] == "direct" else "최소 베팅"
+    embed = discord.Embed(
+        title=f"{game['emoji']} MARIBOT {game['name'].upper()}",
+        description=(
+            f"{game['description']}\n\n"
+            "아래 버튼을 눌러 게임을 시작해주세요."
+        ),
+        color=0xF1C40F,
+    )
+    embed.add_field(name=minimum_label, value=format_money(game["minimum"]), inline=True)
+    embed.add_field(name="게임 결과", value="채널 전체 공개", inline=True)
+    embed.add_field(name="이용 방법", value="버튼 선택 후 안내되는 단계에 따라 진행해주세요.", inline=False)
+    embed.set_footer(text=f"MARIBOT CASINO • {game_key}")
+    return embed
+
+
+async def invoke_casino_game(
+    interaction: discord.Interaction,
+    game_key: str,
+    amount: int | None = None,
+    opponent: discord.Member | discord.User | None = None,
+):
+    game = CASINO_GAMES.get(game_key)
+    if game is None:
+        await interaction.response.send_message("등록되지 않은 게임입니다.", ephemeral=True)
+        return
+
+    command = globals().get(game["command"])
+    callback = getattr(command, "callback", command if callable(command) else None)
+    if callback is None:
+        await interaction.response.send_message("게임 실행 함수를 찾지 못했습니다. 관리자에게 알려주세요.", ephemeral=True)
+        return
+
+    try:
+        if game["mode"] == "direct":
+            await callback(interaction)
+        elif game["mode"] == "duel":
+            await callback(interaction, int(amount or 0), opponent)
+        else:
+            await callback(interaction, int(amount or 0))
+    except Exception as error:
+        print(f"카지노 패널 게임 실행 오류 ({game_key}): {type(error).__name__}: {error}")
+        error_text = f"게임을 시작하는 중 오류가 발생했습니다: {type(error).__name__}: {error}"
+        if interaction.response.is_done():
+            await interaction.followup.send(error_text, ephemeral=True)
+        else:
+            await interaction.response.send_message(error_text, ephemeral=True)
+
+
+class CasinoBetModal(discord.ui.Modal):
+    def __init__(
+        self,
+        game_key: str,
+        opponent: discord.Member | discord.User | None = None,
+    ):
+        game = CASINO_GAMES[game_key]
+        super().__init__(title=f"{game['name']} 금액 입력", timeout=180)
+        self.game_key = game_key
+        self.opponent = opponent
+        amount_label = "참가 금액" if game_key == "all_in" else "베팅 금액"
+        self.amount_input = discord.ui.TextInput(
+            label=amount_label,
+            placeholder=f"최소 {game['minimum']:,}마리",
+            min_length=1,
+            max_length=20,
+            required=True,
+        )
+        self.add_item(self.amount_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            amount = int(str(self.amount_input.value).replace(",", "").strip())
+        except ValueError:
+            await interaction.response.send_message("금액은 숫자로 입력해주세요.", ephemeral=True)
+            return
+        if amount <= 0:
+            await interaction.response.send_message("금액은 1마리 이상이어야 합니다.", ephemeral=True)
+            return
+        await invoke_casino_game(interaction, self.game_key, amount, self.opponent)
+
+
+class CasinoOpponentSelect(discord.ui.UserSelect):
+    def __init__(self, game_key: str, requester_id: int):
+        super().__init__(
+            placeholder="대결할 상대를 선택해주세요.",
+            min_values=1,
+            max_values=1,
+            custom_id=f"casino:{game_key}:opponent",
+        )
+        self.game_key = game_key
+        self.requester_id = requester_id
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("대결을 신청한 사람만 상대를 선택할 수 있습니다.", ephemeral=True)
+            return
+        opponent = self.values[0]
+        if opponent.id == interaction.user.id:
+            await interaction.response.send_message("본인과는 대결할 수 없습니다.", ephemeral=True)
+            return
+        if opponent.bot:
+            await interaction.response.send_message("유저 대결에서는 봇을 선택할 수 없습니다.", ephemeral=True)
+            return
+        await interaction.response.send_modal(CasinoBetModal(self.game_key, opponent))
+
+
+class CasinoOpponentSelectView(discord.ui.View):
+    def __init__(self, game_key: str, requester_id: int):
+        super().__init__(timeout=120)
+        self.add_item(CasinoOpponentSelect(game_key, requester_id))
+
+
+class CasinoPanelActionButton(discord.ui.Button):
+    def __init__(
+        self,
+        game_key: str,
+        action: str,
+        label: str,
+        style: discord.ButtonStyle,
+        emoji: str | None = None,
+    ):
+        super().__init__(
+            label=label,
+            style=style,
+            emoji=emoji,
+            custom_id=f"casino:{game_key}:{action}",
+        )
+        self.game_key = game_key
+        self.action = action
+
+    async def callback(self, interaction: discord.Interaction):
+        panel_view = self.view
+        if not isinstance(panel_view, CasinoGamePanelView):
+            await interaction.response.send_message("게임 패널 정보를 찾지 못했습니다.", ephemeral=True)
+            return
+        await panel_view.handle_action(interaction, self.action)
+
+
+class CasinoGamePanelView(discord.ui.View):
+    def __init__(self, game_key: str):
+        super().__init__(timeout=None)
+        self.game_key = game_key
+        game = CASINO_GAMES[game_key]
+
+        if game["mode"] == "duel":
+            self.add_item(CasinoPanelActionButton(game_key, "bot", "마리봇 대결", discord.ButtonStyle.primary, "🤖"))
+            self.add_item(CasinoPanelActionButton(game_key, "user", "유저 대결", discord.ButtonStyle.success, "⚔️"))
+        else:
+            start_label = "게임 시작" if game["mode"] == "direct" else "베팅 시작"
+            self.add_item(CasinoPanelActionButton(game_key, "play", start_label, discord.ButtonStyle.success, "🎮"))
+
+        self.add_item(CasinoPanelActionButton(game_key, "rules", "게임 방법", discord.ButtonStyle.secondary, "📖"))
+        self.add_item(CasinoPanelActionButton(game_key, "balance", "내 잔액", discord.ButtonStyle.secondary, "💰"))
+
+    async def handle_action(self, interaction: discord.Interaction, action: str):
+        game = CASINO_GAMES[self.game_key]
+        if action == "balance":
+            await interaction.response.send_message(
+                f"현재 잔액은 {format_money(get_balance(interaction.user.id))}입니다.",
+                ephemeral=True,
+            )
+            return
+        if action == "rules":
+            embed = discord.Embed(
+                title=f"{game['emoji']} {game['name']} 게임 방법",
+                description=game["rules"],
+                color=0x5865F2,
+            )
+            embed.add_field(name="최소 금액", value=format_money(game["minimum"]), inline=False)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        if action == "user":
+            await interaction.response.send_message(
+                "아래 선택 메뉴에서 대결할 상대를 선택해주세요.",
+                view=CasinoOpponentSelectView(self.game_key, interaction.user.id),
+                ephemeral=True,
+            )
+            return
+        if action == "bot":
+            await interaction.response.send_modal(CasinoBetModal(self.game_key))
+            return
+        if game["mode"] == "direct":
+            await invoke_casino_game(interaction, self.game_key)
+            return
+        await interaction.response.send_modal(CasinoBetModal(self.game_key))
 
 
 class DailyAttendanceView(discord.ui.View):
@@ -12109,6 +12557,12 @@ async def list_welcome_messages(interaction: discord.Interaction):
 @bot.tree.command(name="고정메시지", description="현재 채널의 최하단 고정 메시지를 설정합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def sticky_message(interaction: discord.Interaction):
+    if get_casino_panel_by_channel(interaction.guild.id, interaction.channel.id):
+        await interaction.response.send_message(
+            "카지노 게임 채널은 게임 패널이 자동으로 고정되므로 일반 고정메시지를 함께 사용할 수 없습니다.",
+            ephemeral=True,
+        )
+        return
     await interaction.response.send_modal(StickyMessageModal())
 
 
@@ -12270,6 +12724,114 @@ async def daily_support_panel(interaction: discord.Interaction):
         view=DailySupportPanelView(),
         success_message="기초생활수급비 패널을 생성했습니다.",
     )
+
+
+async def sync_casino_channels(
+    guild: discord.Guild,
+    category: discord.CategoryChannel | None = None,
+) -> tuple[discord.CategoryChannel, list[str], list[str]]:
+    if category is None:
+        category = discord.utils.get(guild.categories, name=CASINO_CATEGORY_NAME)
+    if category is None:
+        if not guild.me.guild_permissions.manage_channels:
+            raise PermissionError("카지노 카테고리를 만들려면 채널 관리 권한이 필요합니다.")
+        category = await guild.create_category(CASINO_CATEGORY_NAME, reason="마리봇 카지노 패널 설치")
+
+    created_games = []
+    updated_games = []
+    for game_key, game in CASINO_GAMES.items():
+        panel = get_casino_panel(guild.id, game_key)
+        channel = guild.get_channel(panel["channel_id"]) if panel else None
+        if not isinstance(channel, discord.TextChannel):
+            channel = discord.utils.get(category.text_channels, name=game["channel_name"])
+
+        if channel is None:
+            if not guild.me.guild_permissions.manage_channels:
+                raise PermissionError("카지노 게임 채널을 만들려면 채널 관리 권한이 필요합니다.")
+            channel = await guild.create_text_channel(
+                game["channel_name"],
+                category=category,
+                topic=f"마리봇 {game['name']} 전용 게임 채널",
+                reason="마리봇 카지노 게임 채널 생성",
+            )
+            created_games.append(game["name"])
+            previous_message_id = None
+        else:
+            updated_games.append(game["name"])
+            previous_message_id = (
+                panel["message_id"]
+                if panel and panel["channel_id"] == channel.id
+                else None
+            )
+
+        set_casino_panel(guild.id, game_key, channel.id, previous_message_id)
+        await refresh_casino_panel(channel, game_key)
+
+    return category, created_games, updated_games
+
+
+async def run_casino_panel_sync(
+    interaction: discord.Interaction,
+    category: discord.CategoryChannel | None,
+    action_name: str,
+):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        synced_category, created_games, updated_games = await sync_casino_channels(
+            interaction.guild,
+            category,
+        )
+    except PermissionError:
+        await interaction.followup.send(
+            "카지노 채널을 구성할 권한이 없습니다. 마리봇에게 채널 관리, 메시지 보내기, 링크 첨부 권한을 부여해주세요.",
+            ephemeral=True,
+        )
+        return
+    except discord.Forbidden:
+        await interaction.followup.send(
+            "카지노 채널 또는 패널을 생성할 수 없습니다. 마리봇의 채널 권한을 확인해주세요.",
+            ephemeral=True,
+        )
+        return
+    except discord.HTTPException as error:
+        await interaction.followup.send(
+            f"카지노 패널을 구성하는 중 Discord 오류가 발생했습니다: {error}",
+            ephemeral=True,
+        )
+        return
+
+    lines = [
+        f"카지노 패널 {action_name}이 완료되었습니다.",
+        f"카테고리: {synced_category.mention}",
+        f"신규 생성: {', '.join(created_games) if created_games else '없음'}",
+        f"패널 갱신: {', '.join(updated_games) if updated_games else '없음'}",
+    ]
+    await interaction.followup.send("\n".join(lines), ephemeral=True)
+
+
+@bot.tree.command(name="도박패널설치", description="게임별 카지노 채널과 영구 패널을 설치합니다.")
+@app_commands.rename(category="카테고리")
+@app_commands.describe(category="기존 카테고리를 선택하면 그 안에 설치합니다. 비워두면 자동 생성합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def install_casino_panels(
+    interaction: discord.Interaction,
+    category: discord.CategoryChannel | None = None,
+):
+    await run_casino_panel_sync(interaction, category, "설치")
+
+
+@bot.tree.command(name="도박패널동기화", description="신규 게임 채널을 추가하고 기존 카지노 패널을 갱신합니다.")
+@app_commands.rename(category="카테고리")
+@app_commands.describe(category="비워두면 기존 카지노 카테고리와 패널 정보를 사용합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def sync_casino_panels(
+    interaction: discord.Interaction,
+    category: discord.CategoryChannel | None = None,
+):
+    await run_casino_panel_sync(interaction, category, "동기화")
 
 
 # ----------------------------
@@ -13363,7 +13925,6 @@ def build_slot_spin_embed(status: str) -> discord.Embed:
     embed.set_footer(text="릴이 모두 멈출 때까지 기다려주세요.")
     return embed
 
-@bot.tree.command(name="슬롯", description="입력한 금액으로 슬롯머신을 돌립니다.")
 async def slot(interaction: discord.Interaction, amount: int):
     if not await ensure_not_blacklisted_for_gambling(interaction):
         return
@@ -13474,7 +14035,6 @@ async def slot(interaction: discord.Interaction, amount: int):
 
 
 
-@bot.tree.command(name="동전", description="입력한 금액으로 동전 앞뒤 맞히기를 합니다.")
 async def coin(interaction: discord.Interaction, amount: int):
     if not await ensure_not_blacklisted_for_gambling(interaction):
         return
@@ -13499,7 +14059,6 @@ async def coin(interaction: discord.Interaction, amount: int):
     await interaction.response.send_message(embed=embed, view=CoinFlipView(interaction.user.id, amount))
 
 
-@bot.tree.command(name="바카라", description="플레이어, 뱅커, 타이 중 하나를 골라 베팅합니다.")
 async def baccarat(interaction: discord.Interaction, amount: int):
     if not await ensure_not_blacklisted_for_gambling(interaction):
         return
@@ -13533,7 +14092,6 @@ async def baccarat(interaction: discord.Interaction, amount: int):
     )
 
 
-@bot.tree.command(name="가위바위보", description="봇 또는 다른 유저와 가위바위보를 합니다.")
 @app_commands.rename(amount="금액", member="상대")
 @app_commands.describe(amount="베팅 금액", member="비워두면 봇과 대결합니다.")
 async def rock_paper_scissors(interaction: discord.Interaction, amount: int, member: discord.Member | None = None):
@@ -13556,7 +14114,7 @@ async def rock_paper_scissors(interaction: discord.Interaction, amount: int, mem
         return
 
     if member.bot:
-        await interaction.response.send_message("봇과 대결하려면 상대를 비워두고 `/가위바위보`를 사용해주세요.", ephemeral=True)
+        await interaction.response.send_message("봇과 대결하려면 패널의 마리봇 대결 버튼을 사용해주세요.", ephemeral=True)
         return
     if member.id == interaction.user.id:
         await interaction.response.send_message("본인과는 대결할 수 없습니다.", ephemeral=True)
@@ -13587,7 +14145,6 @@ async def rock_paper_scissors(interaction: discord.Interaction, amount: int, mem
     )
 
 
-@bot.tree.command(name="블랙잭", description="입력한 금액으로 딜러와 블랙잭을 합니다.")
 async def blackjack(interaction: discord.Interaction, amount: int):
     if not await ensure_not_blacklisted_for_gambling(interaction):
         return
@@ -13610,7 +14167,6 @@ async def blackjack(interaction: discord.Interaction, amount: int):
         pass
 
 
-@bot.tree.command(name="경마", description="입력한 금액으로 원하는 말에 베팅합니다.")
 async def horse_race(interaction: discord.Interaction, amount: int):
     if not await ensure_not_blacklisted_for_gambling(interaction):
         return
@@ -13644,7 +14200,6 @@ async def horse_race(interaction: discord.Interaction, amount: int):
     )
 
 
-@bot.tree.command(name="숫자야구", description="고정 참가비로 숫자야구에 도전합니다.")
 async def number_baseball(interaction: discord.Interaction):
     if not await ensure_not_blacklisted_for_gambling(interaction):
         return
@@ -13678,7 +14233,6 @@ async def number_baseball(interaction: discord.Interaction):
         pass
 
 
-@bot.tree.command(name="지뢰찾기", description="입력한 금액으로 지뢰를 피해 보상을 쌓습니다.")
 async def minesweeper(interaction: discord.Interaction, amount: int):
     if not await ensure_not_blacklisted_for_gambling(interaction):
         return
@@ -14513,7 +15067,6 @@ async def stop_single_song(interaction: discord.Interaction):
     await interaction.response.send_message("노래 재생을 정지하고 음성채널에서 나갔습니다.")
 
 
-@bot.tree.command(name="보급", description="배그 보급상자를 열어 결과에 따라 보상을 받습니다.")
 async def supply_drop(interaction: discord.Interaction, amount: int):
     if not await ensure_not_blacklisted_for_gambling(interaction):
         return
@@ -14771,7 +15324,6 @@ async def game_history_command(interaction: discord.Interaction):
     )
 
 
-@bot.tree.command(name="몰빵참여", description="입력한 금액으로 오늘의 몰빵게임에 참여합니다.")
 async def join_all_in_game(interaction: discord.Interaction, amount: int):
     if not await ensure_not_blacklisted_for_gambling(interaction):
         return
@@ -15293,7 +15845,6 @@ async def delete_promissory_note_command(interaction: discord.Interaction, note_
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="덕몽", description="덕몽의 진짜 오리를 찾아내는 게임입니다.")
 async def duckmong(interaction: discord.Interaction, amount: int):
     if not await ensure_not_blacklisted_for_gambling(interaction):
         return
@@ -15348,7 +15899,6 @@ async def duckmong(interaction: discord.Interaction, amount: int):
     await interaction.response.send_message(**send_kwargs)
 
 
-@bot.tree.command(name="섯다", description="봇 또는 다른 유저와 일반 섯다 족보로 대결합니다.")
 @app_commands.rename(amount="금액", member="상대")
 @app_commands.describe(amount="배팅 금액", member="비워두면 봇과 대결합니다.")
 async def seotda(interaction: discord.Interaction, amount: int, member: discord.Member | None = None):
@@ -15382,7 +15932,7 @@ async def seotda(interaction: discord.Interaction, amount: int, member: discord.
         return
 
     if member.bot:
-        await interaction.response.send_message("봇과 대결하려면 상대를 비워두고 `/섯다`를 사용해주세요.", ephemeral=True)
+        await interaction.response.send_message("봇과 대결하려면 패널의 마리봇 대결 버튼을 사용해주세요.", ephemeral=True)
         return
 
     if member.id == interaction.user.id:
@@ -15474,18 +16024,10 @@ async def gambling_commands(interaction: discord.Interaction):
     embed.add_field(
         name="도박 / 게임",
         value=(
-            "`/슬롯 [금액]` - 슬롯머신\n"
-            "`/동전 [금액]` - 동전 앞뒤 맞추기\n"
-            "`/바카라 [금액]` - 플레이어, 뱅커, 타이 중 선택\n"
-            "`/보급 [금액]` - 보급 상자 게임\n"
-            "`/덕몽 [금액]` - 오리를 찾아라\n"
-            "`/블랙잭 [금액]` - 딜러와 21 대결\n"
-            "`/가위바위보 [금액] [상대]` - 봇 또는 유저와 가위바위보\n"
-            "`/경마 [금액]` - 원하는 말에 베팅\n"
-            "`/숫자야구` - 100,000마리 고정 숫자 추리 게임\n"
-            "`/지뢰찾기 [금액]` - 지뢰를 피해 수익 확정\n"
-            "`/섯다 [금액] [상대]` - 봇 또는 유저와 섯다 대결\n"
-            "`/몰빵참여 [금액]` - 원하는 금액으로 몰빵게임 참여"
+            "각 게임은 마리 카지노 카테고리의 전용 채널에서 이용할 수 있습니다.\n"
+            "채널 하단의 게임 패널에서 베팅 시작 또는 대결 버튼을 눌러주세요.\n\n"
+            "슬롯 · 동전 · 바카라 · 보급 · 덕몽 · 블랙잭\n"
+            "가위바위보 · 경마 · 숫자야구 · 지뢰찾기 · 섯다 · 몰빵게임"
         ),
         inline=False,
     )
@@ -15538,7 +16080,8 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="🎛 메시지 / 패널 생성",
         value=(
             "`/규칙버튼`, `/등업패널`, `/문의패널`\n"
-            "`/성과급패널`, `/기초생활수급비패널`, `/고정메시지`, `/고정메시지해제`, `/고정메시지확인`, `/내전공지`"
+            "`/성과급패널`, `/기초생활수급비패널`, `/도박패널설치`, `/도박패널동기화`\n"
+            "`/고정메시지`, `/고정메시지해제`, `/고정메시지확인`, `/내전공지`"
         ),
         inline=False,
     )
@@ -15615,9 +16158,9 @@ async def admin_commands_guide(interaction: discord.Interaction):
     general_embed.add_field(
         name="🎮 도박 / 게임",
         value=(
-            "`/슬롯`, `/동전`, `/바카라`, `/보급`, `/덕몽`\n"
-            "`/블랙잭`, `/가위바위보`, `/경마`, `/숫자야구`, `/지뢰찾기`\n"
-            "`/섯다`, `/몰빵참여`"
+            "마리 카지노의 게임별 전용 채널에서 패널 버튼으로 이용\n"
+            "슬롯, 동전, 바카라, 보급, 덕몽, 블랙잭\n"
+            "가위바위보, 경마, 숫자야구, 지뢰찾기, 섯다, 몰빵게임"
         ),
         inline=False,
     )
@@ -15639,10 +16182,10 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="✨ 자주 쓰는 예시",
         value=(
             "`/적금 50000`  50,000마리 적금\n"
-            "`/보급 10000`  10,000마리 보급 참여\n"
+            "카지노 게임 채널의 베팅 시작 버튼으로 게임 참여\n"
             "`/내신용`  대출, 신용레벨, 노동 현황 확인\n"
             "`/차용증 @유저`  모달에서 원금, 이자, 상환일 입력\n"
-            "`/섯다 10000 @유저`  유저와 섯다 대결 요청"
+            "섯다 채널의 유저 대결 버튼으로 상대와 대결 요청"
         ),
         inline=False,
     )
@@ -16299,18 +16842,32 @@ async def on_message(message: discord.Message):
     is_self_message = bot.user is not None and message.author.id == bot.user.id
 
     if message.guild is not None:
-        sticky = get_sticky_message(message.guild.id, message.channel.id)
-        if sticky:
-            if sticky.get("message_id") and message.id == sticky["message_id"]:
-                await bot.process_commands(message)
-                return
-            if is_self_message and message.content == sticky["content"]:
+        casino_panel = get_casino_panel_by_channel(message.guild.id, message.channel.id)
+        if casino_panel:
+            if (
+                casino_panel.get("message_id")
+                and message.id == casino_panel["message_id"]
+            ) or is_casino_panel_message(message, casino_panel["game_key"]):
                 await bot.process_commands(message)
                 return
             try:
-                await refresh_sticky_message(message.channel)
+                if isinstance(message.channel, discord.TextChannel):
+                    await refresh_casino_panel(message.channel, casino_panel["game_key"])
             except Exception:
                 pass
+        else:
+            sticky = get_sticky_message(message.guild.id, message.channel.id)
+            if sticky:
+                if sticky.get("message_id") and message.id == sticky["message_id"]:
+                    await bot.process_commands(message)
+                    return
+                if is_self_message and message.content == sticky["content"]:
+                    await bot.process_commands(message)
+                    return
+                try:
+                    await refresh_sticky_message(message.channel)
+                except Exception:
+                    pass
 
     if message.author.bot:
         await bot.process_commands(message)
@@ -16722,9 +17279,12 @@ async def on_ready():
     bot.add_view(DailySupportPanelView())
     bot.add_view(DailyAttendanceView())
     bot.add_view(GuestRefreshView())
+    for game_key in CASINO_GAMES:
+        bot.add_view(CasinoGamePanelView(game_key))
 
 
     await restore_nickname_panels()
+    await restore_casino_panels()
     await backfill_probation_members()
     await sync_active_voice_sessions()
 
