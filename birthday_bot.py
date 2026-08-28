@@ -9193,6 +9193,73 @@ def build_casino_panel_embed(game_key: str) -> discord.Embed:
     return embed
 
 
+def get_casino_odds_text(game_key: str) -> str:
+    odds_texts = {
+        "slot": (
+            "3개 일치 약 4.34%\n"
+            "7 트리플 14배 · 클로버 트리플 9배 · 기타 트리플 7배\n"
+            "2개 일치 약 45.52%\n"
+            "7 페어 1.8배 · 클로버 페어 1.5배 · 기타 페어 1.25배\n"
+            "완전 꽝 약 50.14%"
+        ),
+        "coin": "앞 50% · 뒤 50%\n적중 시 2배, 실패 시 베팅금 손실",
+        "baccarat": (
+            "플레이어 44.62% / 2.03배\n"
+            "뱅커 45.86% / 1.97배\n"
+            "타이 9.52% / 10.5배\n"
+            "플레이어·뱅커 베팅 중 타이가 나오면 원금 반환"
+        ),
+        "blackjack": (
+            f"일반 승리 {BLACKJACK_WIN_MULTIPLIER}배\n"
+            f"첫 두 장 블랙잭 {BLACKJACK_NATURAL_MULTIPLIER}배\n"
+            "무승부 원금 반환\n"
+            "승률은 현재 패와 히트·멈추기 선택에 따라 달라집니다."
+        ),
+        "rock_paper_scissors": (
+            "가위·바위·보 각각 33.33%\n"
+            "승리 2배 · 무승부 원금 반환 · 패배 베팅금 손실"
+        ),
+        "horse_race": "\n".join(
+            f"{horse['name']} {horse['weight']}% / {horse['payout']}배"
+            for horse in HORSE_RACE_TABLE
+        ),
+        "number_baseball": (
+            f"참가비 {format_money(NUMBER_BASEBALL_COST)} 고정\n"
+            f"서로 다른 숫자 {NUMBER_BASEBALL_DIGITS}개를 {NUMBER_BASEBALL_ATTEMPTS}회 안에 추리\n"
+            "1~3회 성공 4배 · 4~5회 2.5배 · 6~8회 1.5배\n"
+            "성공 확률은 입력한 추리 결과에 따라 달라집니다."
+        ),
+        "minesweeper": (
+            f"{MINESWEEPER_SIZE}x{MINESWEEPER_SIZE} 보드 · 지뢰 {MINESWEEPER_MINE_COUNT}개\n"
+            "1칸 1.23배 · 3칸 1.96배 · 5칸 3.39배\n"
+            "8칸 10배 · 10칸 28배 · 13칸 560배\n"
+            "안전 칸을 많이 열수록 성공 확률은 낮아집니다."
+        ),
+        "supply_drop": (
+            "빈 상자 34% / 0배\n"
+            "1뚝 24% / 1배 · 2뚝 19% / 1.1배\n"
+            "3뚝 11% / 1.6배 · 보급 총기 9% / 2.6배\n"
+            "풀세트 보급 3% / 4.7배"
+        ),
+        "duckmong": (
+            "오리 33.33% / 2배 회수\n"
+            "팰리컨 33.33% / 원금 반환\n"
+            "거위 33.33% / 베팅금 손실"
+        ),
+        "seotda": (
+            "패는 섯다 덱에서 무작위로 배분됩니다.\n"
+            "광땡 > 땡 > 알리 > 독사 > 구삥 > 장삥 > 장사 > 세륙 > 갑오 > 끗 > 망통\n"
+            "실제 승률은 패 조합과 배팅·다이 선택에 따라 달라집니다."
+        ),
+        "all_in": (
+            f"최소 참가 금액 {format_money(ALL_IN_MIN_BET)}\n"
+            "당첨 확률은 참가자 수 기준 1/N입니다.\n"
+            "참가 금액은 당첨 확률이 아니라 최종 누적 당첨금에만 반영됩니다."
+        ),
+    }
+    return odds_texts.get(game_key, "표시할 확률 정보가 없습니다.")
+
+
 async def invoke_casino_game(
     interaction: discord.Interaction,
     game_key: str,
@@ -9328,6 +9395,7 @@ class CasinoGamePanelView(discord.ui.View):
             start_label = "게임 시작" if game["mode"] == "direct" else "베팅 시작"
             self.add_item(CasinoPanelActionButton(game_key, "play", start_label, discord.ButtonStyle.success, "🎮"))
 
+        self.add_item(CasinoPanelActionButton(game_key, "odds", "확률 보기", discord.ButtonStyle.primary, "📊"))
         self.add_item(CasinoPanelActionButton(game_key, "rules", "게임 방법", discord.ButtonStyle.secondary, "📖"))
         self.add_item(CasinoPanelActionButton(game_key, "balance", "내 잔액", discord.ButtonStyle.secondary, "💰"))
 
@@ -9346,6 +9414,15 @@ class CasinoGamePanelView(discord.ui.View):
                 color=0x5865F2,
             )
             embed.add_field(name="최소 금액", value=format_money(game["minimum"]), inline=False)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        if action == "odds":
+            embed = discord.Embed(
+                title=f"{game['emoji']} {game['name']} 확률과 배당",
+                description=get_casino_odds_text(self.game_key),
+                color=0x3498DB,
+            )
+            embed.set_footer(text="표시된 확률과 배당은 현재 게임 설정을 기준으로 합니다.")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         if action == "user":
@@ -13998,6 +14075,7 @@ async def slot(interaction: discord.Interaction, amount: int):
 
     rolling_symbols = [random.choice(symbols) for _ in range(3)]
     await interaction.response.send_message(
+        content=f"🎮 게임 진행자: {interaction.user.mention}",
         embed=build_slot_spin_embed("릴 회전 중 · · ·"),
         file=build_slot_image_file(rolling_symbols, symbols),
     )
@@ -14056,7 +14134,11 @@ async def coin(interaction: discord.Interaction, amount: int):
         ),
         color=0xF1C40F,
     )
-    await interaction.response.send_message(embed=embed, view=CoinFlipView(interaction.user.id, amount))
+    await interaction.response.send_message(
+        content=f"🎮 게임 진행자: {interaction.user.mention}",
+        embed=embed,
+        view=CoinFlipView(interaction.user.id, amount),
+    )
 
 
 async def baccarat(interaction: discord.Interaction, amount: int):
@@ -14087,6 +14169,7 @@ async def baccarat(interaction: discord.Interaction, amount: int):
     embed.add_field(name="타이", value="확률 9.52%\n배당 10.5배", inline=True)
     embed.set_footer(text="60초 안에 선택하지 않으면 베팅금이 반환됩니다.")
     await interaction.response.send_message(
+        content=f"🎮 게임 진행자: {interaction.user.mention}",
         embed=embed,
         view=BaccaratView(interaction.guild.id, interaction.user.id, amount),
     )
@@ -14110,7 +14193,11 @@ async def rock_paper_scissors(interaction: discord.Interaction, amount: int, mem
     if member is None:
         add_balance(interaction.user.id, -amount)
         view = RockPaperScissorsMatchView(interaction.guild.id, interaction.user.id, None, amount)
-        await interaction.response.send_message(embed=view.build_embed(interaction.guild, interaction.client.user), view=view)
+        await interaction.response.send_message(
+            content=f"🎮 게임 진행자: {interaction.user.mention}",
+            embed=view.build_embed(interaction.guild, interaction.client.user),
+            view=view,
+        )
         return
 
     if member.bot:
@@ -14139,7 +14226,7 @@ async def rock_paper_scissors(interaction: discord.Interaction, amount: int, mem
     )
     embed.set_footer(text="상대방만 수락 또는 거절할 수 있습니다.")
     await interaction.response.send_message(
-        content=member.mention,
+        content=f"{member.mention}\n⚔️ 대결 신청자: {interaction.user.mention}",
         embed=embed,
         view=RockPaperScissorsChallengeView(interaction.user.id, member.id, amount),
     )
@@ -14160,7 +14247,12 @@ async def blackjack(interaction: discord.Interaction, amount: int):
 
     add_balance(interaction.user.id, -amount)
     view = BlackjackView(interaction.guild.id, interaction.user.id, amount)
-    await interaction.response.send_message(embed=view.build_embed(), file=view.build_table_file(), view=view)
+    await interaction.response.send_message(
+        content=f"🎮 게임 진행자: {interaction.user.mention}",
+        embed=view.build_embed(),
+        file=view.build_table_file(),
+        view=view,
+    )
     try:
         view.message = await interaction.original_response()
     except discord.HTTPException:
@@ -14195,6 +14287,7 @@ async def horse_race(interaction: discord.Interaction, amount: int):
         color=0xE67E22,
     )
     await interaction.response.send_message(
+        content=f"🎮 게임 진행자: {interaction.user.mention}",
         embed=embed,
         view=HorseRaceView(interaction.guild.id, interaction.user.id, amount),
     )
@@ -14222,7 +14315,11 @@ async def number_baseball(interaction: discord.Interaction):
     active_number_baseball_users.add(session_key)
     view = NumberBaseballView(interaction.guild.id, interaction.user.id, amount)
     try:
-        await interaction.response.send_message(embed=view.build_embed(), view=view)
+        await interaction.response.send_message(
+            content=f"🎮 게임 진행자: {interaction.user.mention}",
+            embed=view.build_embed(),
+            view=view,
+        )
     except Exception:
         active_number_baseball_users.discard(session_key)
         add_balance(interaction.user.id, amount)
@@ -14248,7 +14345,11 @@ async def minesweeper(interaction: discord.Interaction, amount: int):
 
     add_balance(interaction.user.id, -amount)
     view = MinesweeperView(interaction.guild.id, interaction.user.id, amount)
-    await interaction.response.send_message(embed=view.build_embed(), view=view)
+    await interaction.response.send_message(
+        content=f"🎮 게임 진행자: {interaction.user.mention}",
+        embed=view.build_embed(),
+        view=view,
+    )
     try:
         view.message = await interaction.original_response()
     except discord.HTTPException:
@@ -15102,6 +15203,7 @@ async def supply_drop(interaction: discord.Interaction, amount: int):
     )
 
     await interaction.response.send_message(
+        content=f"🎮 게임 진행자: {interaction.user.mention}",
         embed=embed,
         view=SupplyDropView(interaction.user.id, amount),
     )
@@ -15165,151 +15267,6 @@ async def create_nickname_panel(
         prefix_list,
     )
 
-@bot.tree.command(name="확률표", description="현재 게임들의 확률과 배당을 확인합니다.")
-async def probability_table(interaction: discord.Interaction):
-    embed = discord.Embed(title="🎰 게임 배당표", color=0x3498DB)
-
-    embed.add_field(
-        name="슬롯",
-        value=(
-            "3개 일치: 약 4.34%\n"
-            "7 7 7 : 약 0.72% / 14배\n"
-            "클로버 클로버 클로버 : 약 0.72% / 9배\n"
-            "기타 3개 일치 : 각각 약 0.72% / 7배\n\n"
-            "정확히 2개 일치: 약 45.52%\n"
-            "7 7 : 약 7.59% / 1.8배\n"
-            "클로버 클로버 : 약 7.59% / 1.5배\n"
-            "기타 2개 일치 : 각각 약 7.59% / 1.25배\n\n"
-            "완전 꽝: 약 50.14%"
-        ),
-        inline=False,
-    )
-
-
-    embed.add_field(
-        name="동전",
-        value="앞/뒤 50% 확률\n승리 시 2배",
-        inline=False,
-    )
-
-    embed.add_field(
-        name="바카라",
-        value=(
-            "플레이어 44.62% / 2.03배\n"
-            "뱅커 45.86% / 1.97배\n"
-            "타이 9.52% / 10.5배\n"
-            "플레이어/뱅커 베팅 중 타이가 나오면 원금 반환"
-        ),
-        inline=False,
-    )
-
-    embed.add_field(
-        name="보급",
-        value=(
-            "빈 상자 34% / 0배\n"
-            "1뚝 24% / 1.0배\n"
-            "2뚝 19% / 1.1배\n"
-            "3뚝 11% / 1.6배\n"
-            "보급 총기 획득 9% / 2.6배\n"
-            "풀세트 보급 대박 3% / 4.7배"
-        ),
-        inline=False,
-    )
-
-    embed.add_field(
-        name="블랙잭",
-        value=(
-            "딜러와 21에 가까운 패를 겨룹니다.\n"
-            f"일반 승리 / {BLACKJACK_WIN_MULTIPLIER}배\n"
-            f"첫 두 장으로 21 달성 / {BLACKJACK_NATURAL_MULTIPLIER}배\n"
-            "무승부 / 원금 반환"
-        ),
-        inline=False,
-    )
-
-    embed.add_field(
-        name="경마",
-        value=(
-            "즈미 20% / 5.0배\n"
-            "훈이 18% / 5.5배\n"
-            "해랑솔 16% / 6.25배\n"
-            "김천 14% / 7.1배\n"
-            "삼성 12% / 8.3배\n"
-            "하랑 11% / 9.1배\n"
-            "개쩌는머로 9% / 11.1배"
-        ),
-        inline=False,
-    )
-
-    embed.add_field(
-        name="숫자야구",
-        value=(
-            f"참가비 `{format_money(NUMBER_BASEBALL_COST)}` 고정\n"
-            f"서로 다른 숫자 {NUMBER_BASEBALL_DIGITS}개를 `{NUMBER_BASEBALL_ATTEMPTS}회` 안에 추리\n"
-            "1~3회 성공 / 4배\n"
-            "4~5회 성공 / 2.5배\n"
-            "6~8회 성공 / 1.5배\n"
-            "실패 / 베팅금 손실"
-        ),
-        inline=False,
-    )
-
-    embed.add_field(
-        name="가위바위보",
-        value=(
-            "승리 33.33% / 2배\n"
-            "무승부 33.33% / 원금 반환\n"
-            "패배 33.33% / 베팅금 손실"
-        ),
-        inline=False,
-    )
-
-    embed.add_field(
-        name="지뢰찾기",
-        value=(
-            f"{MINESWEEPER_SIZE}x{MINESWEEPER_SIZE} 보드 / 지뢰 {MINESWEEPER_MINE_COUNT}개\n"
-            "안전 칸을 열수록 생존 확률에 맞춰 배당 상승\n"
-            "1개 1.23배 / 3개 1.96배 / 5개 3.39배\n"
-            "8개 10배 / 10개 28배 / 13개 560배\n"
-            "지뢰 클릭 시 베팅금 손실"
-        ),
-        inline=False,
-    )
-
-    embed.add_field(
-        name="몰빵게임",
-        value=(
-            f"참가비 `{format_money(ALL_IN_MIN_BET)}` 이상 자유 입력\n"
-            "하루 동안 참가한 사람 중 1명을 무작위로 추첨\n"
-            "그날 참가자들의 총 금액을 모두 1명이 가져갑니다."
-        ),
-        inline=False,
-    )
-  
-    embed.add_field(
-        name="덕몽",
-        value=(
-            "오리 33.33% / 2배 회수\n"
-            "팰리컨 33.33% / 원금 반환\n"
-            "거위 33.33% / 전부 잃음"
-        ),
-        inline=False,
-    )
-
-    embed.add_field(
-        name="섯다",
-        value=(
-            "첫 패 공개 후 배팅/다이 진행\n"
-            "두 사람 모두 배팅해야 두 번째 패 공개\n"
-            "광땡 > 땡 > 알리 > 독사 > 구삥 > 장삥 > 장사 > 세륙 > 갑오 > 끗 > 망통"
-        ),
-        inline=False,
-    )
-
-
-    await interaction.response.send_message(embed=embed)
-
-
 @bot.tree.command(name="족보", description="최근 게임 결과를 확인합니다.")
 async def game_history_command(interaction: discord.Interaction):
     embed = discord.Embed(
@@ -15356,7 +15313,8 @@ async def join_all_in_game(interaction: discord.Interaction, amount: int):
     pool_amount = sum(amount for _, amount in entries)
 
     await interaction.followup.send(
-        f"{interaction.user.mention}님이 오늘의 몰빵게임에 참여했습니다.\n"
+        f"🎮 참가자: {interaction.user.mention}\n"
+        "오늘의 몰빵게임에 참여했습니다.\n"
         f"참가비 `{format_money(amount)}`\n"
         f"현재 참가 인원: `{len(entries)}명`\n"
         f"현재 누적 금액: `{format_money(pool_amount)}`"
@@ -15886,6 +15844,7 @@ async def duckmong(interaction: discord.Interaction, amount: int):
     embed.set_footer(text="제한 시간 60초 · 선택한 뒤에는 변경할 수 없습니다.")
 
     send_kwargs = {
+        "content": f"🎮 게임 진행자: {interaction.user.mention}",
         "embed": embed,
         "view": DuckmongView(interaction.user.id, amount, fake_names, hidden_results),
     }
@@ -15924,7 +15883,12 @@ async def seotda(interaction: discord.Interaction, amount: int, member: discord.
         embed = match_view.build_embed(interaction.guild, interaction.client.user)
         embed.add_field(name="상대", value="봇", inline=False)
         file = match_view.build_table_file(reveal_count=1)
-        await interaction.response.send_message(embed=embed, file=file, view=match_view)
+        await interaction.response.send_message(
+            content=f"🎮 게임 진행자: {interaction.user.mention}",
+            embed=embed,
+            file=file,
+            view=match_view,
+        )
         try:
             match_view.message = await interaction.original_response()
         except discord.HTTPException:
@@ -15959,7 +15923,7 @@ async def seotda(interaction: discord.Interaction, amount: int, member: discord.
     embed.set_footer(text="상대방만 수락 또는 거절할 수 있습니다.")
 
     await interaction.response.send_message(
-        content=member.mention,
+        content=f"{member.mention}\n⚔️ 대결 신청자: {interaction.user.mention}",
         embed=embed,
         view=SeotdaChallengeView(interaction.user.id, member.id, amount),
     )
@@ -16035,7 +15999,7 @@ async def gambling_commands(interaction: discord.Interaction):
     embed.add_field(
         name="참고 정보",
         value=(
-            "`/확률표` - 게임 확률과 배당 확인\n"
+            "각 게임 패널의 `확률 보기` 버튼 - 해당 게임 확률과 배당 확인\n"
             "`/족보` - 최근 게임 결과 확인\n"
             "`/관리자명령어` - 관리자/일반 명령어 전체 목록"
         ),
@@ -16142,7 +16106,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         value=(
             "기초생활수급비 패널, `/잔액`, `/랭킹`, `/송금`, `/송금내역`\n"
             "`/사업자 목록`, `/추첨권구매`, `/추첨권현황`\n"
-            "`/도박명령어`, `/확률표`, `/족보`"
+            "`/도박명령어`, `/족보`, 게임 패널의 `확률 보기` 버튼"
         ),
         inline=False,
     )
