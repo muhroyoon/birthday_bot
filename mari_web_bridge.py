@@ -663,12 +663,19 @@ class Bridge:
         self.db.commit()
         return {"session": session}
 
+    def server_emojis(self, member):
+        roles={r.id for r in getattr(member,'roles',[])}
+        return [{"id":str(e.id),"name":e.name,"animated":e.animated,
+                 "token":f"<{'a' if e.animated else ''}:{e.name}:{e.id}>","url":str(e.url)}
+                for e in getattr(member.guild,'emojis',[]) if e.available and
+                (not e.roles or any(r.id in roles for r in e.roles))]
+
     def chat_messages(self, member):
         ids=[str(gid) for gid in self.guild_ids if self.bot.get_guild(gid)]
         if not ids: return {"messages": []}
         marks=','.join('?' for _ in ids)
         rows=self.db.execute(f"SELECT id,user_id,guild_id,name,avatar,body,created_at FROM mari_web_chat WHERE deleted=0 AND guild_id IN ({marks}) ORDER BY id DESC LIMIT 100",ids).fetchall()
-        return {"messages": [{"id":str(r[0]),"userId":r[1],"guild":self.guild_info(self.bot.get_guild(int(r[2]))),
+        return {"emojis":self.server_emojis(member),"messages": [{"id":str(r[0]),"userId":r[1],"guild":self.guild_info(self.bot.get_guild(int(r[2]))),
                 "name":r[3],"avatar":r[4],"body":r[5],"at":datetime.fromtimestamp(r[6],KST).isoformat(),
                 "canDelete":r[1]==str(member.id) or (r[2]==str(member.guild.id) and member.guild_permissions.administrator)} for r in reversed(rows)]}
 
@@ -682,6 +689,10 @@ class Bridge:
             if previous:
                 if previous!=(str(member.id),body.strip()): raise WebError("다른 메시지의 요청 번호입니다.",409)
                 return self.chat_messages(member)
+            allowed={e['token'] for e in self.server_emojis(member)}
+            for match in re.finditer(r'<a?:[A-Za-z0-9_]+:[0-9]{1,20}>',body):
+                if match.group(0) not in allowed:
+                    raise WebError("현재 서버에서 사용할 수 있는 이모지를 선택해주세요.",403)
             now=time.time()
             recent=self.db.execute('SELECT MAX(created_at),COUNT(*) FROM mari_web_chat WHERE user_id=? AND created_at>?',(str(member.id),now-60)).fetchone()
             if recent[0] is not None and (now-recent[0]<3 or recent[1]>=20): raise WebError("메시지를 너무 빠르게 보내고 있어요. 잠시 기다려주세요.",429)
@@ -720,7 +731,7 @@ class Bridge:
                 for embed in message.embeds:
                     title=embed.title or ''
                     if not (title.startswith('🎮 ') and ('모집중!' in title or '모집 종료' in title)): continue
-                    posts.append({"id":str(message.id),"title":title,"body":embed.description or '',
+                    posts.append({"id":str(message.id),"title":title,"body":re.sub(r'<@!?(\d+)>', lambda m: "@"+getattr(member.guild.get_member(int(m[1])),"display_name","알 수 없는 멤버"), embed.description or ''),
                         "guild":self.guild_info(member.guild),"channel":channel.name,"url":message.jump_url,
                         "at":message.created_at.isoformat(),"closed":'모집 종료' in title})
         posts.sort(key=lambda p:p['id'].zfill(25),reverse=True)
