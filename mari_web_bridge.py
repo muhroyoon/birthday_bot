@@ -338,9 +338,21 @@ class Bridge:
                 key = str(member.id)
                 if key not in members or preferred.get(key) == str(gid):
                     members[key] = member
-        rows = self.db.execute("SELECT user_id,balance FROM balances ORDER BY balance DESC,user_id ASC")
+        rows = self.db.execute("""
+            WITH active_savings AS (
+                SELECT user_id,SUM(principal) AS savings
+                FROM savings WHERE status='active' GROUP BY user_id
+            ), users AS (
+                SELECT user_id FROM balances UNION SELECT user_id FROM active_savings
+            )
+            SELECT u.user_id,COALESCE(b.balance,0),COALESCE(s.savings,0),
+                   COALESCE(b.balance,0)+COALESCE(s.savings,0) AS assets
+            FROM users u LEFT JOIN balances b ON b.user_id=u.user_id
+            LEFT JOIN active_savings s ON s.user_id=u.user_id
+            ORDER BY assets DESC,u.user_id ASC
+        """)
         entries, mine, total = [], None, 0
-        for user_id, balance in rows:
+        for user_id, balance, savings, assets in rows:
             member = members.get(str(user_id))
             if member is None:
                 continue
@@ -349,7 +361,7 @@ class Bridge:
                 continue
             item = {"userId": str(user_id), "name": member.display_name,
                     "username": member.name, "avatar": str(member.display_avatar.url),
-                    "balance": balance, "rank": total, "guild": self.guild_info(member.guild)}
+                    "balance": balance, "savings": savings, "totalAssets": assets, "rank": total, "guild": self.guild_info(member.guild)}
             if total <= 100:
                 entries.append(item)
             if str(user_id) == str(uid):
