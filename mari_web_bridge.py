@@ -708,6 +708,30 @@ class Bridge:
         self.db.commit()
         return self.chat_messages(member)
 
+    def recruit_is_closed(self, guild, message, embed):
+        if '모집 종료' in (embed.title or ''):
+            return True
+        buttons=[button for row in getattr(message,'components',[]) for button in getattr(row,'children',[])]
+        joins=[button for button in buttons if getattr(button,'label',None)=='참여하기']
+        if joins and all(getattr(button,'disabled',False) for button in joins):
+            return True
+        # A historical title is not proof of a live recruitment. The bot owns
+        # exactly one active post per voice channel; restart/replacement retires it.
+        active=next(((vid,data) for vid,data in self.ns.get('active_recruits',{}).items()
+                     if str(data.get('message_id'))==str(message.id) and data.get('text_channel_id')==message.channel.id),None)
+        if active is None:
+            return True
+        vid,data=active
+        voice=guild.get_channel(vid)
+        if voice is None or not any(m.id==data.get('host_id') for m in voice.members):
+            return True
+        maximum=data.get('max_players')
+        if maximum is not None:
+            players,_=self.ns['count_members'](voice)
+            if players>=maximum:
+                return True
+        return False
+
     async def recruit_posts(self, member):
         # Only scan channels the requesting member can read. Never expose private
         # channel messages through a server-level membership check alone.
@@ -731,9 +755,11 @@ class Bridge:
                 for embed in message.embeds:
                     title=embed.title or ''
                     if not (title.startswith('🎮 ') and ('모집중!' in title or '모집 종료' in title)): continue
-                    posts.append({"id":str(message.id),"title":title,"body":re.sub(r'<@!?(\d+)>', lambda m: "@"+getattr(member.guild.get_member(int(m[1])),"display_name","알 수 없는 멤버"), embed.description or ''),
+                    closed=self.recruit_is_closed(member.guild,message,embed)
+                    display_title=title.replace("모집중!","모집 종료") if closed else title
+                    posts.append({"id":str(message.id),"title":display_title,"body":re.sub(r'<@!?(\d+)>', lambda m: "@"+getattr(member.guild.get_member(int(m[1])),"display_name","알 수 없는 멤버"), embed.description or ''),
                         "guild":self.guild_info(member.guild),"channel":channel.name,"url":message.jump_url,
-                        "at":message.created_at.isoformat(),"closed":'모집 종료' in title})
+                        "at":message.created_at.isoformat(),"closed":closed})
         posts.sort(key=lambda p:p['id'].zfill(25),reverse=True)
         return {"posts":posts[:100]}
 
