@@ -191,6 +191,7 @@ class Bridge:
         self.lock = asyncio.Lock()
         self.member_sync_lock = asyncio.Lock()
         self.runner = None
+        self.recruit_cache = {}
         self.create_schema()
         self.guild_ids.update(int(row[0]) for row in self.db.execute("SELECT guild_id FROM mari_web_servers"))
         self.delta_context = ContextVar("mari_web_balance_capture", default=None)
@@ -214,6 +215,12 @@ class Bridge:
 
     def create_schema(self):
         self.db.executescript("""
+        CREATE TABLE IF NOT EXISTS mari_web_chat (
+            id INTEGER PRIMARY KEY, request_id TEXT UNIQUE NOT NULL, user_id TEXT NOT NULL,
+            guild_id TEXT NOT NULL, name TEXT NOT NULL, avatar TEXT, body TEXT NOT NULL,
+            created_at REAL NOT NULL, deleted INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_mari_chat_user_time ON mari_web_chat(user_id,created_at);
         CREATE TABLE IF NOT EXISTS mari_web_servers (
             guild_id TEXT PRIMARY KEY, connected_by TEXT NOT NULL, connected_at REAL NOT NULL
         );
@@ -363,7 +370,8 @@ class Bridge:
             winner_member = member.guild.get_member(int(winner)) if winner else None
             raffles.append({"id": rid, "title": title, "price": price, "limit": limit, "owned": owned,
                            "purchasedToday": self.ns["get_raffle_purchase_count_today"](rid, gid, uid),
-                           "drawn": winner is not None, "winner": winner_member.display_name if winner_member else winner})
+                           "drawn": winner is not None, "winner": winner_member.display_name if winner_member else winner,
+                           "guild": self.guild_info(member.guild)})
         records = self.db.execute(
             "SELECT id,name,detail,delta,created_at FROM mari_web_history WHERE user_id=? AND guild_id=? ORDER BY id DESC LIMIT 100",
             (str(uid), str(gid))).fetchall()
@@ -655,6 +663,69 @@ class Bridge:
         self.db.commit()
         return {"session": session}
 
+    def chat_messages(self, member):
+        ids=[str(gid) for gid in self.guild_ids if self.bot.get_guild(gid)]
+        if not ids: return {"messages": []}
+        marks=','.join('?' for _ in ids)
+        rows=self.db.execute(f"SELECT id,user_id,guild_id,name,avatar,body,created_at FROM mari_web_chat WHERE deleted=0 AND guild_id IN ({marks}) ORDER BY id DESC LIMIT 100",ids).fetchall()
+        return {"messages": [{"id":str(r[0]),"userId":r[1],"guild":self.guild_info(self.bot.get_guild(int(r[2]))),
+                "name":r[3],"avatar":r[4],"body":r[5],"at":datetime.fromtimestamp(r[6],KST).isoformat(),
+                "canDelete":r[1]==str(member.id) or (r[2]==str(member.guild.id) and member.guild_permissions.administrator)} for r in reversed(rows)]}
+
+    def chat_action(self, member, action, data):
+        if action=='chat/send':
+            body=data.get('body'); rid=data.get('requestId')
+            if not isinstance(body,str) or not 1<=len(body.strip())<=500 or any(ord(c)<32 and c not in '\n\t' for c in body):
+                raise WebError("메시지는 1~500자로 입력해주세요.")
+            if not isinstance(rid,str) or not 16<=len(rid)<=80: raise WebError("요청 번호가 필요해요.")
+            previous=self.db.execute('SELECT user_id,body FROM mari_web_chat WHERE request_id=?',(rid,)).fetchone()
+            if previous:
+                if previous!=(str(member.id),body.strip()): raise WebError("다른 메시지의 요청 번호입니다.",409)
+                return self.chat_messages(member)
+            now=time.time()
+            recent=self.db.execute('SELECT MAX(created_at),COUNT(*) FROM mari_web_chat WHERE user_id=? AND created_at>?',(str(member.id),now-60)).fetchone()
+            if recent[0] is not None and (now-recent[0]<3 or recent[1]>=20): raise WebError("메시지를 너무 빠르게 보내고 있어요. 잠시 기다려주세요.",429)
+            self.db.execute('INSERT INTO mari_web_chat(request_id,user_id,guild_id,name,avatar,body,created_at) VALUES(?,?,?,?,?,?,?)',
+                (rid,str(member.id),str(member.guild.id),member.display_name,str(member.display_avatar.url),body.strip(),now))
+        elif action=='chat/delete':
+            mid=integer(data.get('id'))
+            row=self.db.execute('SELECT user_id,guild_id FROM mari_web_chat WHERE id=?',(mid,)).fetchone()
+            if not row or not (row[0]==str(member.id) or (row[1]==str(member.guild.id) and member.guild_permissions.administrator)):
+                raise WebError("이 메시지를 삭제할 권한이 없어요.",403)
+            self.db.execute('UPDATE mari_web_chat SET deleted=1 WHERE id=?',(mid,))
+        else: raise WebError("지원하지 않는 요청입니다.",404)
+        self.db.commit()
+        return self.chat_messages(member)
+
+    async def recruit_posts(self, member):
+        # Only scan channels the requesting member can read. Never expose private
+        # channel messages through a server-level membership check alone.
+        posts=[]
+        for cid in self.ns.get('get_recruit_channel_ids',lambda gid:[])(member.guild.id):
+            channel=member.guild.get_channel(cid)
+            if channel is None: continue
+            perms=channel.permissions_for(member)
+            if not perms.view_channel or not perms.read_message_history: continue
+            cached=self.recruit_cache.get(cid)
+            if cached and time.time()-cached[0]<30:
+                messages=cached[1]
+            else:
+                try:
+                    messages=[m async for m in channel.history(limit=100)]
+                except discord.Forbidden: continue
+                except discord.HTTPException: raise WebError("구인 글을 불러오지 못했어요. 잠시 후 다시 시도해주세요.",503)
+                self.recruit_cache[cid]=(time.time(),messages)
+            for message in messages:
+                if message.author.id!=self.bot.user.id: continue
+                for embed in message.embeds:
+                    title=embed.title or ''
+                    if not (title.startswith('🎮 ') and ('모집중!' in title or '모집 종료' in title)): continue
+                    posts.append({"id":str(message.id),"title":title,"body":embed.description or '',
+                        "guild":self.guild_info(member.guild),"channel":channel.name,"url":message.jump_url,
+                        "at":message.created_at.isoformat(),"closed":'모집 종료' in title})
+        posts.sort(key=lambda p:p['id'].zfill(25),reverse=True)
+        return {"posts":posts[:100]}
+
     async def dispatch(self, action, token, data):
         if action in {"oauth/login", "oauth/logout", "servers", "servers/connect", "servers/select"}:
             return await self.oauth_action(action, token, data)
@@ -679,6 +750,10 @@ class Bridge:
             return {"session": session}
         uid, gid = self.session(token)
         member = await self.member(uid, gid, fresh=action not in {"account", "logout"})
+        if action == "recruits": return await self.recruit_posts(member)
+        if action == "chat": return self.chat_messages(member)
+        if action in {"chat/send","chat/delete"}:
+            async with self.lock: return self.chat_action(member,action,data)
         if action != "logout":
             await self.ensure_server_members()
         async with self.lock:
@@ -769,7 +844,7 @@ def install(namespace):
     @bot.tree.command(name="웹연결", description="마리봇 웹사이트에서 디스코드로 로그인합니다.")
     async def web_link(interaction: discord.Interaction):
         await interaction.response.send_message(
-            "https://maribot-play.eofh0402.chatgpt.site\n"
+            "https://maribot.co.kr\n"
             "디스코드로 로그인하면 기존 잔액과 추첨권을 이용할 수 있어요.\n"
             "서버 주인이 한 번 서버를 연결하면 멤버는 별도 코드 없이 이용해요.",
             ephemeral=True,
