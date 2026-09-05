@@ -193,6 +193,8 @@ class Bridge:
         self.runner = None
         self.recruit_cache = {}
         self.create_schema()
+        from mari_web_activities import Activities
+        self.activities = Activities(self, WebError)
         self.guild_ids.update(int(row[0]) for row in self.db.execute("SELECT guild_id FROM mari_web_servers"))
         self.delta_context = ContextVar("mari_web_balance_capture", default=None)
         original_add_balance = namespace["add_balance"]
@@ -787,6 +789,14 @@ class Bridge:
             return {"session": session}
         uid, gid = self.session(token)
         member = await self.member(uid, gid, fresh=action not in {"account", "logout"})
+        if action == 'kill': return self.activities.listing(member)
+        if isinstance(action,str) and action.startswith('kill/'):
+            async with self.lock:
+                try: return self.activities.mutate(member,action,data)
+                except ValueError as exc: raise WebError(str(exc))
+        if action == 'notifications': return self.activities.notifications(member)
+        if action == 'notifications/read':
+            async with self.lock: return self.activities.mark_read(member,data)
         if action == "recruits": return await self.recruit_posts(member)
         if action == "chat": return self.chat_messages(member)
         if action in {"chat/send","chat/delete"}:
