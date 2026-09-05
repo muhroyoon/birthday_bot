@@ -1,0 +1,670 @@
+"""Maribot web companion. Runs inside the existing Discord bot event loop.
+No bot token, production database copy, or separate balance ledger is required.
+"""
+from __future__ import annotations
+import asyncio
+import base64
+from contextvars import ContextVar
+import hashlib
+import inspect
+import json
+import logging
+import os
+import re
+import secrets
+import time
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+from typing import Any
+from aiohttp import web
+import discord
+
+log = logging.getLogger("maribot.web")
+KST = ZoneInfo("Asia/Seoul")
+GAME_FUNCTIONS = {
+    "slot": "slot", "coin": "coin", "baccarat": "baccarat",
+    "blackjack": "blackjack", "horse_race": "horse_race",
+    "rock_paper_scissors": "rock_paper_scissors", "number_baseball": "number_baseball",
+    "minesweeper": "minesweeper", "supply_drop": "supply_drop",
+    "duckmong": "duckmong", "seotda": "seotda", "all_in": "join_all_in_game",
+}
+
+class WebError(Exception):
+    def __init__(self, message: str, status: int = 400):
+        super().__init__(message)
+        self.status = status
+
+def digest(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
+
+def integer(value: Any, minimum=1, maximum=9_000_000_000_000) -> int:
+    if type(value) is not int or not minimum <= value <= maximum:
+        raise WebError("올바른 정수 값을 입력해주세요.")
+    return value
+
+@dataclass
+class Capture:
+    id: str
+    game: str
+    uid: int
+    gid: int
+    balance_before: int
+    owner: Any
+    revision: int = 0
+    busy: bool = True
+    content: str = ""
+    embeds: list = field(default_factory=list)
+    view: Any = None
+    image: str | None = None
+    notice: str = ""
+    timer: asyncio.Task | None = None
+    timeout_at: float = 0
+    logged: bool = False
+    net_delta: int = 0
+    slot_symbols: list = field(default_factory=list)
+
+    @property
+    def done(self):
+        return not self.busy and (
+            self.view is None or getattr(self.view, "resolved", False)
+            or type(self.view).__name__ == "SeotdaResultView"
+            or self.view.is_finished()
+            or all(getattr(c, "disabled", False) for c in self.view.children)
+        )
+
+    async def edit(self, **kw):
+        self.update(kw)
+        return self
+
+    def update(self, kw):
+        if "content" in kw:
+            self.content = kw["content"] or ""
+        if "embed" in kw:
+            self.embeds = [kw["embed"]] if kw["embed"] else []
+        if "embeds" in kw:
+            self.embeds = kw["embeds"] or []
+        if "view" in kw:
+            self.view = kw["view"]
+            if self.view is not None:
+                self.view.message = self
+        files = kw.get("attachments", kw.get("files", [kw["file"]] if kw.get("file") else None))
+        if files is not None:
+            self.image = None
+            for f in files:
+                if isinstance(f, discord.File):
+                    pos = f.fp.tell()
+                    f.fp.seek(0)
+                    data = f.fp.read(2_000_001)
+                    f.fp.seek(pos)
+                    if len(data) <= 2_000_000 and data.startswith(b"\x89PNG\r\n\x1a\n"):
+                        self.image = "data:image/png;base64," + base64.b64encode(data).decode()
+                        break
+        self.revision += 1
+
+    def snapshot(self):
+        embed = self.embeds[0].to_dict() if self.embeds else {}
+        controls = []
+        if self.view and not self.done:
+            for child in self.view.children:
+                options = None
+                if isinstance(child, discord.ui.Select):
+                    options = [{"label": o.label, "value": o.value} for o in child.options]
+                controls.append({
+                    "id": child.custom_id, "label": getattr(child, "label", None) or getattr(child, "placeholder", None) or "선택",
+                    "disabled": bool(getattr(child, "disabled", False)), "row": child.row,
+                    "style": int(getattr(child, "style", 2)), "options": options,
+                })
+        motion = {}
+        if self.done and self.game == "slot" and len(self.slot_symbols) == 3:
+            motion["symbols"] = list(self.slot_symbols)
+        if self.done and self.game == "coin":
+            match = re.search(r"결과:\s*\*\*(앞|뒤)\*\*", embed.get("description", ""))
+            if match:
+                motion["coin"] = match.group(1)
+        return {"id": self.id, "game": self.game, "revision": self.revision,
+                "done": self.done, "busy": self.busy, "title": embed.get("title", "마리봇"),
+                "description": embed.get("description", self.content),
+                "fields": embed.get("fields", []), "image": self.image,
+                "controls": controls, "notice": self.notice, "motion": motion}
+
+class ResponseAdapter:
+    def __init__(self, capture):
+        self.capture = capture
+        self.responded = False
+
+    def is_done(self):
+        return self.responded
+
+    async def defer(self, **kw):
+        self.responded = True
+
+    async def send_message(self, content=None, **kw):
+        self.responded = True
+        if kw.get("ephemeral") and self.capture.embeds:
+            self.capture.notice = content or (kw.get("embed").description if kw.get("embed") else "")
+        else:
+            self.capture.update({**kw, **({"content": content} if content is not None else {})})
+        return self.capture
+
+    async def edit_message(self, **kw):
+        self.responded = True
+        self.capture.update(kw)
+        return self.capture
+
+    async def send(self, content=None, **kw):
+        return await self.send_message(content, **kw)
+
+    async def send_modal(self, modal):
+        raise WebError("이 입력은 현재 디스코드에서 진행해주세요.", 409)
+
+class InteractionAdapter:
+    def __init__(self, bot, member, capture):
+        self.client = bot
+        self.user = member
+        self.guild = member.guild
+        self.guild_id = member.guild.id
+        self.message = capture
+        self.response = ResponseAdapter(capture)
+        self.followup = self.response
+        self.data = {}
+        self.channel = None
+        self.channel_id = None
+
+    async def original_response(self):
+        return self.message
+
+    async def edit_original_response(self, **kw):
+        return await self.message.edit(**kw)
+
+class Bridge:
+    def __init__(self, namespace, secret: str, guild_ids: set[int]):
+        if len(secret) < 32 or not guild_ids:
+            raise ValueError("MARIBOT_BRIDGE_SECRET (32+ characters) and MARIBOT_WEB_GUILD_IDS are required")
+        self.ns = namespace
+        self.bot = namespace["bot"]
+        self.db = namespace["conn"]
+        self.secret = secret
+        self.guild_ids = guild_ids
+        self.codes: dict[str, tuple[int, int, float]] = {}
+        self.rounds: dict[int, Capture] = {}
+        self.lock = asyncio.Lock()
+        self.runner = None
+        self.create_schema()
+        self.delta_context = ContextVar("mari_web_balance_capture", default=None)
+        original_add_balance = namespace["add_balance"]
+        def tracked_add_balance(uid, amount):
+            result = original_add_balance(uid, amount)
+            capture = self.delta_context.get()
+            if capture is not None and capture.uid == uid:
+                capture.net_delta += amount
+            return result
+        namespace["add_balance"] = tracked_add_balance
+        original_slot_image = namespace.get("build_slot_image_file")
+        if original_slot_image:
+            def tracked_slot_image(symbols, *args, **kwargs):
+                result = original_slot_image(symbols, *args, **kwargs)
+                capture = self.delta_context.get()
+                if capture is not None and capture.game == "slot":
+                    capture.slot_symbols = list(symbols)
+                return result
+            namespace["build_slot_image_file"] = tracked_slot_image
+
+    def create_schema(self):
+        self.db.executescript("""
+        CREATE TABLE IF NOT EXISTS mari_web_profiles (
+            user_id TEXT PRIMARY KEY, guild_id TEXT NOT NULL, name TEXT NOT NULL,
+            username TEXT NOT NULL, avatar TEXT, linked_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_mari_web_profile_guild ON mari_web_profiles(guild_id);
+        CREATE TABLE IF NOT EXISTS mari_web_sessions (
+            token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, guild_id TEXT NOT NULL, expires_at REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS mari_web_requests (
+            request_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, fingerprint TEXT NOT NULL,
+            status TEXT NOT NULL, created_at REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS mari_web_rounds (
+            id TEXT PRIMARY KEY, user_id TEXT NOT NULL, guild_id TEXT NOT NULL, game TEXT NOT NULL,
+            balance_before INTEGER NOT NULL, status TEXT NOT NULL, snapshot TEXT, created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_mari_web_round_user ON mari_web_rounds(user_id,status);
+        CREATE TABLE IF NOT EXISTS mari_web_history (
+            id INTEGER PRIMARY KEY, user_id TEXT NOT NULL, guild_id TEXT NOT NULL,
+            name TEXT NOT NULL, detail TEXT NOT NULL, delta INTEGER NOT NULL, created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_mari_web_history_user ON mari_web_history(user_id,guild_id,id);
+        CREATE TABLE IF NOT EXISTS mari_web_draws (
+            raffle_id INTEGER PRIMARY KEY, guild_id TEXT NOT NULL, winner_id TEXT NOT NULL,
+            ticket_count INTEGER NOT NULL, selected_ticket INTEGER NOT NULL,
+            participant_snapshot TEXT NOT NULL, drawn_by TEXT NOT NULL, drawn_at TEXT NOT NULL
+        );
+        """)
+        self.db.execute("PRAGMA optimize")
+        self.db.commit()
+
+    def issue_code(self, uid, gid):
+        now = time.time()
+        self.codes = {k: v for k, v in self.codes.items() if v[2] > now and v[:2] != (uid, gid)}
+        code = secrets.token_urlsafe(18)
+        self.codes[digest(code)] = (uid, gid, now + 300)
+        return code
+
+    async def member(self, uid, gid, fresh=False):
+        if gid not in self.guild_ids:
+            raise WebError("허용되지 않은 디스코드 서버입니다.", 403)
+        guild = self.bot.get_guild(gid)
+        if not guild:
+            raise WebError("마리봇의 서버 연결을 확인해주세요.", 503)
+        member = None if fresh else guild.get_member(uid)
+        if member is None:
+            try:
+                member = await guild.fetch_member(uid)
+            except discord.HTTPException:
+                raise WebError("서버 멤버만 이용할 수 있어요.", 403)
+        return member
+
+    def session(self, token):
+        if not isinstance(token, str) or len(token) > 128:
+            raise WebError("계정을 다시 연결해주세요.", 401)
+        row = self.db.execute(
+            "SELECT user_id,guild_id FROM mari_web_sessions WHERE token_hash=? AND expires_at>?",
+            (digest(token), time.time())).fetchone()
+        if not row:
+            raise WebError("연결 시간이 만료됐어요. 계정을 다시 연결해주세요.", 401)
+        return int(row[0]), int(row[1])
+
+    def log_history(self, uid, gid, name, detail, delta):
+        self.db.execute("INSERT INTO mari_web_history(user_id,guild_id,name,detail,delta,created_at) VALUES(?,?,?,?,?,?)",
+                        (str(uid), str(gid), name, detail, delta, datetime.now(KST).isoformat()))
+
+    def linked_profile(self, member):
+        self.db.execute("""INSERT INTO mari_web_profiles(user_id,guild_id,name,username,avatar,linked_at)
+            VALUES(?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET
+            guild_id=excluded.guild_id,name=excluded.name,username=excluded.username,
+            avatar=excluded.avatar,linked_at=excluded.linked_at""",
+            (str(member.id),str(member.guild.id),member.display_name,member.name,
+             str(member.display_avatar.url),datetime.now(KST).isoformat()))
+
+    def guild_info(self, guild):
+        icon = getattr(guild, "icon", None)
+        return {"id": str(guild.id), "name": getattr(guild, "name", str(guild.id)),
+                "icon": str(icon.url) if icon else None}
+
+    def leaderboard(self, uid):
+        guilds = {str(gid): self.bot.get_guild(gid) for gid in self.guild_ids}
+        guilds = {gid: guild for gid, guild in guilds.items() if guild is not None}
+        if not guilds:
+            return {"entries": [], "mine": None, "total": 0}
+        placeholders = ",".join("?" for _ in guilds)
+        rows = self.db.execute(f"""WITH ranked AS (
+            SELECT p.user_id,p.guild_id,p.name,p.username,p.avatar,COALESCE(b.balance,0) AS balance,
+            ROW_NUMBER() OVER (ORDER BY COALESCE(b.balance,0) DESC,p.user_id ASC) AS rank,
+            COUNT(*) OVER () AS total
+            FROM mari_web_profiles p LEFT JOIN balances b ON b.user_id=p.user_id
+            WHERE p.guild_id IN ({placeholders})
+        ) SELECT * FROM ranked WHERE rank<=100 OR user_id=? ORDER BY rank""",
+            (*guilds.keys(),str(uid))).fetchall()
+        entries, mine = [], None
+        for user_id,gid,name,username,avatar,balance,rank,total in rows:
+            item = {"userId":user_id,"name":name,"username":username,"avatar":avatar,
+                    "balance":balance,"rank":rank,"guild":self.guild_info(guilds[gid])}
+            if rank<=100:
+                entries.append(item)
+            if user_id==str(uid):
+                mine=item
+        return {"entries":entries,"mine":mine,"total":rows[0][-1] if rows else 0}
+
+    def account(self, member):
+        uid, gid = member.id, member.guild.id
+        rows = self.db.execute("""
+            SELECT r.id,r.title,r.price,r.daily_limit,r.status,d.winner_id
+            FROM raffle_tickets r LEFT JOIN mari_web_draws d ON r.id=d.raffle_id
+            WHERE r.guild_id=? AND (r.status='active' OR d.raffle_id IS NOT NULL)
+            ORDER BY r.id DESC LIMIT 50
+        """, (str(gid),)).fetchall()
+        raffles = []
+        for rid, title, price, limit, status, winner in rows:
+            owned = self.db.execute(
+                "SELECT COALESCE(SUM(quantity),0) FROM raffle_purchases WHERE raffle_id=? AND guild_id=? AND user_id=?",
+                (rid, str(gid), str(uid))).fetchone()[0]
+            winner_member = member.guild.get_member(int(winner)) if winner else None
+            raffles.append({"id": rid, "title": title, "price": price, "limit": limit, "owned": owned,
+                           "purchasedToday": self.ns["get_raffle_purchase_count_today"](rid, gid, uid),
+                           "drawn": winner is not None, "winner": winner_member.display_name if winner_member else winner})
+        records = self.db.execute(
+            "SELECT id,name,detail,delta,created_at FROM mari_web_history WHERE user_id=? AND guild_id=? ORDER BY id DESC LIMIT 100",
+            (str(uid), str(gid))).fetchall()
+        capture = self.rounds.get(uid)
+        public_round = capture.snapshot() if capture and capture.gid == gid else None
+        if public_round is None:
+            last = self.db.execute(
+                "SELECT snapshot,status FROM mari_web_rounds WHERE user_id=? AND guild_id=? ORDER BY created_at DESC LIMIT 1",
+                (str(uid), str(gid))).fetchone()
+            if last and last[0]:
+                public_round = json.loads(last[0])
+                if last[1] != "done":
+                    public_round.update(done=True, controls=[], notice="봇 재시작으로 중단된 게임입니다. 관리자에게 정산 확인을 요청해주세요.")
+        return {"user": {"id":str(uid),"name": member.display_name,"username":member.name, "avatar": str(member.display_avatar.url)},
+                "guild":self.guild_info(member.guild),"leaderboard":self.leaderboard(uid),
+                "balance": self.ns["get_balance"](uid), "admin": member.guild_permissions.administrator,
+                "raffles": raffles, "round": public_round,
+                "history": [{"id": str(r[0]), "name": r[1], "detail": r[2], "delta": r[3], "at": r[4]} for r in records]}
+
+    def save_capture(self, capture):
+        snapshot = capture.snapshot()
+        # Keep private game state and image bytes out of the persistent public receipt.
+        stored = {**snapshot, "image": None}
+        status = "done" if capture.done else "active"
+        self.db.execute("UPDATE mari_web_rounds SET status=?,snapshot=? WHERE id=?",
+                        (status, json.dumps(stored, ensure_ascii=False), capture.id))
+        if capture.done and not capture.logged:
+            capture.logged = True
+            self.log_history(capture.uid, capture.gid, self.ns["CASINO_GAMES"][capture.game]["name"],
+                             snapshot["title"] + " · " + snapshot["description"][:400], capture.net_delta)
+        self.db.commit()
+
+    def schedule_timeout(self, capture):
+        if capture.timer:
+            capture.timer.cancel()
+        if capture.done or capture.view is None:
+            return
+        capture.timeout_at = time.monotonic() + float(capture.view.timeout or 120)
+        capture.timer = asyncio.create_task(self.expire(capture))
+
+    async def expire(self, capture):
+        try:
+            await asyncio.sleep(max(0, capture.timeout_at - time.monotonic()))
+            async with self.lock:
+                if capture.done:
+                    return
+                capture.busy = True
+                context_token = self.delta_context.set(capture)
+                try:
+                    await capture.view.on_timeout()
+                finally:
+                    self.delta_context.reset(context_token)
+                capture.view.stop()
+                capture.busy = False
+                capture.revision += 1
+                capture.notice = "제한 시간이 지나 기존 마리봇 규칙으로 자동 처리됐어요."
+                self.save_capture(capture)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            log.exception("Web game timeout needs reconciliation: %s", capture.id)
+            capture.busy = False
+            capture.notice = "자동 처리 중 문제가 발생했어요. 관리자에게 정산 확인을 요청해주세요."
+
+    def buy_raffle(self, member, data, request_id):
+        rid, qty = integer(data.get("id")), integer(data.get("quantity"), 1, 10000)
+        uid, gid = member.id, member.guild.id
+        now = datetime.now(KST)
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        to_db = self.ns["dt_to_db"]
+        try:
+            self.db.execute("BEGIN IMMEDIATE")
+            raffle = self.db.execute("SELECT title,price,daily_limit FROM raffle_tickets WHERE id=? AND guild_id=? AND status='active'",
+                                     (rid, str(gid))).fetchone()
+            if not raffle:
+                raise WebError("추첨이 마감됐거나 존재하지 않아요.")
+            if self.db.execute("SELECT 1 FROM mari_web_draws WHERE raffle_id=?", (rid,)).fetchone():
+                raise WebError("이미 추첨이 완료됐어요.")
+            count = self.db.execute("""
+                SELECT COALESCE(SUM(quantity),0) FROM raffle_purchases
+                WHERE raffle_id=? AND guild_id=? AND user_id=? AND purchased_at>=? AND purchased_at<?
+            """, (rid, str(gid), str(uid), to_db(start), to_db(start + timedelta(days=1)))).fetchone()[0]
+            if count + qty > raffle[2]:
+                raise WebError("오늘 구매 가능한 수량을 초과했어요.")
+            total = integer(raffle[1] * qty)
+            changed = self.db.execute("UPDATE balances SET balance=balance-? WHERE user_id=? AND balance>=?",
+                                      (total, str(uid), total)).rowcount
+            if changed != 1:
+                raise WebError("잔액이 부족해요.")
+            self.db.execute("""
+                INSERT INTO raffle_purchases(raffle_id,guild_id,user_id,quantity,total_amount,purchased_at)
+                VALUES(?,?,?,?,?,?)
+            """, (rid, str(gid), str(uid), qty, total, to_db(now)))
+            self.log_history(uid, gid, raffle[0], str(qty) + "장 구매", -total)
+            self.db.execute("UPDATE mari_web_requests SET status='done' WHERE request_id=?", (request_id,))
+            self.db.commit()
+        except BaseException:
+            self.db.rollback()
+            raise
+
+    def draw_raffle(self, member, data, request_id):
+        if not member.guild_permissions.administrator:
+            raise WebError("서버 관리자만 추첨할 수 있어요.", 403)
+        rid, gid = integer(data.get("id")), member.guild.id
+        try:
+            self.db.execute("BEGIN IMMEDIATE")
+            raffle = self.db.execute("SELECT title FROM raffle_tickets WHERE id=? AND guild_id=? AND status='active'",
+                                     (rid, str(gid))).fetchone()
+            if not raffle:
+                raise WebError("추첨이 마감됐거나 존재하지 않아요.")
+            rows = self.db.execute("""
+                SELECT user_id,SUM(quantity) FROM raffle_purchases WHERE raffle_id=? AND guild_id=?
+                GROUP BY user_id ORDER BY user_id
+            """, (rid, str(gid))).fetchall()
+            total = sum(r[1] for r in rows)
+            if total <= 0:
+                raise WebError("구매된 추첨권이 없어요.")
+            selected = secrets.randbelow(total)
+            cursor = selected
+            winner = None
+            for uid, count in rows:
+                if cursor < count:
+                    winner = uid
+                    break
+                cursor -= count
+            self.db.execute("""
+                INSERT INTO mari_web_draws(raffle_id,guild_id,winner_id,ticket_count,selected_ticket,participant_snapshot,drawn_by,drawn_at)
+                VALUES(?,?,?,?,?,?,?,?)
+            """, (rid, str(gid), winner, total, selected, json.dumps(rows), str(member.id), datetime.now(KST).isoformat()))
+            self.db.execute("UPDATE raffle_tickets SET status='drawn' WHERE id=? AND guild_id=?", (rid, str(gid)))
+            self.log_history(member.id, gid, raffle[0], "추첨 완료 · 당첨자 " + str(winner), 0)
+            if str(member.id) != str(winner):
+                self.log_history(winner, gid, raffle[0], "추첨 당첨 · 상품 수령은 운영진 안내를 확인해주세요.", 0)
+            self.db.execute("UPDATE mari_web_requests SET status='done' WHERE request_id=?", (request_id,))
+            self.db.commit()
+        except BaseException:
+            self.db.rollback()
+            raise
+
+    async def game_action(self, member, action, data):
+        uid, gid = member.id, member.guild.id
+        if action == "game/start":
+            game = data.get("game")
+            if game not in GAME_FUNCTIONS:
+                raise WebError("지원하지 않는 게임이에요.")
+            existing = self.rounds.get(uid)
+            if existing and not existing.done:
+                raise WebError("진행 중인 게임을 먼저 마무리해주세요.", 409)
+            unresolved = self.db.execute("SELECT id FROM mari_web_rounds WHERE user_id=? AND status<>'done' LIMIT 1",
+                                         (str(uid),)).fetchone()
+            if unresolved:
+                raise WebError("중단된 게임의 정산 확인이 필요해요. 관리자에게 문의해주세요.", 409)
+            amount = self.ns["NUMBER_BASEBALL_COST"] if game == "number_baseball" else integer(data.get("amount"))
+            minimum = self.ns["CASINO_GAMES"][game]["minimum"]
+            if amount < minimum:
+                raise WebError("최소 " + str(minimum) + "마리 이상 입력해주세요.")
+            capture = Capture(secrets.token_urlsafe(18), game, uid, gid, self.ns["get_balance"](uid), self)
+            self.rounds[uid] = capture
+            self.db.execute("INSERT INTO mari_web_rounds(id,user_id,guild_id,game,balance_before,status,created_at) VALUES(?,?,?,?,?,'active',?)",
+                            (capture.id, str(uid), str(gid), game, capture.balance_before, datetime.now(KST).isoformat()))
+            self.db.commit()
+            interaction = InteractionAdapter(self.bot, member, capture)
+            fn = self.ns[GAME_FUNCTIONS[game]]
+            fn = getattr(fn, "callback", fn)
+            context_token = self.delta_context.set(capture)
+            try:
+                await fn(interaction, **({} if game == "number_baseball" else {"amount": amount}))
+            finally:
+                self.delta_context.reset(context_token)
+        else:
+            capture = self.rounds.get(uid)
+            if not capture or capture.gid != gid or capture.id != data.get("roundId") or capture.done:
+                raise WebError("진행 중인 게임을 찾을 수 없어요.", 409)
+            if capture.revision != data.get("revision"):
+                raise WebError("게임 화면이 갱신됐어요. 다시 확인해주세요.", 409)
+            interaction = InteractionAdapter(self.bot, member, capture)
+            if not await capture.view.interaction_check(interaction):
+                raise WebError(capture.notice or "이 게임을 진행할 권한이 없어요.", 403)
+            if action == "game/guess":
+                if capture.game != "number_baseball":
+                    raise WebError("숫자야구에서만 사용할 수 있어요.")
+                guess = data.get("guess")
+                if not isinstance(guess, str) or len(guess) > 10:
+                    raise WebError("서로 다른 숫자 4개를 입력해주세요.")
+                capture.busy = True
+                context_token = self.delta_context.set(capture)
+                try:
+                    await capture.view.submit_guess(interaction, guess)
+                finally:
+                    self.delta_context.reset(context_token)
+            elif action == "game/control":
+                control = next((c for c in capture.view.children if c.custom_id == data.get("controlId")), None)
+                if control is None or getattr(control, "disabled", False):
+                    raise WebError("사용할 수 없는 버튼입니다.", 409)
+                if isinstance(control, discord.ui.Select):
+                    value = data.get("value")
+                    if value not in [o.value for o in control.options]:
+                        raise WebError("올바른 항목을 선택해주세요.")
+                    control._values = [value]
+                    interaction.data = {"values": [value]}
+                capture.busy = True
+                context_token = self.delta_context.set(capture)
+                try:
+                    await control.callback(interaction)
+                finally:
+                    self.delta_context.reset(context_token)
+            else:
+                raise WebError("지원하지 않는 요청이에요.", 404)
+        capture.busy = False
+        capture.revision += 1
+        self.save_capture(capture)
+        self.schedule_timeout(capture)
+
+    async def dispatch(self, action, token, data):
+        if action == "claim":
+            code = data.get("code")
+            if not isinstance(code, str) or not 20 <= len(code) <= 64:
+                raise WebError("올바른 연결 코드를 입력해주세요.")
+            identity = self.codes.get(digest(code))
+            if not identity or identity[2] <= time.time():
+                raise WebError("코드가 만료됐거나 이미 사용됐어요. /웹연결로 다시 발급해주세요.", 401)
+            uid, gid, _ = identity
+            linked_member = await self.member(uid, gid, fresh=True)
+            async with self.lock:
+                if self.codes.pop(digest(code), None) is None:
+                    raise WebError("이미 사용된 코드입니다.", 401)
+                session = secrets.token_urlsafe(32)
+                self.db.execute("DELETE FROM mari_web_sessions WHERE expires_at<=?", (time.time(),))
+                self.db.execute("INSERT INTO mari_web_sessions VALUES(?,?,?,?)",
+                                (digest(session), str(uid), str(gid), time.time() + 43200))
+                self.linked_profile(linked_member)
+                self.db.commit()
+            return {"session": session}
+        uid, gid = self.session(token)
+        member = await self.member(uid, gid, fresh=action not in {"account", "logout"})
+        async with self.lock:
+            if action == "logout":
+                self.db.execute("DELETE FROM mari_web_sessions WHERE token_hash=?", (digest(token),))
+                self.db.commit()
+                return {"ok": True}
+            if action == "account":
+                return self.account(member)
+            request_id = data.get("requestId")
+            if not isinstance(request_id, str) or not 16 <= len(request_id) <= 80:
+                raise WebError("요청 번호가 필요해요.")
+            fingerprint = digest(json.dumps([action, {k: v for k, v in data.items() if k != "requestId"}], sort_keys=True))
+            receipt = self.db.execute("SELECT user_id,fingerprint,status FROM mari_web_requests WHERE request_id=?", (request_id,)).fetchone()
+            if receipt:
+                if receipt[0] != str(uid) or receipt[1] != fingerprint:
+                    raise WebError("요청 번호가 다른 작업에 사용됐어요.", 409)
+                if receipt[2] != "done":
+                    raise WebError("이전 요청의 처리 확인이 필요해요. 새로고침 후 결과를 확인해주세요.", 409)
+                return self.account(member)
+            self.db.execute("INSERT INTO mari_web_requests VALUES(?,?,?,'pending',?)",
+                            (request_id, str(uid), fingerprint, time.time()))
+            self.db.commit()
+            try:
+                if action == "raffles/buy":
+                    self.buy_raffle(member, data, request_id)
+                elif action == "raffles/draw":
+                    self.draw_raffle(member, data, request_id)
+                elif action in {"game/start", "game/control", "game/guess"}:
+                    await self.game_action(member, action, data)
+                    self.db.execute("UPDATE mari_web_requests SET status='done' WHERE request_id=?", (request_id,))
+                    self.db.commit()
+                else:
+                    raise WebError("지원하지 않는 요청입니다.", 404)
+            except WebError:
+                # Business-rule rejection may be corrected with a new action.
+                self.db.execute("DELETE FROM mari_web_requests WHERE request_id=?", (request_id,))
+                self.db.commit()
+                raise
+            except Exception:
+                # Never replay an uncertain operation; the durable pending receipt is retained.
+                log.exception("Web operation needs reconciliation: %s", request_id)
+                raise WebError("처리 중 문제가 발생했어요. 재시도 전에 관리자에게 정산 확인을 요청해주세요.", 503)
+            return self.account(member)
+
+    async def handler(self, request):
+        expected = "Bearer " + self.secret
+        if not secrets.compare_digest(request.headers.get("Authorization", ""), expected):
+            return web.json_response({"error": "Unauthorized"}, status=401)
+        try:
+            body = await request.json()
+            if not isinstance(body, dict) or not isinstance(body.get("data", {}), dict):
+                raise WebError("잘못된 요청입니다.")
+            result = await self.dispatch(body.get("action"), body.get("session"), body.get("data", {}))
+            return web.json_response(result, headers={"Cache-Control": "no-store"})
+        except WebError as exc:
+            return web.json_response({"error": str(exc)}, status=exc.status)
+        except (ValueError, TypeError):
+            return web.json_response({"error": "잘못된 요청입니다."}, status=400)
+        except Exception:
+            log.exception("Bridge request failed")
+            return web.json_response({"error": "마리봇 연결을 확인해주세요."}, status=503)
+
+    async def health(self, request):
+        ready = self.bot.is_ready()
+        return web.json_response({"ready": ready}, status=200 if ready else 503,
+                                 headers={"Cache-Control": "no-store"})
+
+    async def start(self):
+        if self.runner:
+            return
+        app = web.Application(client_max_size=16384)
+        app.router.add_get("/health", self.health)
+        app.router.add_post("/v1", self.handler)
+        self.runner = web.AppRunner(app, access_log=None)
+        await self.runner.setup()
+        port = int(os.environ.get("PORT", os.environ.get("MARIBOT_WEB_PORT", "8080")))
+        await web.TCPSite(self.runner, "0.0.0.0", port).start()
+        log.info("Maribot web bridge started on port %s", port)
+
+def install(namespace):
+    """Call before bot.run, only when MARIBOT_WEB_ENABLED=1."""
+    secret = os.environ.get("MARIBOT_BRIDGE_SECRET", "")
+    guild_ids = {int(v.strip()) for v in os.environ.get("MARIBOT_WEB_GUILD_IDS", "").split(",") if v.strip()}
+    bridge = Bridge(namespace, secret, guild_ids)
+    bot = namespace["bot"]
+
+    @bot.tree.command(name="웹연결", description="마리봇 웹사이트에 연결할 일회용 코드를 받습니다.")
+    async def web_link(interaction: discord.Interaction):
+        if interaction.guild is None or interaction.guild.id not in guild_ids:
+            await interaction.response.send_message("지원하는 서버 안에서 사용해주세요.", ephemeral=True)
+            return
+        code = bridge.issue_code(interaction.user.id, interaction.guild.id)
+        await interaction.response.send_message(
+            "마리봇 웹사이트의 계정 연결에 아래 코드를 입력해주세요.\n"
+            + "`" + code + "`\n5분 동안 한 번만 사용할 수 있어요. 다른 사람에게 공유하지 마세요.",
+            ephemeral=True,
+        )
+
+    bot.add_listener(bridge.start, "on_ready")
+    namespace["mari_web_bridge"] = bridge
+    return bridge
+

@@ -17497,5 +17497,11 @@ async def on_ready():
     print("메인 서버 봇 초기 실행 완료")
 
 
+# MARIBOT_WEB_BRIDGE_BOOTSTRAP
+import os as _mari_web_os
+if _mari_web_os.environ.get("MARIBOT_WEB_ENABLED") == "1":
+    from mari_web_bridge import install as _install_mari_web
+    _install_mari_web(globals())
+
 bot.run(TOKEN)
 
