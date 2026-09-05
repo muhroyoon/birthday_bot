@@ -190,6 +190,8 @@ class Bridge:
         self.rounds: dict[int, Capture] = {}
         self.lock = asyncio.Lock()
         self.visitors = {}
+        from mari_web_training import TrainingRecords
+        self.training = TrainingRecords(self,WebError)
         self.member_sync_lock = asyncio.Lock()
         self.runner = None
         self.recruit_cache = {}
@@ -793,6 +795,12 @@ class Bridge:
 
     async def dispatch(self, action, token, data):
         if action=="presence": return self.presence(token,data)
+        if action=='training/ranking':
+            viewer=None
+            if token:
+                try:viewer=self.session(token)[0]
+                except WebError:pass
+            return self.training.ranking(data,viewer)
         if action in {"oauth/login", "oauth/logout", "servers", "servers/connect", "servers/select"}:
             return await self.oauth_action(action, token, data)
         if action == "claim":
@@ -816,6 +824,13 @@ class Bridge:
             return {"session": session}
         uid, gid = self.session(token)
         member = await self.member(uid, gid, fresh=action not in {"account", "logout"})
+        if action in {'training/start','training/ticket','training/submit'}:
+            async with self.lock:
+                if action=='training/start':return self.training.start(member,data)
+                if action=='training/ticket':
+                    row=self.training.ticket(member,data)
+                    return {'id':data.get('id'),'seed':row[5],'config':{'mode':row[2],'difficulty':row[3],'seconds':row[4]}}
+                return self.training.submit(member,data)
         if action=='rewards' or action in {'rewards/support','rewards/bonus'}:
             from mari_web_rewards import Rewards
             rewards=Rewards(self,WebError)
