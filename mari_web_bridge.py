@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Any
-from aiohttp import web
+from aiohttp import web, ClientSession, ClientTimeout
 import discord
 
 log = logging.getLogger("maribot.web")
@@ -191,6 +191,7 @@ class Bridge:
         self.lock = asyncio.Lock()
         self.runner = None
         self.create_schema()
+        self.guild_ids.update(int(row[0]) for row in self.db.execute("SELECT guild_id FROM mari_web_servers"))
         self.delta_context = ContextVar("mari_web_balance_capture", default=None)
         original_add_balance = namespace["add_balance"]
         def tracked_add_balance(uid, amount):
@@ -212,6 +213,12 @@ class Bridge:
 
     def create_schema(self):
         self.db.executescript("""
+        CREATE TABLE IF NOT EXISTS mari_web_servers (
+            guild_id TEXT PRIMARY KEY, connected_by TEXT NOT NULL, connected_at REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS mari_web_identities (
+            token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, guild_ids TEXT NOT NULL, expires_at REAL NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS mari_web_profiles (
             user_id TEXT PRIMARY KEY, guild_id TEXT NOT NULL, name TEXT NOT NULL,
             username TEXT NOT NULL, avatar TEXT, linked_at TEXT NOT NULL
@@ -545,7 +552,86 @@ class Bridge:
         self.save_capture(capture)
         self.schedule_timeout(capture)
 
+    async def discord_identity(self, access_token):
+        if not isinstance(access_token, str) or not 10 <= len(access_token) <= 2048:
+            raise WebError("디스코드 로그인을 다시 진행해주세요.", 401)
+        async with ClientSession(timeout=ClientTimeout(total=15), headers={"Authorization": "Bearer " + access_token}) as http:
+            async with http.get("https://discord.com/api/v10/users/@me") as res:
+                if res.status != 200:
+                    raise WebError("디스코드 로그인을 다시 진행해주세요.", 401)
+                user = await res.json()
+            async with http.get("https://discord.com/api/v10/users/@me/guilds?limit=200") as res:
+                if res.status != 200:
+                    raise WebError("서버 목록을 확인하지 못했어요. 다시 로그인해주세요.", 401)
+                guilds = await res.json()
+        return int(user["id"]), [int(g["id"]) for g in guilds]
+
+    def identity(self, token):
+        if not isinstance(token, str):
+            raise WebError("디스코드로 로그인해주세요.", 401)
+        row = self.db.execute("SELECT user_id,guild_ids FROM mari_web_identities WHERE token_hash=? AND expires_at>?", (digest(token), time.time())).fetchone()
+        if not row:
+            raise WebError("로그인이 만료됐어요. 디스코드로 다시 로그인해주세요.", 401)
+        return int(row[0]), json.loads(row[1])
+
+    async def server_list(self, uid, candidates):
+        servers = []
+        for gid in candidates:
+            guild = self.bot.get_guild(gid)
+            if guild is not None:
+                servers.append({**self.guild_info(guild), "connected": gid in self.guild_ids,
+                                "owner": guild.owner_id == uid})
+        return {"servers": servers}
+
+    async def oauth_action(self, action, token, data):
+        if action == "oauth/login":
+            uid, candidates = await self.discord_identity(data.get("accessToken"))
+            identity = secrets.token_urlsafe(32)
+            self.db.execute("DELETE FROM mari_web_identities WHERE expires_at<=?", (time.time(),))
+            self.db.execute("INSERT INTO mari_web_identities VALUES(?,?,?,?)", (digest(identity), str(uid), json.dumps(candidates), time.time()+43200))
+            self.db.commit()
+            return {"identity": identity, **await self.server_list(uid, candidates)}
+        uid, candidates = self.identity(token)
+        if action == "servers":
+            return await self.server_list(uid, candidates)
+        if action == "oauth/logout":
+            self.db.execute("DELETE FROM mari_web_identities WHERE token_hash=?", (digest(token),))
+            self.db.execute("DELETE FROM mari_web_sessions WHERE user_id=?", (str(uid),))
+            self.db.commit()
+            return {"ok": True}
+        try:
+            gid = int(data.get("guildId", ""))
+        except (ValueError, TypeError):
+            raise WebError("이용할 서버를 선택해주세요.")
+        guild = self.bot.get_guild(gid)
+        if gid not in candidates or guild is None:
+            raise WebError("마리봇이 있는 가입 서버만 선택할 수 있어요.", 403)
+        try:
+            member = await guild.fetch_member(uid)
+        except discord.HTTPException:
+            raise WebError("현재 서버 멤버만 이용할 수 있어요.", 403)
+        if action == "servers/connect":
+            if guild.owner_id != uid:
+                raise WebError("서버 주인만 서버를 연결할 수 있어요.", 403)
+            self.db.execute("INSERT OR IGNORE INTO mari_web_servers VALUES(?,?,?)", (str(gid), str(uid), time.time()))
+            self.db.commit()
+            self.guild_ids.add(gid)
+            return await self.server_list(uid, candidates)
+        if action != "servers/select" or gid not in self.guild_ids:
+            raise WebError("서버 주인이 먼저 서버를 연결해야 해요.", 403)
+        # A server change must not orphan an unfinished game or an uncertain settlement.
+        pending = self.db.execute("SELECT guild_id FROM mari_web_rounds WHERE user_id=? AND status!='done' LIMIT 1", (str(uid),)).fetchone()
+        if pending and int(pending[0]) != gid:
+            raise WebError("진행 중인 게임을 마무리한 후 서버를 바꿔주세요.", 409)
+        session = secrets.token_urlsafe(32)
+        self.db.execute("INSERT INTO mari_web_sessions VALUES(?,?,?,?)", (digest(session), str(uid), str(gid), time.time()+43200))
+        self.linked_profile(member)
+        self.db.commit()
+        return {"session": session}
+
     async def dispatch(self, action, token, data):
+        if action in {"oauth/login", "oauth/logout", "servers", "servers/connect", "servers/select"}:
+            return await self.oauth_action(action, token, data)
         if action == "claim":
             code = data.get("code")
             if not isinstance(code, str) or not 20 <= len(code) <= 64:
@@ -652,15 +738,12 @@ def install(namespace):
     bridge = Bridge(namespace, secret, guild_ids)
     bot = namespace["bot"]
 
-    @bot.tree.command(name="웹연결", description="마리봇 웹사이트에 연결할 일회용 코드를 받습니다.")
+    @bot.tree.command(name="웹연결", description="마리봇 웹사이트에서 디스코드로 로그인합니다.")
     async def web_link(interaction: discord.Interaction):
-        if interaction.guild is None or interaction.guild.id not in guild_ids:
-            await interaction.response.send_message("지원하는 서버 안에서 사용해주세요.", ephemeral=True)
-            return
-        code = bridge.issue_code(interaction.user.id, interaction.guild.id)
         await interaction.response.send_message(
-            "마리봇 웹사이트의 계정 연결에 아래 코드를 입력해주세요.\n"
-            + "`" + code + "`\n5분 동안 한 번만 사용할 수 있어요. 다른 사람에게 공유하지 마세요.",
+            "https://maribot-play.eofh0402.chatgpt.site\n"
+            "디스코드로 로그인하면 기존 잔액과 추첨권을 이용할 수 있어요.\n"
+            "서버 주인이 한 번 서버를 연결하면 멤버는 별도 코드 없이 이용해요.",
             ephemeral=True,
         )
 
