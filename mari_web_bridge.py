@@ -189,6 +189,7 @@ class Bridge:
         self.codes: dict[str, tuple[int, int, float]] = {}
         self.rounds: dict[int, Capture] = {}
         self.lock = asyncio.Lock()
+        self.member_sync_lock = asyncio.Lock()
         self.runner = None
         self.create_schema()
         self.guild_ids.update(int(row[0]) for row in self.db.execute("SELECT guild_id FROM mari_web_servers"))
@@ -298,29 +299,53 @@ class Bridge:
         return {"id": str(guild.id), "name": getattr(guild, "name", str(guild.id)),
                 "icon": str(icon.url) if icon else None}
 
+    async def ensure_server_members(self, guild_ids=None):
+        # Discord's member cache is maintained by join/remove/update events.
+        # Initial chunking also covers members who have never visited the website.
+        async with self.member_sync_lock:
+            for gid in sorted(self.guild_ids if guild_ids is None else guild_ids):
+                guild = self.bot.get_guild(gid)
+                if guild is None or guild.chunked:
+                    continue
+                try:
+                    await asyncio.wait_for(guild.chunk(cache=True), timeout=20)
+                except (discord.HTTPException, discord.ClientException, asyncio.TimeoutError):
+                    raise WebError("서버 멤버 데이터를 불러오는 중이에요. 잠시 후 다시 시도해주세요.", 503)
+                if not guild.chunked:
+                    raise WebError("서버 멤버 동기화가 완료되지 않았어요. 잠시 후 다시 시도해주세요.", 503)
+
     def leaderboard(self, uid):
-        guilds = {str(gid): self.bot.get_guild(gid) for gid in self.guild_ids}
-        guilds = {gid: guild for gid, guild in guilds.items() if guild is not None}
-        if not guilds:
-            return {"entries": [], "mine": None, "total": 0}
-        placeholders = ",".join("?" for _ in guilds)
-        rows = self.db.execute(f"""WITH ranked AS (
-            SELECT p.user_id,p.guild_id,p.name,p.username,p.avatar,COALESCE(b.balance,0) AS balance,
-            ROW_NUMBER() OVER (ORDER BY COALESCE(b.balance,0) DESC,p.user_id ASC) AS rank,
-            COUNT(*) OVER () AS total
-            FROM mari_web_profiles p LEFT JOIN balances b ON b.user_id=p.user_id
-            WHERE p.guild_id IN ({placeholders})
-        ) SELECT * FROM ranked WHERE rank<=100 OR user_id=? ORDER BY rank""",
-            (*guilds.keys(),str(uid))).fetchall()
-        entries, mine = [], None
-        for user_id,gid,name,username,avatar,balance,rank,total in rows:
-            item = {"userId":user_id,"name":name,"username":username,"avatar":avatar,
-                    "balance":balance,"rank":rank,"guild":self.guild_info(guilds[gid])}
-            if rank<=100:
+        # Balances belong to Discord users globally. Count a user once across
+        # connected servers; web profiles only select a preferred display server.
+        preferred = dict(self.db.execute("SELECT user_id,guild_id FROM mari_web_profiles"))
+        members = {}
+        for gid in sorted(self.guild_ids):
+            guild = self.bot.get_guild(gid)
+            if guild is None:
+                continue
+            for member in guild.members:
+                if member.bot:
+                    continue
+                key = str(member.id)
+                if key not in members or preferred.get(key) == str(gid):
+                    members[key] = member
+        rows = self.db.execute("SELECT user_id,balance FROM balances ORDER BY balance DESC,user_id ASC")
+        entries, mine, total = [], None, 0
+        for user_id, balance in rows:
+            member = members.get(str(user_id))
+            if member is None:
+                continue
+            total += 1
+            if total > 100 and str(user_id) != str(uid):
+                continue
+            item = {"userId": str(user_id), "name": member.display_name,
+                    "username": member.name, "avatar": str(member.display_avatar.url),
+                    "balance": balance, "rank": total, "guild": self.guild_info(member.guild)}
+            if total <= 100:
                 entries.append(item)
-            if user_id==str(uid):
-                mine=item
-        return {"entries":entries,"mine":mine,"total":rows[0][-1] if rows else 0}
+            if str(user_id) == str(uid):
+                mine = item
+        return {"entries": entries, "mine": mine, "total": total}
 
     def account(self, member):
         uid, gid = member.id, member.guild.id
@@ -328,7 +353,7 @@ class Bridge:
             SELECT r.id,r.title,r.price,r.daily_limit,r.status,d.winner_id
             FROM raffle_tickets r LEFT JOIN mari_web_draws d ON r.id=d.raffle_id
             WHERE r.guild_id=? AND (r.status='active' OR d.raffle_id IS NOT NULL)
-            ORDER BY r.id DESC LIMIT 50
+            ORDER BY r.id DESC
         """, (str(gid),)).fetchall()
         raffles = []
         for rid, title, price, limit, status, winner in rows:
@@ -613,6 +638,7 @@ class Bridge:
         if action == "servers/connect":
             if guild.owner_id != uid:
                 raise WebError("서버 주인만 서버를 연결할 수 있어요.", 403)
+            await self.ensure_server_members({gid})
             self.db.execute("INSERT OR IGNORE INTO mari_web_servers VALUES(?,?,?)", (str(gid), str(uid), time.time()))
             self.db.commit()
             self.guild_ids.add(gid)
@@ -653,6 +679,8 @@ class Bridge:
             return {"session": session}
         uid, gid = self.session(token)
         member = await self.member(uid, gid, fresh=action not in {"account", "logout"})
+        if action != "logout":
+            await self.ensure_server_members()
         async with self.lock:
             if action == "logout":
                 self.db.execute("DELETE FROM mari_web_sessions WHERE token_hash=?", (digest(token),))
