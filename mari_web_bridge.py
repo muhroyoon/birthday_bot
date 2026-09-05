@@ -189,6 +189,7 @@ class Bridge:
         self.codes: dict[str, tuple[int, int, float]] = {}
         self.rounds: dict[int, Capture] = {}
         self.lock = asyncio.Lock()
+        self.visitors = {}
         self.member_sync_lock = asyncio.Lock()
         self.runner = None
         self.recruit_cache = {}
@@ -777,7 +778,21 @@ class Bridge:
         posts.sort(key=lambda p:p['id'].zfill(25),reverse=True)
         return {"posts":posts[:100]}
 
+    def presence(self,token,data):
+        visitor=data.get('visitor','')
+        if not isinstance(visitor,str) or not re.fullmatch(r'[a-f0-9-]{36}',visitor): raise WebError('잘못된 접속 정보입니다.')
+        now=time.monotonic()
+        self.visitors={key:value for key,value in self.visitors.items() if now-value[0]<90}
+        identity='visitor:'+visitor
+        if token:
+            try: identity='user:'+str(self.session(token)[0])
+            except WebError: pass
+        if visitor not in self.visitors and len(self.visitors)>=10000: raise WebError('접속 집계를 잠시 후 다시 확인해주세요.',503)
+        self.visitors[visitor]=(now,identity)
+        return {'online':len({item[1] for item in self.visitors.values()}),'windowSeconds':90}
+
     async def dispatch(self, action, token, data):
+        if action=="presence": return self.presence(token,data)
         if action in {"oauth/login", "oauth/logout", "servers", "servers/connect", "servers/select"}:
             return await self.oauth_action(action, token, data)
         if action == "claim":
@@ -801,6 +816,11 @@ class Bridge:
             return {"session": session}
         uid, gid = self.session(token)
         member = await self.member(uid, gid, fresh=action not in {"account", "logout"})
+        if action=='rewards' or action in {'rewards/support','rewards/bonus'}:
+            from mari_web_rewards import Rewards
+            rewards=Rewards(self,WebError)
+            if action=='rewards': return rewards.status(member)
+            async with self.lock: return await rewards.claim(member,action.split('/')[1],data)
         if action == 'kill': return self.activities.listing(member)
         if isinstance(action,str) and action.startswith('kill/'):
             async with self.lock:
