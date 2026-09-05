@@ -4,6 +4,7 @@ import json
 import math
 import time
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 class DeferredConnection:
     def __init__(self, db): self.db=db
@@ -154,24 +155,35 @@ class Activities:
             self.ns['finalize_kill_bet_round'](s,round_data)
             if self.ns['kill_bet_target_reached'](s): self.ns['finish_kill_bet_session'](sid)
 
-    def notifications(self,member):
-        notices=[];uid=str(member.id);gid=str(member.guild.id)
-        for rid,title,winner,at in self.db.execute("SELECT d.raffle_id,r.title,d.winner_id,d.drawn_at FROM mari_web_draws d JOIN raffle_tickets r ON r.id=d.raffle_id WHERE d.guild_id=? AND (d.winner_id=? OR EXISTS(SELECT 1 FROM raffle_purchases p WHERE p.raffle_id=d.raffle_id AND p.user_id=? AND p.guild_id=?)) ORDER BY d.drawn_at DESC LIMIT 50",(gid,uid,uid,gid)):
-            notices.append({'key':'raffle:'+str(rid),'title':'추첨 당첨!' if winner==uid else '추첨 결과가 발표됐어요','body':title,'at':at,'tab':'raffles'})
-        if 'KILL_BET_RULES' in self.ns:
-            for s in self.listing(member)['sessions']:
-                entry=next((e for e in s['entries'] if e['userId']==uid),None)
-                if entry and entry['status']=='approved': notices.append({'key':'join:'+str(s['id']),'title':'킬내기 참가 승인','body':'킬내기 #'+str(s['id']),'at':s['started_at'],'tab':'kill'})
-                if s['status']=='ended' and (str(s['creator_user_id'])==uid or entry): notices.append({'key':'kill:'+str(s['id']),'title':'킬내기 종료 · 점수 결산 완료','body':'킬내기 #'+str(s['id']),'at':s['ended_at'] or s['started_at'],'tab':'kill'})
-        for hid,name,detail,delta,at in self.db.execute('SELECT id,name,detail,delta,created_at FROM mari_web_history WHERE user_id=? AND guild_id=? ORDER BY id DESC LIMIT 30',(uid,gid)):
-            notices.append({'key':'history:'+str(hid),'title':name+' 처리 완료','body':detail+' · '+str(delta)+' 마리','at':at,'tab':'history'})
-        read={r[0] for r in self.db.execute('SELECT event_key FROM mari_web_notice_reads WHERE user_id=?',(uid,))}
-        notices.sort(key=lambda n:n['at'],reverse=True)
-        return {'notices':[dict(n,read=n['key'] in read) for n in notices[:100]],'unread':sum(n['key'] not in read for n in notices[:100])}
+    def all_in_status(self,member):
+        gid=str(member.guild.id)
+        today=datetime.now(ZoneInfo('Asia/Seoul')).date().isoformat()
+        participants=[]
+        for uid,amount in self.db.execute('SELECT user_id,amount FROM all_in_entries WHERE guild_id=? AND entry_date=? ORDER BY amount DESC,user_id',(gid,today)):
+            person=member.guild.get_member(int(uid))
+            participants.append({'id':str(uid),'name':getattr(person,'display_name','알 수 없는 멤버'),'amount':amount})
+        results=[{'id':str(i),'text':text,'at':at} for i,text,at in self.db.execute('SELECT id,result_text,created_at FROM game_history WHERE guild_id=? AND game_name=? ORDER BY id DESC LIMIT 5',(gid,self.ns.get('ALL_IN_GAME_NAME','몰빵게임')))]
+        return {'date':today,'participants':participants,'total':sum(p['amount'] for p in participants),'results':results}
 
-    def mark_read(self,member,data):
-        keys={n['key'] for n in self.notifications(member)['notices']}
+    async def notifications(self,member):
+        notices=[];uid=str(member.id);gid=str(member.guild.id)
+        for day,amount in self.db.execute('SELECT entry_date,amount FROM all_in_entries WHERE user_id=? AND guild_id=? ORDER BY entry_date DESC LIMIT 10',(uid,gid)):
+            notices.append({'key':f'all-in:{gid}:{day}:{uid}','category':'all_in','title':'몰빵 참여 완료','body':f'{day} · {amount:,} 마리 참여','at':day+'T00:00:00+09:00','tab':'games'})
+        recruits=await self.b.recruit_posts(member)
+        for post in [p for p in recruits['posts'] if not p['closed']][:10]:
+            notices.append({'key':f'recruit:{gid}:{post["id"]}','category':'recruit','title':'새 구인 글 · #'+post['channel'],'body':post['title'],'at':post['at'],'tab':'recruits','url':post['url']})
+        read={r[0] for r in self.db.execute('SELECT event_key FROM mari_web_notice_reads WHERE user_id=?',(uid,))}
+        notices.sort(key=lambda n:datetime.fromisoformat(n['at']).timestamp(),reverse=True)
+        result=[dict(n,read=n['key'] in read) for n in notices[:100]]
+        return {'notices':result,'unread':sum(not n['read'] for n in result),'allIn':self.all_in_status(member)}
+
+    async def mark_read(self,member,data):
+        result=await self.notifications(member)
+        keys={n['key'] for n in result['notices']}
         selected=data.get('keys',[])
         if not isinstance(selected,list) or len(selected)>100 or any(not isinstance(k,str) or k not in keys for k in selected): raise self.Error('알림을 다시 확인해주세요.')
         self.db.executemany('INSERT OR IGNORE INTO mari_web_notice_reads VALUES(?,?)',[(str(member.id),k) for k in selected]);self.db.commit()
-        return self.notifications(member)
+        for notice in result['notices']:
+            if notice['key'] in selected: notice['read']=True
+        result['unread']=sum(not n['read'] for n in result['notices'])
+        return result

@@ -794,9 +794,9 @@ class Bridge:
             async with self.lock:
                 try: return self.activities.mutate(member,action,data)
                 except ValueError as exc: raise WebError(str(exc))
-        if action == 'notifications': return self.activities.notifications(member)
+        if action == 'notifications': return await self.activities.notifications(member)
         if action == 'notifications/read':
-            async with self.lock: return self.activities.mark_read(member,data)
+            return await self.activities.mark_read(member,data)
         if action == "recruits": return await self.recruit_posts(member)
         if action == "chat": return self.chat_messages(member)
         if action in {"chat/send","chat/delete"}:
