@@ -190,6 +190,8 @@ class Bridge:
         self.rounds: dict[int, Capture] = {}
         self.lock = asyncio.Lock()
         self.visitors = {}
+        from mari_web_economy import Economy
+        self.economy = Economy(self,WebError)
         from mari_web_training import TrainingRecords
         self.training = TrainingRecords(self,WebError)
         from mari_web_catalog import GameCatalog
@@ -829,6 +831,16 @@ class Bridge:
             return {"session": session}
         uid, gid = self.session(token)
         member = await self.member(uid, gid, fresh=action not in {"account", "logout"})
+        if action in {'stocks','stocks/trade','tickets/status','tickets/start','tickets/fortune'}:
+            async with self.lock:
+                if action=='stocks':return self.economy.market(member)
+                if action=='stocks/trade':return self.economy.trade(member,data)
+                if action=='tickets/status':return self.economy.status(member)
+                game='fortune' if action=='tickets/fortune' else data.get('game')
+                if game in ('apple','snake'):
+                    config={'mode':game,'difficulty':'normal','seconds':120 if game=='apple' else 180}
+                    return self.training.start(member,{**data,**config})
+                return self.economy.start(member,data,game)
         if action in {'training/start','training/ticket','training/submit'}:
             async with self.lock:
                 if action=='training/start':return self.training.start(member,data)
@@ -918,7 +930,7 @@ class Bridge:
 
     async def health(self, request):
         ready = self.bot.is_ready()
-        return web.json_response({"ready": ready}, status=200 if ready else 503,
+        return web.json_response({"ready": ready, "economyVersion": 1}, status=200 if ready else 503,
                                  headers={"Cache-Control": "no-store"})
 
     async def start(self):
@@ -931,6 +943,13 @@ class Bridge:
         await self.runner.setup()
         port = int(os.environ.get("PORT", os.environ.get("MARIBOT_WEB_PORT", "8080")))
         await web.TCPSite(self.runner, "0.0.0.0", port).start()
+        async def market_clock():
+            while True:
+                try:
+                    async with self.lock:self.economy.settle()
+                except Exception:log.exception("Market daily settlement failed")
+                await asyncio.sleep(1)
+        self.market_task = asyncio.create_task(market_clock())
         log.info("Maribot web bridge started on port %s", port)
 
 def install(namespace):

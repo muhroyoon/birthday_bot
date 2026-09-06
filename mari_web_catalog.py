@@ -2,7 +2,7 @@
 import hashlib
 import re
 from datetime import datetime,timedelta,timezone
-GAMES=('blackjack','slot','baccarat','horse_race','seotda','coin','minesweeper','supply_drop','duckmong','rock_paper_scissors','number_baseball','all_in','aim','pubg','reaction','stopwatch','fortune')
+GAMES=('blackjack','slot','baccarat','horse_race','seotda','coin','minesweeper','supply_drop','duckmong','rock_paper_scissors','number_baseball','all_in','aim','pubg','reaction','stopwatch','fortune','stocks','apple','snake')
 KST=timezone(timedelta(hours=9))
 class GameCatalog:
     def __init__(self,bridge,error):
