@@ -13,7 +13,8 @@ class TrainingRecords:
         ''');self.db.commit()
     def config(self,data):
         mode=data.get('mode');difficulty=data.get('difficulty');seconds=data.get('seconds')
-        if mode not in ('flick','grid','precision','path') or difficulty not in ('easy','normal','hard') or type(seconds) is not int or seconds not in (15,30,60):raise self.Error('연습 조건을 확인해주세요.')
+        valid = type(seconds) is int and ((mode in ('flick','grid','precision','path') and difficulty in ('easy','normal','hard') and seconds in (15,30,60)) or (mode=='reaction' and difficulty=='normal' and seconds==60) or (mode=='stopwatch' and difficulty in ('normal','hard') and seconds in (5,10,15)))
+        if not valid:raise self.Error('연습 조건을 확인해주세요.')
         return mode,difficulty,seconds
     def start(self,member,data):
         mode,difficulty,seconds=self.config(data);now=time.time()
@@ -33,7 +34,7 @@ class TrainingRecords:
         for key in ('score','accuracy','precision','averageMs','hits','elapsed'):
             n=m.get(key)
             if type(n) not in (int,float) or not math.isfinite(n) or n<0:raise self.Error('잘못된 측정 기록입니다.')
-        if m['accuracy']>100 or m['precision']>100 or m['elapsed']>row[4] or time.time()-row[6]+1<m['elapsed']:raise self.Error('연습 시간을 확인해주세요.')
+        if m['accuracy']>100 or m['precision']>100 or m['elapsed']>(120 if row[2]=='reaction' else row[4]+10 if row[2]=='stopwatch' else row[4]) or time.time()-row[6]+1<m['elapsed']:raise self.Error('연습 시간을 확인해주세요.')
         config={'mode':row[2],'difficulty':row[3],'seconds':row[4],'input':m['input']}
         if row[7]:return self.ranking(config,member.id)
         old=self.db.execute('SELECT score,accuracy,average_ms FROM mari_web_training_best WHERE user_id=? AND mode=? AND difficulty=? AND seconds=? AND input=?',(str(member.id),row[2],row[3],row[4],m['input'])).fetchone()
