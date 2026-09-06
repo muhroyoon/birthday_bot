@@ -166,7 +166,7 @@ class Activities:
         return {'date':today,'participants':participants,'total':sum(p['amount'] for p in participants),'results':results}
 
     async def notifications(self,member):
-        notices=[];uid=str(member.id);gid=str(member.guild.id)
+        notices=self.b.economy.stock_notifications();uid=str(member.id);gid=str(member.guild.id)
         for day,amount in self.db.execute('SELECT entry_date,amount FROM all_in_entries WHERE user_id=? AND guild_id=? ORDER BY entry_date DESC LIMIT 10',(uid,gid)):
             notices.append({'key':f'all-in:{gid}:{day}:{uid}','category':'all_in','title':'몰빵 참여 완료','body':f'{day} · {amount:,} 마리 참여','at':day+'T00:00:00+09:00','tab':'games'})
         recruits=await self.b.recruit_posts(member)

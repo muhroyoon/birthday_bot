@@ -15,6 +15,7 @@ class Economy:
   self.db.executescript('''
   CREATE TABLE IF NOT EXISTS mari_web_stocks(symbol TEXT PRIMARY KEY,price INTEGER NOT NULL,day TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS mari_web_stock_days(symbol TEXT,day TEXT,open INTEGER,close INTEGER,PRIMARY KEY(symbol,day));
+  CREATE TABLE IF NOT EXISTS mari_web_stock_updates(slot TEXT PRIMARY KEY);
   CREATE TABLE IF NOT EXISTS mari_web_holdings(user_id TEXT,symbol TEXT,qty INTEGER NOT NULL,cost INTEGER NOT NULL,PRIMARY KEY(user_id,symbol));
   CREATE TABLE IF NOT EXISTS mari_web_economy_requests(id TEXT PRIMARY KEY,user_id TEXT,fingerprint TEXT,result TEXT);
   CREATE TABLE IF NOT EXISTS mari_web_stock_trades(id TEXT PRIMARY KEY,user_id TEXT,symbol TEXT,side TEXT,qty INTEGER,price INTEGER,total INTEGER,profit INTEGER,at REAL);
@@ -22,6 +23,9 @@ class Economy:
   CREATE TABLE IF NOT EXISTS mari_web_fortune_days(user_id TEXT,day TEXT,pass_id TEXT,result TEXT,PRIMARY KEY(user_id,day));
   ''');self.db.commit()
  def today(self):return datetime.now(KST).date()
+ def stock_slot(self):
+  now=datetime.now(KST)
+  return now.replace(hour=now.hour//8*8,minute=0,second=0,microsecond=0)
  def balance(self,uid):
   row=self.db.execute('SELECT balance FROM balances WHERE user_id=?',(str(uid),)).fetchone();return row[0] if row else 0
  def receipt(self,member,data,kind):
@@ -36,21 +40,34 @@ class Economy:
   if self.db.execute('UPDATE balances SET balance=balance-? WHERE user_id=? AND balance>=?',(amount,str(uid),amount)).rowcount!=1:raise self.Error('마리 잔액이 부족해요.',409)
  def remember(self,request,uid,fp,result):self.db.execute('INSERT INTO mari_web_economy_requests VALUES(?,?,?,?)',(request,str(uid),fp,json.dumps(result,ensure_ascii=False)))
  def settle(self):
-  today=self.today()
+  slot=self.stock_slot()
   with self.db:
    for symbol,_,_ in STOCKS:
     row=self.db.execute('SELECT price,day FROM mari_web_stocks WHERE symbol=?',(symbol,)).fetchone()
     if not row:
-     self.db.execute('INSERT INTO mari_web_stocks VALUES(?,?,?)',(symbol,10000,today.isoformat()))
-     self.db.execute('INSERT INTO mari_web_stock_days VALUES(?,?,?,?)',(symbol,today.isoformat(),10000,10000));continue
-    price,day=row;date=datetime.fromisoformat(day).date()
-    if date>=today:continue
-    while date<today:
-     date+=timedelta(days=1);old=price
-     # No future prices are created or exposed. Each persisted daily move is -40%..+40%.
+     self.db.execute('INSERT INTO mari_web_stocks VALUES(?,?,?)',(symbol,10000,slot.isoformat()))
+     self.db.execute('INSERT INTO mari_web_stock_days VALUES(?,?,?,?)',(symbol,slot.isoformat(),10000,10000));continue
+    price,day=row
+    if len(day)==10:
+     # Adopt the new schedule without retroactively rerolling existing prices.
+     self.db.execute('UPDATE mari_web_stocks SET day=? WHERE symbol=?',(slot.isoformat(),symbol));continue
+    date=datetime.fromisoformat(day)
+    if date>=slot:continue
+    while date<slot:
+     date+=timedelta(hours=8);old=price
+     # No future prices are created or exposed. Each persisted scheduled move is -40%..+40%.
      price=max(100,(old*60+99)//100,min(10000000,old*140//100,(old*(10000+secrets.randbelow(8001)-4000)+5000)//10000))
      self.db.execute('INSERT INTO mari_web_stock_days VALUES(?,?,?,?)',(symbol,date.isoformat(),old,price))
-    self.db.execute('UPDATE mari_web_stocks SET price=?,day=? WHERE symbol=?',(price,today.isoformat(),symbol))
+     self.db.execute('INSERT OR IGNORE INTO mari_web_stock_updates VALUES(?)',(date.isoformat(),))
+    self.db.execute('UPDATE mari_web_stocks SET price=?,day=? WHERE symbol=?',(price,slot.isoformat(),symbol))
+ def stock_notifications(self):
+  notices=[]
+  names={symbol:name for symbol,name,_ in STOCKS}
+  for (slot,) in self.db.execute('SELECT slot FROM mari_web_stock_updates ORDER BY slot DESC LIMIT 9'):
+   rows=self.db.execute('SELECT symbol,open,close FROM mari_web_stock_days WHERE day=? ORDER BY symbol',(slot,)).fetchall()
+   body=' · '.join(f'{names.get(symbol,symbol)} {close:,} ({(close/open-1)*100:+.2f}%)' for symbol,open,close in rows)
+   notices.append({'key':'stocks:'+slot,'category':'stocks','title':'주가가 갱신됐어요 · '+slot[11:16],'body':body,'at':slot,'tab':'games','url':'/games/stocks'})
+  return notices
  def market(self,member):
   self.settle();items=[]
   for symbol,name,sector in STOCKS:
@@ -58,7 +75,7 @@ class Economy:
    holding=self.db.execute('SELECT qty,cost FROM mari_web_holdings WHERE user_id=? AND symbol=?',(str(member.id),symbol)).fetchone() or (0,0)
    items.append({'symbol':symbol,'name':name,'sector':sector,'price':rows[-1][2],'previous':rows[-1][1],'history':[{'day':d,'open':o,'close':c} for d,o,c in rows],'quantity':holding[0],'cost':holding[1]})
   trades=[dict(zip(('id','symbol','side','quantity','price','total','profit','at'),row)) for row in self.db.execute('SELECT id,symbol,side,qty,price,total,profit,at FROM mari_web_stock_trades WHERE user_id=? ORDER BY at DESC LIMIT 30',(str(member.id),))]
-  return {'stocks':items,'balance':self.balance(member.id),'day':self.today().isoformat(),'nextUpdate':datetime.combine(self.today()+timedelta(days=1),datetime.min.time(),KST).isoformat(),'trades':trades}
+  return {'stocks':items,'balance':self.balance(member.id),'day':self.today().isoformat(),'nextUpdate':(self.stock_slot()+timedelta(hours=8)).isoformat(),'trades':trades}
  def trade(self,member,data):
   self.settle();request,fp,old=self.receipt(member,data,'trade')
   if old:return old
