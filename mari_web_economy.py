@@ -1,4 +1,5 @@
 """Virtual stock market and paid game passes, sharing Discord's balance table."""
+from bisect import bisect_right
 import hashlib
 import json
 import secrets
@@ -15,6 +16,7 @@ class Economy:
   self.db.executescript('''
   CREATE TABLE IF NOT EXISTS mari_web_stocks(symbol TEXT PRIMARY KEY,price INTEGER NOT NULL,day TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS mari_web_stock_days(symbol TEXT,day TEXT,open INTEGER,close INTEGER,PRIMARY KEY(symbol,day));
+  CREATE TABLE IF NOT EXISTS mari_web_stock_news(symbol TEXT,slot TEXT,headline TEXT,body TEXT,PRIMARY KEY(symbol,slot));
   CREATE TABLE IF NOT EXISTS mari_web_stock_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS mari_web_stock_updates(slot TEXT PRIMARY KEY);
   CREATE TABLE IF NOT EXISTS mari_web_holdings(user_id TEXT,symbol TEXT,qty INTEGER NOT NULL,cost INTEGER NOT NULL,PRIMARY KEY(user_id,symbol));
@@ -64,6 +66,11 @@ class Economy:
      price=max(100,(old*80+99)//100,min(10000000,old*120//100,(old*(10000+secrets.randbelow(4001)-2000)+5000)//10000))
      self.db.execute('INSERT INTO mari_web_stock_days VALUES(?,?,?,?)',(symbol,date.isoformat(),old,price))
      self.db.execute('INSERT OR IGNORE INTO mari_web_stock_updates VALUES(?)',(date.isoformat(),))
+     from mari_stock_news import article
+     name,sector=next((name,sector) for key,name,sector in STOCKS if key==symbol)
+     previous=self.db.execute('SELECT headline FROM mari_web_stock_news WHERE symbol=? ORDER BY slot DESC LIMIT 1',(symbol,)).fetchone()
+     headline,body=article(name,sector,old,price,previous[0] if previous else '')
+     self.db.execute('INSERT OR IGNORE INTO mari_web_stock_news VALUES(?,?,?,?)',(symbol,date.isoformat(),headline,body))
     self.db.execute('UPDATE mari_web_stocks SET price=?,day=? WHERE symbol=?',(price,slot.isoformat(),symbol))
  def stock_notifications(self):
   notices=[]
@@ -77,10 +84,16 @@ class Economy:
   self.settle();items=[]
   for symbol,name,sector in STOCKS:
    rows=list(self.db.execute('SELECT day,open,close FROM mari_web_stock_days WHERE symbol=? ORDER BY day DESC LIMIT 90',(symbol,)))[::-1]
+   starts=[datetime.fromisoformat(d).replace(tzinfo=KST).timestamp() for d,_,_ in rows]
+   volumes=[0]*len(rows)
+   for at,quantity in self.db.execute('SELECT at,qty FROM mari_web_stock_trades WHERE symbol=? AND at>=?',(symbol,starts[0])):
+    index=bisect_right(starts,at)-1
+    if index>=0:volumes[index]+=quantity
    holding=self.db.execute('SELECT qty,cost FROM mari_web_holdings WHERE user_id=? AND symbol=?',(str(member.id),symbol)).fetchone() or (0,0)
-   items.append({'symbol':symbol,'name':name,'sector':sector,'price':rows[-1][2],'previous':rows[-1][1],'history':[{'day':d,'open':o,'close':c} for d,o,c in rows],'quantity':holding[0],'cost':holding[1]})
+   items.append({'symbol':symbol,'name':name,'sector':sector,'price':rows[-1][2],'previous':rows[-1][1],'history':[{'day':d,'open':o,'close':c,'high':max(o,c),'low':min(o,c),'volume':volumes[i]} for i,(d,o,c) in enumerate(rows)],'quantity':holding[0],'cost':holding[1]})
   trades=[dict(zip(('id','symbol','side','quantity','price','total','profit','at'),row)) for row in self.db.execute('SELECT id,symbol,side,qty,price,total,profit,at FROM mari_web_stock_trades WHERE user_id=? ORDER BY at DESC LIMIT 30',(str(member.id),))]
-  return {'stocks':items,'balance':self.balance(member.id),'day':self.today().isoformat(),'nextUpdate':(self.stock_slot()+timedelta(minutes=30)).isoformat(),'trades':trades}
+  news=[{'symbol':symbol,'at':slot,'title':headline,'body':body} for symbol,slot,headline,body in self.db.execute('SELECT symbol,slot,headline,body FROM mari_web_stock_news ORDER BY slot DESC,symbol LIMIT 21')]
+  return {'news':news,'stocks':items,'balance':self.balance(member.id),'day':self.today().isoformat(),'nextUpdate':(self.stock_slot()+timedelta(minutes=30)).isoformat(),'trades':trades}
  def trade(self,member,data):
   self.settle();request,fp,old=self.receipt(member,data,'trade')
   if old:return old
