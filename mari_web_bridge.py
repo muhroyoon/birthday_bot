@@ -331,6 +331,7 @@ class Bridge:
                     raise WebError("서버 멤버 동기화가 완료되지 않았어요. 잠시 후 다시 시도해주세요.", 503)
 
     def leaderboard(self, uid):
+        self.economy.settle()
         # Balances belong to Discord users globally. Count a user once across
         # connected servers; web profiles only select a preferred display server.
         preferred = dict(self.db.execute("SELECT user_id,guild_id FROM mari_web_profiles"))
@@ -349,17 +350,22 @@ class Bridge:
             WITH active_savings AS (
                 SELECT user_id,SUM(principal) AS savings
                 FROM savings WHERE status='active' GROUP BY user_id
+            ), stock_values AS (
+                SELECT h.user_id,SUM(h.qty*p.price) AS stock_value
+                FROM mari_web_holdings h JOIN mari_web_stocks p ON p.symbol=h.symbol
+                WHERE h.qty>0 GROUP BY h.user_id
             ), users AS (
-                SELECT user_id FROM balances UNION SELECT user_id FROM active_savings
+                SELECT user_id FROM balances UNION SELECT user_id FROM active_savings UNION SELECT user_id FROM stock_values
             )
-            SELECT u.user_id,COALESCE(b.balance,0),COALESCE(s.savings,0),
-                   COALESCE(b.balance,0)+COALESCE(s.savings,0) AS assets
+            SELECT u.user_id,COALESCE(b.balance,0),COALESCE(s.savings,0),COALESCE(v.stock_value,0),
+                   COALESCE(b.balance,0)+COALESCE(s.savings,0)+COALESCE(v.stock_value,0) AS assets
             FROM users u LEFT JOIN balances b ON b.user_id=u.user_id
             LEFT JOIN active_savings s ON s.user_id=u.user_id
+            LEFT JOIN stock_values v ON v.user_id=u.user_id
             ORDER BY assets DESC,u.user_id ASC
         """)
         entries, mine, total = [], None, 0
-        for user_id, balance, savings, assets in rows:
+        for user_id, balance, savings, stock_value, assets in rows:
             member = members.get(str(user_id))
             if member is None:
                 continue
@@ -368,7 +374,7 @@ class Bridge:
                 continue
             item = {"userId": str(user_id), "name": member.display_name,
                     "username": member.name, "avatar": str(member.display_avatar.url),
-                    "balance": balance, "savings": savings, "totalAssets": assets, "rank": total, "guild": self.guild_info(member.guild)}
+                    "balance": balance, "savings": savings, "stockValue": stock_value, "totalAssets": assets, "rank": total, "guild": self.guild_info(member.guild)}
             if total <= 100:
                 entries.append(item)
             if str(user_id) == str(uid):
@@ -388,8 +394,14 @@ class Bridge:
             owned = self.db.execute(
                 "SELECT COALESCE(SUM(quantity),0) FROM raffle_purchases WHERE raffle_id=? AND guild_id=? AND user_id=?",
                 (rid, str(gid), str(uid))).fetchone()[0]
+            sold,participants = self.db.execute(
+                "SELECT COALESCE(SUM(quantity),0),COUNT(DISTINCT user_id) FROM raffle_purchases WHERE raffle_id=? AND guild_id=? AND quantity>0",
+                (rid,str(gid))).fetchone()
+            purchases = [{'quantity':q,'amount':a,'at':at} for q,a,at in self.db.execute(
+                "SELECT quantity,total_amount,purchased_at FROM raffle_purchases WHERE raffle_id=? AND guild_id=? AND user_id=? ORDER BY purchased_at DESC,id DESC LIMIT 10",
+                (rid,str(gid),str(uid)))]
             winner_member = member.guild.get_member(int(winner)) if winner else None
-            raffles.append({"id": rid, "title": title, "price": price, "limit": limit, "owned": owned,
+            raffles.append({"id": rid, "title": title, "price": price, "limit": limit, "owned": owned, "sold":sold, "participants":participants, "purchases":purchases,
                            "purchasedToday": self.ns["get_raffle_purchase_count_today"](rid, gid, uid),
                            "drawn": winner is not None, "winner": winner_member.display_name if winner_member else winner,
                            "guild": self.guild_info(member.guild)})
