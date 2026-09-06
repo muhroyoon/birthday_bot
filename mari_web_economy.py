@@ -47,8 +47,8 @@ class Economy:
     if date>=today:continue
     while date<today:
      date+=timedelta(days=1);old=price
-     # No future prices are created or exposed. Each persisted daily move is -15%..+15%.
-     price=max(100,(old*85+99)//100,min(10000000,old*115//100,(old*(10000+secrets.randbelow(3001)-1500)+5000)//10000))
+     # No future prices are created or exposed. Each persisted daily move is -40%..+40%.
+     price=max(100,(old*60+99)//100,min(10000000,old*140//100,(old*(10000+secrets.randbelow(8001)-4000)+5000)//10000))
      self.db.execute('INSERT INTO mari_web_stock_days VALUES(?,?,?,?)',(symbol,date.isoformat(),old,price))
     self.db.execute('UPDATE mari_web_stocks SET price=?,day=? WHERE symbol=?',(price,today.isoformat(),symbol))
  def market(self,member):
