@@ -26,7 +26,7 @@ class Economy:
  def today(self):return datetime.now(KST).date()
  def stock_slot(self):
   now=datetime.now(KST)
-  return now.replace(minute=0,second=0,microsecond=0)
+  return now.replace(minute=now.minute//30*30,second=0,microsecond=0)
  def balance(self,uid):
   row=self.db.execute('SELECT balance FROM balances WHERE user_id=?',(str(uid),)).fetchone();return row[0] if row else 0
  def receipt(self,member,data,kind):
@@ -43,10 +43,10 @@ class Economy:
  def settle(self):
   slot=self.stock_slot()
   with self.db:
-   if not self.db.execute("SELECT 1 FROM mari_web_stock_settings WHERE key='hourly_schedule'").fetchone():
-    # Preserve existing prices when switching from the previous eight-hour schedule.
+   if not self.db.execute("SELECT 1 FROM mari_web_stock_settings WHERE key='half_hour_schedule'").fetchone():
+    # Preserve existing prices when switching from the previous hourly schedule.
     self.db.execute('UPDATE mari_web_stocks SET day=? WHERE day<?',(slot.isoformat(),slot.isoformat()))
-    self.db.execute("INSERT INTO mari_web_stock_settings VALUES('hourly_schedule','1')")
+    self.db.execute("INSERT INTO mari_web_stock_settings VALUES('half_hour_schedule','1')")
    for symbol,_,_ in STOCKS:
     row=self.db.execute('SELECT price,day FROM mari_web_stocks WHERE symbol=?',(symbol,)).fetchone()
     if not row:
@@ -59,7 +59,7 @@ class Economy:
     date=datetime.fromisoformat(day)
     if date>=slot:continue
     while date<slot:
-     date+=timedelta(hours=1);old=price
+     date+=timedelta(minutes=30);old=price
      # No future prices are created or exposed. Each persisted scheduled move is -20%..+20%.
      price=max(100,(old*80+99)//100,min(10000000,old*120//100,(old*(10000+secrets.randbelow(4001)-2000)+5000)//10000))
      self.db.execute('INSERT INTO mari_web_stock_days VALUES(?,?,?,?)',(symbol,date.isoformat(),old,price))
@@ -80,7 +80,7 @@ class Economy:
    holding=self.db.execute('SELECT qty,cost FROM mari_web_holdings WHERE user_id=? AND symbol=?',(str(member.id),symbol)).fetchone() or (0,0)
    items.append({'symbol':symbol,'name':name,'sector':sector,'price':rows[-1][2],'previous':rows[-1][1],'history':[{'day':d,'open':o,'close':c} for d,o,c in rows],'quantity':holding[0],'cost':holding[1]})
   trades=[dict(zip(('id','symbol','side','quantity','price','total','profit','at'),row)) for row in self.db.execute('SELECT id,symbol,side,qty,price,total,profit,at FROM mari_web_stock_trades WHERE user_id=? ORDER BY at DESC LIMIT 30',(str(member.id),))]
-  return {'stocks':items,'balance':self.balance(member.id),'day':self.today().isoformat(),'nextUpdate':(self.stock_slot()+timedelta(hours=1)).isoformat(),'trades':trades}
+  return {'stocks':items,'balance':self.balance(member.id),'day':self.today().isoformat(),'nextUpdate':(self.stock_slot()+timedelta(minutes=30)).isoformat(),'trades':trades}
  def trade(self,member,data):
   self.settle();request,fp,old=self.receipt(member,data,'trade')
   if old:return old
