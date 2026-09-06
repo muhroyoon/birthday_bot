@@ -192,6 +192,8 @@ class Bridge:
         self.visitors = {}
         from mari_web_training import TrainingRecords
         self.training = TrainingRecords(self,WebError)
+        from mari_web_catalog import GameCatalog
+        self.catalog = GameCatalog(self,WebError)
         self.member_sync_lock = asyncio.Lock()
         self.runner = None
         self.recruit_cache = {}
@@ -795,6 +797,9 @@ class Bridge:
 
     async def dispatch(self, action, token, data):
         if action=="presence": return self.presence(token,data)
+        if action=="catalog/popularity":return self.catalog.popularity()
+        if action=="catalog/view":
+            async with self.lock:return self.catalog.view(data,token)
         if action=='training/ranking':
             viewer=None
             if token:
