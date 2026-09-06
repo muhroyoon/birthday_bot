@@ -849,8 +849,8 @@ class Bridge:
                 if action=='stocks/trade':return self.economy.trade(member,data)
                 if action=='tickets/status':return self.economy.status(member)
                 game='fortune' if action=='tickets/fortune' else data.get('game')
-                if game in ('apple','snake'):
-                    config={'mode':game,'difficulty':'normal','seconds':120 if game=='apple' else 180}
+                if game in ('apple','snake','suika','2048'):
+                    config={'mode':game,'difficulty':'normal','seconds':120 if game=='apple' else 180 if game=='snake' else 600}
                     return self.training.start(member,{**data,**config})
                 return self.economy.start(member,data,game)
         if action in {'training/start','training/ticket','training/submit'}:

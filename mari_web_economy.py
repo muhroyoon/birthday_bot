@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 KST=timezone(timedelta(hours=9))
 STOCKS=(('muro','머로증권','금융'),('jeumi','즈미테크','기술'),('samsung','삼성식품','식품'),('gimcheon','김천물류','물류'),('haerangsol','해랑솔에너지','에너지'),('harang','하랑건설','건설'),('hoon','훈이게임즈','게임'))
-PAID={'aim','pubg','reaction','stopwatch','apple','snake','fortune'}
+PAID={'aim','pubg','reaction','stopwatch','apple','snake','suika','2048','fortune'}
 
 class Economy:
  def __init__(self,b,error):

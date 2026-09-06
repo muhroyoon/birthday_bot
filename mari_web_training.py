@@ -13,12 +13,12 @@ class TrainingRecords:
         ''');self.db.commit()
     def config(self,data):
         mode=data.get('mode');difficulty=data.get('difficulty');seconds=data.get('seconds')
-        valid = type(seconds) is int and ((mode in ('flick','grid','precision','path') and difficulty in ('easy','normal','hard') and seconds in (15,30,60)) or (mode=='reaction' and difficulty=='normal' and seconds==60) or (mode in ('apple','snake') and difficulty=='normal' and seconds==(120 if mode=='apple' else 180)) or (mode=='stopwatch' and difficulty in ('normal','hard') and seconds in (5,10,15)))
+        valid = type(seconds) is int and ((mode in ('flick','grid','precision','path') and difficulty in ('easy','normal','hard') and seconds in (15,30,60)) or (mode=='reaction' and difficulty=='normal' and seconds==60) or (mode in ('apple','snake','suika','2048') and difficulty=='normal' and seconds==(120 if mode=='apple' else 180 if mode=='snake' else 600)) or (mode=='stopwatch' and difficulty in ('normal','hard') and seconds in (5,10,15)))
         if not valid:raise self.Error('연습 조건을 확인해주세요.')
         return mode,difficulty,seconds
     def start(self,member,data):
         mode,difficulty,seconds=self.config(data)
-        game=mode if mode in ('reaction','stopwatch','apple','snake') else 'aim'
+        game=mode if mode in ('reaction','stopwatch','apple','snake','suika','2048') else 'aim'
         def create(rid,seed,now):
             self.db.execute('INSERT INTO mari_web_training_runs VALUES(?,?,?,?,?,?,?,?,0)',(rid,str(member.id),str(member.guild.id),mode,difficulty,seconds,seed,now))
             return {'config':{'mode':mode,'difficulty':difficulty,'seconds':seconds}}
