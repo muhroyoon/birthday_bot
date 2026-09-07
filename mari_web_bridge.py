@@ -866,6 +866,8 @@ class Bridge:
             return {"session": session}
         uid, gid = self.session(token)
         member = await self.member(uid, gid, fresh=action not in {"account", "logout"})
+        if action == 'account' and data.get('summary') is True:
+            return {'balance':self.ns['get_balance'](uid),'chatUnread':self.chat_unread(member)}
         if action in {'stocks','stocks/trade','tickets/status','tickets/start','tickets/fortune'}:
             async with self.lock:
                 if action=='stocks':return self.economy.market(member)
