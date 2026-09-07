@@ -351,9 +351,13 @@ class Bridge:
                 SELECT user_id,SUM(principal) AS savings
                 FROM savings WHERE status='active' GROUP BY user_id
             ), stock_values AS (
-                SELECT h.user_id,SUM(h.qty*p.price) AS stock_value
-                FROM mari_web_holdings h JOIN mari_web_stocks p ON p.symbol=h.symbol
-                WHERE h.qty>0 GROUP BY h.user_id
+                SELECT user_id,SUM(equity) AS stock_value FROM (
+                    SELECT h.user_id,h.qty*p.price AS equity
+                    FROM mari_web_holdings h JOIN mari_web_stocks p ON p.symbol=h.symbol WHERE h.qty>0
+                    UNION ALL
+                    SELECT h.user_id,MAX(0,2*h.cost-h.qty*p.price) AS equity
+                    FROM mari_web_shorts h JOIN mari_web_stocks p ON p.symbol=h.symbol WHERE h.qty>0
+                ) GROUP BY user_id
             ), users AS (
                 SELECT user_id FROM balances UNION SELECT user_id FROM active_savings UNION SELECT user_id FROM stock_values
             )

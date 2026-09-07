@@ -19,6 +19,7 @@ class Economy:
   CREATE TABLE IF NOT EXISTS mari_web_stock_news(symbol TEXT,slot TEXT,headline TEXT,body TEXT,PRIMARY KEY(symbol,slot));
   CREATE TABLE IF NOT EXISTS mari_web_stock_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS mari_web_stock_updates(slot TEXT PRIMARY KEY);
+  CREATE TABLE IF NOT EXISTS mari_web_shorts(user_id TEXT,symbol TEXT,qty INTEGER NOT NULL,cost INTEGER NOT NULL,PRIMARY KEY(user_id,symbol));
   CREATE TABLE IF NOT EXISTS mari_web_holdings(user_id TEXT,symbol TEXT,qty INTEGER NOT NULL,cost INTEGER NOT NULL,PRIMARY KEY(user_id,symbol));
   CREATE TABLE IF NOT EXISTS mari_web_economy_requests(id TEXT PRIMARY KEY,user_id TEXT,fingerprint TEXT,result TEXT);
   CREATE TABLE IF NOT EXISTS mari_web_stock_trades(id TEXT PRIMARY KEY,user_id TEXT,symbol TEXT,side TEXT,qty INTEGER,price INTEGER,total INTEGER,profit INTEGER,at REAL);
@@ -55,6 +56,7 @@ class Economy:
      self.db.execute('INSERT INTO mari_web_stocks VALUES(?,?,?)',(symbol,10000,slot.isoformat()))
      self.db.execute('INSERT INTO mari_web_stock_days VALUES(?,?,?,?)',(symbol,slot.isoformat(),10000,10000));continue
     price,day=row
+    self.liquidate(symbol,price,day)
     if len(day)==10:
      # Adopt the new schedule without retroactively rerolling existing prices.
      self.db.execute('UPDATE mari_web_stocks SET day=? WHERE symbol=?',(slot.isoformat(),symbol));continue
@@ -64,6 +66,7 @@ class Economy:
      date+=timedelta(minutes=30);old=price
      # No future prices are created or exposed. Each persisted scheduled move is -20%..+20%.
      price=max(100,(old*80+99)//100,min(10000000,old*120//100,(old*(10000+secrets.randbelow(4001)-2000)+5000)//10000))
+     self.liquidate(symbol,price,date.isoformat())
      self.db.execute('INSERT INTO mari_web_stock_days VALUES(?,?,?,?)',(symbol,date.isoformat(),old,price))
      self.db.execute('INSERT OR IGNORE INTO mari_web_stock_updates VALUES(?)',(date.isoformat(),))
      from mari_stock_news import article
@@ -72,6 +75,21 @@ class Economy:
      headline,body=article(name,sector,old,price,previous[0] if previous else '')
      self.db.execute('INSERT OR IGNORE INTO mari_web_stock_news VALUES(?,?,?,?)',(symbol,date.isoformat(),headline,body))
     self.db.execute('UPDATE mari_web_stocks SET price=?,day=? WHERE symbol=?',(price,slot.isoformat(),symbol))
+ def liquidate(self,symbol,price,slot):
+  # Collateral is isolated per user/symbol/direction. Gap losses never debit the wallet.
+  rows=list(self.db.execute('SELECT user_id,qty,cost FROM mari_web_shorts WHERE symbol=? AND qty>0 AND 2*cost<=qty*?',(symbol,price)))
+  for uid,qty,cost in rows:
+   rid='liquidate:'+secrets.token_hex(16)
+   self.db.execute('INSERT INTO mari_web_stock_trades VALUES(?,?,?,?,?,?,?,?,?)',(rid,uid,symbol,'short_liquidate',qty,price,0,-cost,datetime.fromisoformat(slot).replace(tzinfo=KST).timestamp()))
+   self.db.execute('DELETE FROM mari_web_shorts WHERE user_id=? AND symbol=?',(uid,symbol))
+ def positions(self,uid,stocks):
+  prices={s['symbol']:s['price'] for s in stocks};result=[]
+  for side,table in [('long','mari_web_holdings'),('short','mari_web_shorts')]:
+   for symbol,qty,cost in self.db.execute(f'SELECT symbol,qty,cost FROM {table} WHERE user_id=? AND qty>0',(str(uid),)):
+    raw=prices[symbol]*qty-cost
+    profit=max(-cost,raw if side=='long' else -raw)
+    result.append({'symbol':symbol,'side':side,'quantity':qty,'cost':cost,'entry':cost/qty,'profit':profit,'equity':cost+profit,'liquidation':2*cost/qty if side=='short' else 0})
+  return result
  def stock_notifications(self):
   notices=[]
   names={symbol:name for symbol,name,_ in STOCKS}
@@ -91,29 +109,36 @@ class Economy:
     if index>=0:volumes[index]+=quantity
    holding=self.db.execute('SELECT qty,cost FROM mari_web_holdings WHERE user_id=? AND symbol=?',(str(member.id),symbol)).fetchone() or (0,0)
    items.append({'symbol':symbol,'name':name,'sector':sector,'price':rows[-1][2],'previous':rows[-1][1],'history':[{'day':d,'open':o,'close':c,'high':max(o,c),'low':min(o,c),'volume':volumes[i]} for i,(d,o,c) in enumerate(rows)],'quantity':holding[0],'cost':holding[1]})
-  trades=[dict(zip(('id','symbol','side','quantity','price','total','profit','at'),row)) for row in self.db.execute('SELECT id,symbol,side,qty,price,total,profit,at FROM mari_web_stock_trades WHERE user_id=? ORDER BY at DESC LIMIT 30',(str(member.id),))]
+  trades=[dict(zip(('id','symbol','side','quantity','price','total','profit','at'),row)) for row in self.db.execute('SELECT id,symbol,side,qty,price,total,profit,at FROM mari_web_stock_trades WHERE user_id=? ORDER BY at DESC,id DESC LIMIT 10',(str(member.id),))]
   news=[{'symbol':symbol,'at':slot,'title':headline,'body':body} for symbol,slot,headline,body in self.db.execute('SELECT symbol,slot,headline,body FROM mari_web_stock_news ORDER BY slot DESC,symbol LIMIT 21')]
-  return {'news':news,'stocks':items,'balance':self.balance(member.id),'day':self.today().isoformat(),'nextUpdate':(self.stock_slot()+timedelta(minutes=30)).isoformat(),'trades':trades}
+  return {'positionVersion':1,'positions':self.positions(member.id,items),'news':news,'stocks':items,'balance':self.balance(member.id),'day':self.today().isoformat(),'nextUpdate':(self.stock_slot()+timedelta(minutes=30)).isoformat(),'trades':trades}
  def trade(self,member,data):
   self.settle();request,fp,old=self.receipt(member,data,'trade')
   if old:return old
-  symbol=data.get('symbol');side=data.get('side');qty=data.get('quantity');quoted=data.get('price')
-  if symbol not in [s[0] for s in STOCKS] or side not in ('buy','sell') or type(qty) is not int or not 1<=qty<=1000000:raise self.Error('종목과 1주 이상의 정수 수량을 확인해주세요.')
+  symbol=data.get('symbol');side=data.get('side');action=data.get('action');qty=data.get('quantity');quoted=data.get('price')
+  if side not in ('long','short') or action not in ('open','close'):raise self.Error('롱·숏 거래로 전환됐어요. 페이지를 새로고침해주세요.',409)
+  if symbol not in [s[0] for s in STOCKS] or type(qty) is not int or not 1<=qty<=1000000:raise self.Error('종목과 1 이상의 정수 수량을 확인해주세요.')
+  table='mari_web_holdings' if side=='long' else 'mari_web_shorts'
   with self.db:
    price=self.db.execute('SELECT price FROM mari_web_stocks WHERE symbol=?',(symbol,)).fetchone()[0]
-   if quoted!=price or type(quoted) is not int:raise self.Error('자정에 가격이 바뀌었어요. 새 가격을 확인하고 다시 주문해주세요.',409)
-   uid=str(member.id);owned,cost=self.db.execute('SELECT qty,cost FROM mari_web_holdings WHERE user_id=? AND symbol=?',(uid,symbol)).fetchone() or (0,0);total=price*qty;profit=0
-   if side=='buy':
-    if owned+qty>100000000:raise self.Error('종목별 최대 보유 수량을 초과해요.')
+   if quoted!=price or type(quoted) is not int:raise self.Error('가격이 바뀌었어요. 새 가격을 확인하고 다시 주문해주세요.',409)
+   uid=str(member.id);owned,cost=self.db.execute(f'SELECT qty,cost FROM {table} WHERE user_id=? AND symbol=?',(uid,symbol)).fetchone() or (0,0)
+   total=price*qty;profit=0
+   if action=='open':
+    if owned+qty>100000000:raise self.Error('종목·방향별 최대 보유 수량을 초과해요.')
     self.debit(uid,total);owned+=qty;cost+=total
    else:
-    if qty>owned:raise self.Error('보유 수량보다 많이 매도할 수 없어요.',409)
+    if qty>owned:raise self.Error('보유 포지션 수량보다 많이 종료할 수 없어요.',409)
+    # Allocate integer collateral once; the final close receives the exact remainder.
+    basis=cost*qty//owned
+    profit=(total-basis) if side=='long' else (basis-total)
+    total=max(0,basis+profit);profit=total-basis
     if self.balance(uid)+total>9000000000000000:raise self.Error('보유 가능한 마리 한도를 초과해요.')
-    basis=cost*qty//owned;profit=total-basis;cost-=basis;owned-=qty
+    cost-=basis;owned-=qty
     self.db.execute('INSERT INTO balances VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET balance=balance+excluded.balance',(uid,total))
-   self.db.execute('INSERT INTO mari_web_holdings VALUES(?,?,?,?) ON CONFLICT(user_id,symbol) DO UPDATE SET qty=excluded.qty,cost=excluded.cost',(uid,symbol,owned,cost))
-   self.db.execute('INSERT INTO mari_web_stock_trades VALUES(?,?,?,?,?,?,?,?,?)',(request,uid,symbol,side,qty,price,total,profit,time.time()))
-   result={'ok':True,'price':price,'quantity':qty,'total':total,'balance':self.balance(uid)};self.remember(request,uid,fp,result)
+   self.db.execute(f'INSERT INTO {table} VALUES(?,?,?,?) ON CONFLICT(user_id,symbol) DO UPDATE SET qty=excluded.qty,cost=excluded.cost',(uid,symbol,owned,cost))
+   self.db.execute('INSERT INTO mari_web_stock_trades VALUES(?,?,?,?,?,?,?,?,?)',(request,uid,symbol,side+'_'+action,qty,price,total,profit,time.time()))
+   result={'ok':True,'price':price,'quantity':qty,'total':total,'profit':profit,'balance':self.balance(uid)};self.remember(request,uid,fp,result)
   return result
  def start(self,member,data,game=None,create=None):
   game=game or data.get('game')
