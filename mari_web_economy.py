@@ -10,6 +10,14 @@ KST=timezone(timedelta(hours=9))
 STOCKS=(('muro','머로증권','금융'),('jeumi','즈미테크','기술'),('samsung','삼성식품','식품'),('gimcheon','김천물류','물류'),('haerangsol','해랑솔에너지','에너지'),('harang','하랑건설','건설'),('hoon','훈이게임즈','게임'))
 PAID={'aim','pubg','reaction','stopwatch','apple','snake','suika','2048','fortune'}
 
+def stock_move_bps():
+ """Independently choose regime, magnitude (basis points), then direction."""
+ bucket=secrets.randbelow(100)
+ low,high=(100,1000) if bucket<70 else (1000,2500) if bucket<95 else (2500,4000)
+ magnitude=low+secrets.randbelow(high-low+1)
+ return magnitude if secrets.randbelow(2) else -magnitude
+
+
 class Economy:
  def __init__(self,b,error):
   self.b=b;self.db=b.db;self.Error=error
@@ -64,8 +72,8 @@ class Economy:
     if date>=slot:continue
     while date<slot:
      date+=timedelta(minutes=30);old=price
-     # No future prices are created or exposed. Each persisted scheduled move is -20%..+20%.
-     price=max(100,(old*80+99)//100,min(10000000,old*120//100,(old*(10000+secrets.randbelow(4001)-2000)+5000)//10000))
+     # Draw only when a scheduled slot is due; preserve all settled history.
+     price=max(100,(old*60+99)//100,min(10000000,old*140//100,(old*(10000+stock_move_bps())+5000)//10000))
      self.liquidate(symbol,price,date.isoformat())
      self.db.execute('INSERT INTO mari_web_stock_days VALUES(?,?,?,?)',(symbol,date.isoformat(),old,price))
      self.db.execute('INSERT OR IGNORE INTO mari_web_stock_updates VALUES(?)',(date.isoformat(),))

@@ -14,8 +14,10 @@ def article(name,sector,old,price,previous=''):
  change=(price/old-1)*100
  if price==old:return f'[{name}] 새 소식 속 관망세…주가 보합',f'{name}의 이번 회차 가격은 {price:,}마리로 유지됐다. 투자자들은 다음 소식을 기다리고 있다.'
  candidates=REASONS[sector][0 if change>0 else 1];tails=UP if change>0 else DOWN
+ if abs(change)>=25:
+  tails=['깜짝 호재에 매수세 몰려','대형 계약 기대에 주가 급등','투자자 관심 폭발'] if change>0 else ['충격 소식에 매도세 몰려','실적 우려에 주가 급락','투자자 이탈 가속']
  options=[f'[{name}] {reason}…{tail}' for reason in candidates for tail in tails]
  options=[headline for headline in options if headline!=previous]
- headline=secrets.choice(options);level='급등' if change>=10 else '상승' if change>0 else '급락' if change<=-10 else '하락'
+ headline=secrets.choice(options);level='급등' if change>=25 else '큰 폭 상승' if change>=10 else '상승' if change>0 else '급락' if change<=-25 else '큰 폭 하락' if change<=-10 else '하락'
  body=f'{name}의 주가가 직전 회차 대비 {abs(change):.2f}% {level}해 {price:,}마리로 갱신됐다. '+('긍정적인 소식에 사업 성과를 향한 기대가 커지는 분위기다.' if change>0 else '사업 불확실성이 부각되며 향후 대응에 관심이 쏠리고 있다.')
  return headline,body
