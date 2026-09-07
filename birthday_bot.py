@@ -104,6 +104,7 @@ LOAN_REPAYMENT_DAYS = 2
 LOAN_LIMIT_RECOVERY_DELAY_MINUTES = 15
 DEFAULT_SAVINGS_DAYS = "3"
 DEFAULT_SAVINGS_INTEREST_RATE = "10"
+MAX_SAVINGS_PRINCIPAL = 10_000_000_000
 DEFAULT_LABOR_DEBT_AMOUNT = 100_000
 LOAN_GRADE_DECAY_DAYS = 2
 CREDIT_LEVEL_LIMIT_STEP = 5_000_000
@@ -5623,6 +5624,8 @@ def create_saving(
     total_amount: int,
     due_at: datetime,
 ):
+    if principal < 1 or principal > MAX_SAVINGS_PRINCIPAL:
+        raise ValueError("적금 원금은 1마리 이상 100억 마리 이하여야 합니다.")
     cursor.execute(
         """
         INSERT INTO savings(guild_id, user_id, principal, interest_rate, total_amount, deposited_at, due_at, status)
@@ -13244,13 +13247,16 @@ async def business_list(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=False)
 
 
-@bot.tree.command(name="적금", description="현재 서버 설정 기준으로 적금에 가입합니다.")
+@bot.tree.command(name="적금", description="원금 최대 100억 마리까지 현재 서버 설정 기준으로 적금에 가입합니다.")
 async def savings_join(interaction: discord.Interaction, amount: int):
     if interaction.guild is None:
         await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
         return
     if amount <= 0:
         await interaction.response.send_message("적금 금액은 1마리 이상이어야 합니다.", ephemeral=True)
+        return
+    if amount > MAX_SAVINGS_PRINCIPAL:
+        await interaction.response.send_message("적금은 한 건당 원금 100억 마리까지 가입할 수 있습니다. 이자는 한도에 포함되지 않습니다.", ephemeral=True)
         return
     if not can_afford(interaction.user.id, amount):
         await interaction.response.send_message("잔액이 부족합니다.", ephemeral=True)
