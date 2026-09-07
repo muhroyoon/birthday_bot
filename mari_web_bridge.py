@@ -229,6 +229,7 @@ class Bridge:
             guild_id TEXT NOT NULL, name TEXT NOT NULL, avatar TEXT, body TEXT NOT NULL,
             created_at REAL NOT NULL, deleted INTEGER NOT NULL DEFAULT 0
         );
+        CREATE TABLE IF NOT EXISTS mari_web_chat_reads(user_id TEXT PRIMARY KEY,last_id INTEGER NOT NULL DEFAULT 0);
         CREATE INDEX IF NOT EXISTS idx_mari_chat_user_time ON mari_web_chat(user_id,created_at);
         CREATE TABLE IF NOT EXISTS mari_web_servers (
             guild_id TEXT PRIMARY KEY, connected_by TEXT NOT NULL, connected_at REAL NOT NULL
@@ -423,7 +424,7 @@ class Bridge:
                 if last[1] != "done":
                     public_round.update(done=True, controls=[], notice="봇 재시작으로 중단된 게임입니다. 관리자에게 정산 확인을 요청해주세요.")
         return {"user": {"id":str(uid),"name": member.display_name,"username":member.name, "avatar": str(member.display_avatar.url)},
-                "guild":self.guild_info(member.guild),"leaderboard":self.leaderboard(uid),
+                "guild":self.guild_info(member.guild),"leaderboard":self.leaderboard(uid),"chatUnread":self.chat_unread(member),
                 "balance": self.ns["get_balance"](uid), "admin": member.guild_permissions.administrator,
                 "raffles": raffles, "round": public_round,
                 "history": [{"id": str(r[0]), "name": r[1], "detail": r[2], "delta": r[3], "at": r[4]} for r in records]}
@@ -707,6 +708,24 @@ class Bridge:
                 for e in getattr(member.guild,'emojis',[]) if e.available and
                 (not e.roles or any(r.id in roles for r in e.roles))]
 
+    def chat_unread(self, member):
+        ids=[str(gid) for gid in self.guild_ids if self.bot.get_guild(gid)]
+        if not ids: return 0
+        row=self.db.execute('SELECT last_id FROM mari_web_chat_reads WHERE user_id=?',(str(member.id),)).fetchone()
+        last=row[0] if row else 0
+        marks=','.join('?' for _ in ids)
+        return self.db.execute(f"SELECT COUNT(*) FROM mari_web_chat WHERE id>? AND deleted=0 AND user_id<>? AND guild_id IN ({marks})",(last,str(member.id),*ids)).fetchone()[0]
+
+    def chat_read(self, member, data):
+        last=data.get('through')
+        if not isinstance(last,str) or not last.isascii() or not last.isdigit() or len(last)>18: raise WebError('읽은 메시지를 확인해주세요.')
+        last=int(last)
+        row=self.db.execute('SELECT guild_id FROM mari_web_chat WHERE id=?',(last,)).fetchone()
+        if not row or int(row[0]) not in self.guild_ids or not self.bot.get_guild(int(row[0])): raise WebError('메시지를 확인할 수 없어요.')
+        with self.db:
+            self.db.execute('INSERT INTO mari_web_chat_reads VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET last_id=MAX(last_id,excluded.last_id)',(str(member.id),last))
+        return {'unread':self.chat_unread(member)}
+
     def chat_messages(self, member):
         ids=[str(gid) for gid in self.guild_ids if self.bot.get_guild(gid)]
         if not ids: return {"messages": []}
@@ -878,6 +897,8 @@ class Bridge:
         if action == 'notifications/read':
             return await self.activities.mark_read(member,data)
         if action == "recruits": return await self.recruit_posts(member)
+        if action == "chat/read":
+            async with self.lock: return self.chat_read(member,data)
         if action == "chat": return self.chat_messages(member)
         if action in {"chat/send","chat/delete"}:
             async with self.lock: return self.chat_action(member,action,data)
