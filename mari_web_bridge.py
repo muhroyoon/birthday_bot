@@ -379,7 +379,7 @@ class Bridge:
                 continue
             item = {"userId": str(user_id), "name": member.display_name,
                     "username": member.name, "avatar": str(member.display_avatar.url),
-                    "balance": balance, "savings": savings, "stockValue": stock_value, "totalAssets": assets, "rank": total, "guild": self.guild_info(member.guild)}
+                    "balance": balance, "savings": savings, "stockValue": stock_value, "totalAssets": assets, "rank": total, "guild": self.guild_info(member.guild), "style":self.social.decoration(user_id) if hasattr(self,'social') else {}}
             if total <= 100:
                 entries.append(item)
             if str(user_id) == str(uid):
@@ -732,7 +732,7 @@ class Bridge:
         marks=','.join('?' for _ in ids)
         rows=self.db.execute(f"SELECT id,user_id,guild_id,name,avatar,body,created_at FROM mari_web_chat WHERE deleted=0 AND guild_id IN ({marks}) ORDER BY id DESC LIMIT 100",ids).fetchall()
         return {"emojis":self.server_emojis(member),"messages": [{"id":str(r[0]),"userId":r[1],"guild":self.guild_info(self.bot.get_guild(int(r[2]))),
-                "name":r[3],"avatar":r[4],"body":r[5],"at":datetime.fromtimestamp(r[6],KST).isoformat(),
+                "name":r[3],"avatar":r[4],"body":r[5],"at":datetime.fromtimestamp(r[6],KST).isoformat(),"style":self.social.decoration(r[1]) if hasattr(self,'social') else {},
                 "canDelete":r[1]==str(member.id) or (r[2]==str(member.guild.id) and member.guild_permissions.administrator)} for r in reversed(rows)]}
 
     def chat_action(self, member, action, data):
@@ -865,7 +865,24 @@ class Bridge:
                 self.db.commit()
             return {"session": session}
         uid, gid = self.session(token)
-        member = await self.member(uid, gid, fresh=action not in {"account", "logout"})
+        member = await self.member(uid, gid, fresh=action not in {"account", "logout", "adventure/step", "adventure/status"})
+        if action in {'adventure/status','adventure/start','adventure/step'}:
+            from mari_web_adventure import Adventure
+            async with self.lock:
+                if not hasattr(self,'adventure'):self.adventure=Adventure(self,WebError)
+                if action=='adventure/status':return self.adventure.status(member)
+                if action=='adventure/start':return self.adventure.start(member,data)
+                return self.adventure.control(member,data)
+        if action in {'social/member','social/profile','social/buy','social/equip','social/paper','social/talk','social/talk/send','social/talk/delete'}:
+            from mari_web_social import Social
+            async with self.lock:
+                if not hasattr(self,'social'):self.social=Social(self,WebError)
+                if action=='social/profile':return self.social.profile(member)
+                if action=='social/member':return self.social.public_profile(data)
+                if action=='social/buy':return self.social.buy(member,data)
+                if action=='social/equip':return self.social.equip(member,data)
+                if action=='social/paper':return self.social.paper()
+                return self.social.talk(member,data,action)
         if action == 'account' and data.get('summary') is True:
             return {'balance':self.ns['get_balance'](uid),'chatUnread':self.chat_unread(member)}
         if action=='rankings':
@@ -998,7 +1015,12 @@ class Bridge:
         async def market_clock():
             while True:
                 try:
-                    async with self.lock:self.economy.settle()
+                    async with self.lock:
+                        self.economy.settle()
+                        if not hasattr(self,'paper_check') or time.time()-self.paper_check>=60:
+                            from mari_web_social import Social
+                            if not hasattr(self,'social'):self.social=Social(self,WebError)
+                            self.social.paper();self.paper_check=time.time()
                 except Exception:log.exception("Market daily settlement failed")
                 await asyncio.sleep(1)
         self.market_task = asyncio.create_task(market_clock())

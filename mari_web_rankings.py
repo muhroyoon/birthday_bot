@@ -19,7 +19,7 @@ class Rankings:
             member=members.get(raw['userId'])
             if not member:continue
             total+=1
-            row={**raw,'rank':total,'name':member.display_name,'username':member.name,'avatar':str(member.display_avatar.url),'guild':self.b.guild_info(member.guild)}
+            row={**raw,'rank':total,'name':member.display_name,'username':member.name,'avatar':str(member.display_avatar.url),'guild':self.b.guild_info(member.guild),'style':self.b.social.decoration(member.id) if hasattr(self.b,'social') else {}}
             if total<=100:entries.append(row)
             if raw['userId']==str(uid):mine=row
         return {'entries':entries,'mine':mine,'total':total,'metric':metric,'note':note}
@@ -47,6 +47,11 @@ class Rankings:
         rows.sort(key=lambda r:(-Fraction(r['profit'],r['invested']),r['userId']))
         return self.result(rows,uid,'return','수익률 = (누적 실현 손익 + 현재 평가 손익) ÷ 누적 진입 금액. 재투자도 진입 금액에 포함하며, 기존 주식에서 전환한 원금도 합산합니다.')
     def game(self,uid,data):
+        from mari_web_adventure import GAMES,Adventure
+        if data.get('game') in GAMES:
+            Adventure(self.b,self.Error)
+            rows=self.db.execute('SELECT user_id,MAX(score),COUNT(*) FROM mari_web_adventures WHERE game=? AND done=1 GROUP BY user_id ORDER BY MAX(score) DESC,user_id',(data['game'],)).fetchall()
+            return self.result([{'userId':u,'value':score,'plays':plays} for u,score,plays in rows],uid,'score','서버에서 판정한 최고 점수입니다. 동점은 디스코드 ID 순서입니다.')
         game=data.get('game')
         if game=='all_in':
             return self.result([],uid,'money','몰빵은 과거 당첨자의 계정 ID와 지급액이 함께 보존되지 않아 누적 순이익 순위를 집계할 수 없습니다. 현재 참여 현황은 몰빵 화면에서 확인해주세요.')
