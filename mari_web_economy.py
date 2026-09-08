@@ -25,10 +25,10 @@ def legacy_stock_move_bps(up_chance=50):
 
 
 def stock_move_bps(up_chance=50,sideways=False):
- """80/17/3 magnitude bands, with reciprocal down moves."""
+ """70/25/5 magnitude bands, with reciprocal down moves."""
  rising=secrets.randbelow(100)<up_chance
  bucket=secrets.randbelow(1000)
- low,high=(80,400) if bucket<800 else (401,1600) if bucket<970 else (1601,5500)
+ low,high=(80,400) if bucket<700 else (401,1600) if bucket<950 else (1601,5500)
  magnitude=low+secrets.randbelow(high-low+1)
  if sideways:magnitude=round(Fraction(magnitude*35,100))
  return magnitude if rising else Fraction(-10000*magnitude,10000+magnitude)
@@ -55,6 +55,7 @@ class Economy:
   CREATE TABLE IF NOT EXISTS mari_web_leveraged(user_id TEXT,symbol TEXT,side TEXT,qty INTEGER,cost INTEGER,notional INTEGER,PRIMARY KEY(user_id,symbol,side));
   CREATE TABLE IF NOT EXISTS mari_web_trade_leverage(id TEXT PRIMARY KEY,leverage INTEGER);
   CREATE TABLE IF NOT EXISTS mari_web_six_hour_regimes(symbol TEXT,window TEXT,regime INTEGER NOT NULL CHECK(regime IN (0,1,2)),PRIMARY KEY(symbol,window));
+  CREATE TABLE IF NOT EXISTS mari_web_five_state_regimes(symbol TEXT,window TEXT,regime INTEGER NOT NULL CHECK(regime IN (0,1,2,3,4)),PRIMARY KEY(symbol,window));
   CREATE TABLE IF NOT EXISTS mari_web_log_positions(user_id TEXT,symbol TEXT,side TEXT CHECK(side IN ('long','short')),leverage INTEGER CHECK(leverage IN (1,2)),qty INTEGER NOT NULL,cost INTEGER NOT NULL,notional INTEGER NOT NULL,log_basis TEXT NOT NULL,PRIMARY KEY(user_id,symbol,side,leverage));
   CREATE TABLE IF NOT EXISTS mari_web_delisted(symbol TEXT PRIMARY KEY,at TEXT NOT NULL,price INTEGER NOT NULL);
   CREATE TABLE IF NOT EXISTS mari_web_trade_contract(id TEXT PRIMARY KEY,settlement TEXT NOT NULL);
@@ -86,12 +87,12 @@ class Economy:
   return 55 if row[0] else 45
  def private_regime(self,symbol,slot):
   window=slot.astimezone(KST).replace(hour=slot.astimezone(KST).hour//6*6,minute=0,second=0,microsecond=0).isoformat()
-  row=self.db.execute('SELECT regime FROM mari_web_six_hour_regimes WHERE symbol=? AND window=?',(symbol,window)).fetchone()
+  row=self.db.execute('SELECT regime FROM mari_web_five_state_regimes WHERE symbol=? AND window=?',(symbol,window)).fetchone()
   if row is None:
-   draw=secrets.randbelow(100);regime=0 if draw<40 else 1 if draw<60 else 2
-   self.db.execute('INSERT OR IGNORE INTO mari_web_six_hour_regimes VALUES(?,?,?)',(symbol,window,regime))
-   row=self.db.execute('SELECT regime FROM mari_web_six_hour_regimes WHERE symbol=? AND window=?',(symbol,window)).fetchone()
-  return (60,False) if row[0]==0 else (50,True) if row[0]==1 else (40,False)
+   draw=secrets.randbelow(100);regime=0 if draw<10 else 1 if draw<35 else 2 if draw<65 else 3 if draw<90 else 4
+   self.db.execute('INSERT OR IGNORE INTO mari_web_five_state_regimes VALUES(?,?,?)',(symbol,window,regime))
+   row=self.db.execute('SELECT regime FROM mari_web_five_state_regimes WHERE symbol=? AND window=?',(symbol,window)).fetchone()
+  return ((70,False),(60,False),(50,True),(40,False),(30,False))[row[0]]
  def delist(self,symbol,slot):
   if self.db.execute('SELECT 1 FROM mari_web_delisted WHERE symbol=?',(symbol,)).fetchone():return
   # Called within settlement's transaction: archive, payouts, and removal commit together.
