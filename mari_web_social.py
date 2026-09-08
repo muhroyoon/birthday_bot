@@ -186,7 +186,7 @@ class Social:
     rows=self.db.execute('SELECT open,close FROM mari_web_stock_days WHERE symbol=? AND day>=? AND day<? ORDER BY day',(symbol,start.isoformat(),end.isoformat())).fetchall()
     if rows:changes.append((abs((rows[-1][1]/rows[0][0]-1)*100),name,(rows[-1][1]/rows[0][0]-1)*100))
    if changes:
-    _,name,change=max(changes);articles.append({'title':name+'에 쏠린 시선','body':f'어제 첫 갱신 전 가격 대비 마지막 가격은 {change:+.2f}%. 일곱 종목 가운데 하루 변동 폭이 가장 컸어요.'})
+    _,name,change=max(changes);articles.append({'title':name+'에 쏠린 시선','body':f'어제 첫 갱신 전 가격 대비 마지막 가격은 {change:+.2f}%. 상장 종목 가운데 하루 변동 폭이 가장 컸어요.'})
    if not articles:articles=[{'title':'새로운 하루를 기다리며','body':'어제 집계된 활동이 아직 없어요. 오늘의 기록은 내일 신문에서 만나요.'}]
    issue={'day':day,'covered':date.isoformat(),'articles':articles}
    with self.db:self.db.execute('INSERT OR IGNORE INTO mari_web_daily_paper VALUES(?,?,?)',(day,json.dumps(issue,ensure_ascii=False),time.time()))

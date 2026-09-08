@@ -8,7 +8,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 KST=timezone(timedelta(hours=9))
-STOCKS=(('muro','머로증권','금융'),('jeumi','즈미테크','기술'),('samsung','삼성식품','식품'),('gimcheon','김천물류','물류'),('haerangsol','해랑솔에너지','에너지'),('harang','하랑건설','건설'),('hoon','훈이게임즈','게임'))
+STOCKS=(('muro','머로증권','금융'),('jeumi','즈미테크','기술'),('samsung','삼성식품','식품'),('gimcheon','김천물류','물류'),('haerangsol','해랑솔에너지','에너지'),('harang','하랑건설','건설'),('hoon','훈이게임즈','게임'),('haneul','하늘반도체','반도체'))
 PAID={'aim','pubg','reaction','stopwatch','apple','snake','suika','2048','fortune'}
 
 def stock_move_bps():
@@ -148,7 +148,7 @@ class Economy:
   trades=[dict(zip(('id','symbol','side','quantity','price','total','profit','at'),row)) for row in self.db.execute('SELECT id,symbol,side,qty,price,total,profit,at FROM mari_web_stock_trades WHERE user_id=? ORDER BY at DESC,id DESC LIMIT 10',(str(member.id),))]
   for t in trades:
    row=self.db.execute('SELECT leverage FROM mari_web_trade_leverage WHERE id=?',(t['id'],)).fetchone();t['leverage']=row[0] if row else 1
-  news=[{'symbol':symbol,'at':slot,'title':headline,'body':body} for symbol,slot,headline,body in self.db.execute('SELECT symbol,slot,headline,body FROM mari_web_stock_news ORDER BY slot DESC,symbol LIMIT 21')]
+  news=[{'symbol':symbol,'at':slot,'title':headline,'body':body} for symbol,slot,headline,body in self.db.execute('SELECT symbol,slot,headline,body FROM mari_web_stock_news ORDER BY slot DESC,symbol LIMIT 24')]
   return {'positionVersion':2,'positions':self.positions(member.id,items),'news':news,'stocks':items,'balance':self.balance(member.id),'day':self.today().isoformat(),'nextUpdate':(self.stock_slot()+timedelta(minutes=10)).isoformat(),'trades':trades}
  def trade(self,member,data):
   self.settle();request,fp,old=self.receipt(member,data,'trade')
