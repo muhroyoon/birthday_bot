@@ -1,5 +1,6 @@
 """Virtual stock market and paid game passes, sharing Discord's balance table."""
 from bisect import bisect_right
+from fractions import Fraction
 import hashlib
 import json
 import secrets
@@ -11,11 +12,16 @@ STOCKS=(('muro','머로증권','금융'),('jeumi','즈미테크','기술'),('sam
 PAID={'aim','pubg','reaction','stopwatch','apple','snake','suika','2048','fortune'}
 
 def stock_move_bps():
- """Independently choose regime, magnitude (basis points), then direction."""
- bucket=secrets.randbelow(100)
- low,high=(100,1000) if bucket<50 else (1000,2500) if bucket<85 else (2500,4000)
+ """Equal directions, reciprocal multipliers: paired moves have zero log drift.
+
+ Rise bands (bps) have 85/12/2.8/0.2 weights. A sampled +r pairs with
+ -r/(1+r), not -r. Fraction keeps the inverse exact until price rounding.
+ """
+ rising=bool(secrets.randbelow(2))
+ bucket=secrets.randbelow(1000)
+ low,high=(100,300) if bucket<850 else (301,1000) if bucket<970 else (1001,2500) if bucket<998 else (2501,7000)
  magnitude=low+secrets.randbelow(high-low+1)
- return magnitude if secrets.randbelow(2) else -magnitude
+ return magnitude if rising else Fraction(-10000*magnitude,10000+magnitude)
 
 
 class Economy:
@@ -73,7 +79,7 @@ class Economy:
     while date<slot:
      date+=timedelta(minutes=15);old=price
      # Draw only when a scheduled slot is due; preserve all settled history.
-     price=max(100,(old*60+99)//100,min(10000000,old*140//100,(old*(10000+stock_move_bps())+5000)//10000))
+     price=max(100,(old*10+16)//17,min(10000000,old*170//100,(old*(10000+stock_move_bps())+5000)//10000))
      self.liquidate(symbol,price,date.isoformat())
      self.db.execute('INSERT INTO mari_web_stock_days VALUES(?,?,?,?)',(symbol,date.isoformat(),old,price))
      self.db.execute('INSERT OR IGNORE INTO mari_web_stock_updates VALUES(?)',(date.isoformat(),))
