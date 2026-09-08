@@ -130,6 +130,7 @@ class Adventure:
   return self.public(row)
  def start(self,member,data):
   game=data.get('game')
+  if game in ('fishing','runner'):raise self.Error('이 게임은 버그 점검으로 잠시 이용할 수 없어요. 입장권은 차감되지 않아요.',503)
   if game not in GAMES:raise self.Error('게임을 확인해주세요.')
   request,fp,old=self.b.economy.receipt(member,data,'adventure/start')
   if old:return self.public(self.db.execute('SELECT * FROM mari_web_adventures WHERE id=?',(old['id'],)).fetchone())
@@ -145,6 +146,7 @@ class Adventure:
  def control(self,member,data):
   row=self.db.execute('SELECT * FROM mari_web_adventures WHERE id=? AND user_id=? AND guild_id=?',(data.get('id'),str(member.id),str(member.guild.id))).fetchone()
   if not row:raise self.Error('진행 중인 게임을 찾을 수 없어요.',404)
+  if row[3] in ('fishing','runner'):raise self.Error('이 게임은 현재 점검 중이에요.',503)
   s=json.loads(row[4]);seq=data.get('seq');x=data.get('x',0);y=data.get('y',0);tap=data.get('tap',0)
   if type(seq) is not int or type(x) is not int or type(y) is not int or type(tap) is not int or x not in (-1,0,1) or y not in (-1,0,1) or not 0<=tap<=4:raise self.Error('입력 값을 확인해주세요.')
   if seq<=s['seq'] or s['done']:return self.public(row)
