@@ -825,12 +825,23 @@ class Bridge:
         now=time.monotonic()
         self.visitors={key:value for key,value in self.visitors.items() if now-value[0]<90}
         identity='visitor:'+visitor
+        profile=None
+        authenticated=False
         if token:
-            try: identity='user:'+str(self.session(token)[0])
+            try:
+                uid,gid=self.session(token)
+                guild=self.bot.get_guild(gid) if gid in self.guild_ids else None
+                member=guild.get_member(uid) if guild else None
+                if member:
+                    authenticated=True
+                    identity='user:'+str(uid)
+                    profile={'id':str(uid),'name':member.display_name,'avatar':str(member.display_avatar.url),'guild':guild.name}
             except WebError: pass
         if visitor not in self.visitors and len(self.visitors)>=10000: raise WebError('접속 집계를 잠시 후 다시 확인해주세요.',503)
-        self.visitors[visitor]=(now,identity)
-        return {'online':len({item[1] for item in self.visitors.values()}),'windowSeconds':90}
+        self.visitors[visitor]=(now,identity,profile)
+        unique={item[1]:item for item in sorted(self.visitors.values(),key=lambda item:item[0])}
+        users=sorted([item[2] for item in unique.values() if item[2]],key=lambda user:(user['name'].casefold(),user['id']))
+        return {'online':len(unique),'windowSeconds':90,'users':users if authenticated else [],'guests':sum(1 for item in unique.values() if not item[2]),'identified':authenticated}
 
     async def dispatch(self, action, token, data):
         if action=="presence": return self.presence(token,data)

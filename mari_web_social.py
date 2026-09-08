@@ -29,6 +29,32 @@ for game,name,title in [('blackjack','블랙잭','21의 문턱'),('slot','슬롯
  ACH.append(dict(id='legacy-'+game,name=title,description=name+' 웹 기록 1회'+(' 참여' if game in ('all_in','fortune') else ' 완료'),stat='legacy-'+game,target=1))
 for a in ACH:
  ITEMS.append(dict(id='earned-'+a['id'],kind='title',name=a['name'],style='gold',price=None,achievement=a['id']))
+LEGACY_ACH=ACH
+TIERS=[('bronze','브론즈'),('silver','실버'),('gold','골드'),('master','마스터')]
+TRACKS=[]
+special={
+ 'variety':([1,3,5,6],'여섯 가지 모험','서로 다른 새 게임 완료'),
+ 'plays':([10,50,100,300],'라운지의 전설','새 게임 완료 횟수'),
+ 'work':([1,30,100,500],'광산 개척자','작업 완료 횟수'),
+ 'trades':([1,30,100,500],'시장의 기록','주식 거래 횟수'),
+ 'rare':([1,3,10,30],'황금빛 손맛','황금용왕어 포획'),
+ 'fish':([1,20,100,300],'풍어의 기록','물고기 포획'),
+ 'towerFloors':([5,10,18,25],'하늘의 건축가','한 판 최고 층수'),
+ 'memoryLevel':([2,5,8,12],'기억의 달인','한 판 통과 단계'),
+ 'runnerBest':([100,300,500,800],'멈추지 않는 질주','한 판 최고 점수'),
+ 'dodgeBest':([100,300,500,800],'탄막 속의 춤','한 판 최고 점수'),
+ 'territoryCells':([90,130,170,210],'영토 개척자','한 판 최대 점령 칸'),
+}
+for a in LEGACY_ACH:
+ stat=a['stat']
+ if any(t['id']==stat for t in TRACKS):continue
+ targets,name,description=special.get(stat,([1,10,50,100],GAMES.get(stat,a['name']),a['description'].replace(' 1회 완료','').replace(' 1회 참여','').replace(' 웹 기록','')+' 완료 횟수'))
+ TRACKS.append(dict(id=stat,name=name,description=description,targets=targets))
+ACH=[]
+for track in TRACKS:
+ for index,(tier,label) in enumerate(TIERS):
+  a=dict(id=track['id']+'-'+tier,name=track['name']+' · '+label,description=track['description'],stat=track['id'],target=track['targets'][index],tier=tier)
+  ACH.append(a);ITEMS.append(dict(id='tier-'+a['id'],kind='title',name=a['name'],style=tier,price=None,achievement=a['id'],tier=tier))
 ITEM_MAP={i['id']:i for i in ITEMS}
 
 class Social:
@@ -41,6 +67,8 @@ class Social:
   CREATE INDEX IF NOT EXISTS stock_talk_lookup ON mari_web_stock_talk(symbol,deleted,id);
   CREATE TABLE IF NOT EXISTS mari_web_daily_paper(day TEXT PRIMARY KEY,body TEXT,published REAL);
   ''');self.db.commit()
+  if 'title' not in {r[1] for r in self.db.execute('PRAGMA table_info(mari_web_stock_talk)')}:
+   self.db.execute("ALTER TABLE mari_web_stock_talk ADD COLUMN title TEXT NOT NULL DEFAULT ''");self.db.commit()
  def exists(self,table):return bool(self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",(table,)).fetchone())
  def stats(self,uid):
   stats=dict(plays=0,variety=0,work=0,trades=0,fish=0,rare=0,towerFloors=0,memoryLevel=0,runnerBest=0,dodgeBest=0,territoryCells=0)
@@ -75,16 +103,22 @@ class Social:
     member=guild.get_member(int(uid))
     if member and not member.bot:break
   if not member or member.bot:raise self.Error('연동 서버의 프로필을 찾을 수 없어요.',404)
-  titles=[ITEM_MAP[r[0]] for r in self.db.execute('SELECT item FROM mari_web_cosmetics WHERE user_id=? AND item LIKE ?',(uid,'earned-%')) if r[0] in ITEM_MAP]
+  titles=[ITEM_MAP[r[0]] for r in self.db.execute('SELECT item FROM mari_web_cosmetics WHERE user_id=?',(uid,)) if r[0] in ITEM_MAP and ITEM_MAP[r[0]].get('achievement')]
   return {'name':member.display_name,'avatar':str(member.display_avatar.url),'guild':member.guild.name,'style':self.decoration(uid),'titles':titles}
  def profile(self,member):
   uid=str(member.id);stats=self.stats(uid);owned={r[0] for r in self.db.execute('SELECT item FROM mari_web_cosmetics WHERE user_id=?',(uid,))}
-  earned={'earned-'+a['id'] for a in ACH if stats.get(a['stat'],0)>=a['target']}
+  earned={'earned-'+a['id'] for a in LEGACY_ACH if stats.get(a['stat'],0)>=a['target']}
+  earned|={'tier-'+a['id'] for a in ACH if stats.get(a['stat'],0)>=a['target']}
   with self.db:
    for item in earned:self.db.execute('INSERT OR IGNORE INTO mari_web_cosmetics VALUES(?,?,?)',(uid,item,time.time()))
   owned|=earned
-  return {'items':ITEMS,'owned':sorted(owned),'style':self.decoration(uid),'balance':self.b.economy.balance(uid),
-          'achievements':[{**a,'progress':stats.get(a['stat'],0),'earned':'earned-'+a['id'] in owned} for a in ACH]}
+  tracks=[]
+  for track in TRACKS:
+   levels=[{'tier':tier,'label':label,'target':track['targets'][i],'item':'tier-'+track['id']+'-'+tier,'earned':'tier-'+track['id']+'-'+tier in owned} for i,(tier,label) in enumerate(TIERS)]
+   progress=max([stats.get(track['id'],0)]+[v['target'] for v in levels if v['earned']])
+   tracks.append({**track,'progress':progress,'levels':levels})
+  return {'items':ITEMS,'owned':sorted(owned),'style':self.decoration(uid),'balance':self.b.economy.balance(uid),'tracks':tracks,
+          'achievements':[{**a,'progress':stats.get(a['stat'],0),'earned':'tier-'+a['id'] in owned} for a in ACH]}
  def buy(self,member,data):
   request,fp,old=self.b.economy.receipt(member,data,'cosmetics/buy')
   if old:return self.profile(member)
@@ -114,21 +148,28 @@ class Social:
    request,fp,old=self.b.economy.receipt(member,data,action)
    if not old:
     body=data.get('body')
-    if not isinstance(body,str) or not 1<=len(body.strip())<=500 or any(ord(c)<32 and c not in '\n\t' for c in body):raise self.Error('글은 1~500자로 입력해주세요.')
+    if not isinstance(body,str) or not 1<=len(body.strip())<=2000 or any(ord(c)<32 and c not in '\n\t' for c in body):raise self.Error('본문은 1~2,000자로 입력해주세요.')
+    title=data.get('title',body.strip().splitlines()[0][:80])
+    if not isinstance(title,str) or not 1<=len(title.strip())<=80 or any(ord(c)<32 for c in title):raise self.Error('제목은 1~80자로 입력해주세요.')
     last=self.db.execute('SELECT MAX(at) FROM mari_web_stock_talk WHERE user_id=?',(uid,)).fetchone()[0]
     if last and time.time()-last<3:raise self.Error('3초 뒤에 다시 작성해주세요.',429)
     with self.db:
-     self.db.execute('INSERT INTO mari_web_stock_talk(user_id,guild_id,symbol,body,name,avatar,at) VALUES(?,?,?,?,?,?,?)',(uid,str(member.guild.id),symbol,body.strip(),member.display_name,str(member.display_avatar.url),time.time()))
+     self.db.execute('INSERT INTO mari_web_stock_talk(user_id,guild_id,symbol,body,name,avatar,at,title) VALUES(?,?,?,?,?,?,?,?)',(uid,str(member.guild.id),symbol,body.strip(),member.display_name,str(member.display_avatar.url),time.time(),title.strip()))
      self.b.economy.remember(request,uid,fp,{'ok':True})
   elif action=='social/talk/delete':
    row=self.db.execute('SELECT user_id,guild_id FROM mari_web_stock_talk WHERE id=? AND symbol=?',(data.get('id'),symbol)).fetchone()
    if not row or not(row[0]==uid or (row[1]==str(member.guild.id) and member.guild_permissions.administrator)):raise self.Error('이 글을 삭제할 권한이 없어요.',403)
    with self.db:self.db.execute('UPDATE mari_web_stock_talk SET deleted=1 WHERE id=?',(data.get('id'),))
-  linked={str(g) for g in self.b.guild_ids};rows=[]
-  for rid,user,guild,body,name,avatar,at in self.db.execute('SELECT id,user_id,guild_id,body,name,avatar,at FROM mari_web_stock_talk WHERE symbol=? AND deleted=0 ORDER BY id DESC LIMIT 100',(symbol,)):
-   if guild not in linked:continue
-   g=self.b.bot.get_guild(int(guild));rows.append(dict(id=rid,userId=user,body=body,name=name,avatar=avatar,at=at,guild=g.name if g else '',style=self.decoration(user),canDelete=user==uid or (guild==str(member.guild.id) and member.guild_permissions.administrator)))
-  return {'posts':rows[:50]}
+  linked=[str(g) for g in self.b.guild_ids];rows=[];page=data.get('page',1);search=data.get('search','')
+  if type(page) is not int or page<1 or not isinstance(search,str) or len(search)>60:raise self.Error('페이지와 검색어를 확인해주세요.')
+  if not linked:return {'posts':[],'total':0,'page':1,'pages':1}
+  where="symbol=? AND deleted=0 AND guild_id IN ("+','.join('?' for _ in linked)+')';args=[symbol,*linked]
+  if search.strip():
+   where+=" AND (instr(lower(title),lower(?))>0 OR instr(lower(body),lower(?))>0)";args.extend([search.strip(),search.strip()])
+  total=self.db.execute('SELECT COUNT(*) FROM mari_web_stock_talk WHERE '+where,args).fetchone()[0];pages=max(1,(total+19)//20);page=min(page,pages)
+  for rid,user,guild,body,name,avatar,at,title in self.db.execute('SELECT id,user_id,guild_id,body,name,avatar,at,title FROM mari_web_stock_talk WHERE '+where+' ORDER BY id DESC LIMIT 20 OFFSET ?',[*args,(page-1)*20]):
+   g=self.b.bot.get_guild(int(guild));rows.append(dict(id=rid,userId=user,title=title or body.splitlines()[0][:80],body=body,name=name,avatar=avatar,at=at,guild=g.name if g else '',style=self.decoration(user),canDelete=user==uid or (guild==str(member.guild.id) and member.guild_permissions.administrator)))
+  return {'posts':rows,'total':total,'page':page,'pages':pages}
  def paper(self):
   now=datetime.now(KST);edition=now.date() if now.hour>=9 else now.date()-timedelta(days=1);day=edition.isoformat()
   if not self.db.execute('SELECT 1 FROM mari_web_daily_paper WHERE day=?',(day,)).fetchone():
