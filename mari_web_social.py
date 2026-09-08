@@ -168,8 +168,9 @@ class Social:
   where="symbol=? AND deleted=0 AND guild_id IN ("+','.join('?' for _ in linked)+')';args=[symbol,*linked]
   if search.strip():
    where+=" AND (instr(lower(title),lower(?))>0 OR instr(lower(body),lower(?))>0)";args.extend([search.strip(),search.strip()])
-  total=self.db.execute('SELECT COUNT(*) FROM mari_web_stock_talk WHERE '+where,args).fetchone()[0];pages=max(1,(total+19)//20);page=min(page,pages)
-  for rid,user,guild,body,name,avatar,at,title in self.db.execute('SELECT id,user_id,guild_id,body,name,avatar,at,title FROM mari_web_stock_talk WHERE '+where+' ORDER BY id DESC LIMIT 20 OFFSET ?',[*args,(page-1)*20]):
+  page_size=5
+  total=self.db.execute('SELECT COUNT(*) FROM mari_web_stock_talk WHERE '+where,args).fetchone()[0];pages=max(1,(total+page_size-1)//page_size);page=min(page,pages)
+  for rid,user,guild,body,name,avatar,at,title in self.db.execute('SELECT id,user_id,guild_id,body,name,avatar,at,title FROM mari_web_stock_talk WHERE '+where+' ORDER BY id DESC LIMIT ? OFFSET ?',[*args,page_size,(page-1)*page_size]):
    g=self.b.bot.get_guild(int(guild));rows.append(dict(id=rid,userId=user,title=title or body.splitlines()[0][:80],body=body,name=name,avatar=avatar,at=at,guild=g.name if g else '',style=self.decoration(user),canDelete=user==uid or (guild==str(member.guild.id) and member.guild_permissions.administrator)))
   return {'posts':rows,'total':total,'page':page,'pages':pages}
  def paper(self):
