@@ -232,10 +232,11 @@ class Economy:
    row=self.db.execute('SELECT leverage FROM mari_web_trade_leverage WHERE id=?',(t['id'],)).fetchone();t['leverage']=row[0] if row else 1
    row=self.db.execute('SELECT settlement FROM mari_web_trade_contract WHERE id=?',(t['id'],)).fetchone();t['settlement']=row[0] if row else 'linear';t['delisting']=t['id'].startswith('delist:')
   news=[{'symbol':symbol,'at':slot,'title':headline,'body':body,'sentiment':sentiment} for symbol,slot,headline,body,sentiment in self.db.execute("SELECT n.symbol,n.slot,n.headline,n.body,CASE WHEN d.close>d.open THEN 'positive' WHEN d.close<d.open THEN 'negative' WHEN d.close=d.open THEN 'neutral' ELSE 'unknown' END FROM mari_web_stock_news n LEFT JOIN mari_web_stock_days d ON d.symbol=n.symbol AND d.day=n.slot ORDER BY n.slot DESC,n.symbol LIMIT 24")]
-  return {'positionVersion':4,'bulkClose':True,'positions':self.positions(member.id,items),'news':news,'stocks':items,'balance':self.balance(member.id),'day':self.today().isoformat(),'nextUpdate':(self.stock_slot()+timedelta(minutes=10)).isoformat(),'trades':trades}
+  return {'positionVersion':4,'bulkClose':True,'positionClose':True,'positions':self.positions(member.id,items),'news':news,'stocks':items,'balance':self.balance(member.id),'day':self.today().isoformat(),'nextUpdate':(self.stock_slot()+timedelta(minutes=10)).isoformat(),'trades':trades}
  def trade(self,member,data):
   self.settle();request,fp,old=self.receipt(member,data,'trade')
   if old:return old
+  if data.get('action')=='close_position':return self.close_all(member,data,request,fp,single=True)
   if data.get('action')=='close_all':return self.close_all(member,data,request,fp)
   if self.db.execute('SELECT 1 FROM mari_web_delisted WHERE symbol=?',(data.get('symbol'),)).fetchone():raise self.Error('상장폐지된 종목은 거래할 수 없어요.',409)
   if data.get('settlement','linear')!='linear':raise self.Error('기존 손익 방식으로 복원됐어요. 페이지를 새로고침해주세요.',409)
@@ -272,16 +273,20 @@ class Economy:
    self.db.execute('INSERT INTO mari_web_stock_trades VALUES(?,?,?,?,?,?,?,?,?)',(request,uid,symbol,side+'_'+action,qty,price,total,profit,time.time()))
    result={'ok':True,'price':price,'quantity':qty,'total':total,'profit':profit,'balance':self.balance(uid)};self.remember(request,uid,fp,result)
   return result
- def close_all(self,member,data,request,fp):
+ def close_all(self,member,data,request,fp,single=False):
   uid=str(member.id)
   with self.db:
    prices=dict(self.db.execute('SELECT symbol,price FROM mari_web_stocks'))
    positions=self.positions(uid,[{'symbol':s,'price':p} for s,p in prices.items()])
    fields=('symbol','side','leverage','quantity','cost','notional','settlement')
-   expected=[{**{k:p[k] for k in fields},'price':prices[p['symbol']]} for p in positions]
    quoted=data.get('positions')
    if isinstance(quoted,list):quoted=[{**p,'settlement':p.get('settlement','linear')} if isinstance(p,dict) else p for p in quoted]
    if not isinstance(quoted,list) or not 1<=len(quoted)<=64 or any(not isinstance(p,dict) or set(p)!=set(fields)|{'price'} or any(type(p[k]) is not int for k in ('leverage','quantity','cost','notional','price')) for p in quoted):raise self.Error('종료할 포지션을 다시 확인해주세요.',409)
+   if single:
+    if len(quoted)!=1:raise self.Error('종료할 포지션 하나를 선택해주세요.',409)
+    identity=('symbol','side','leverage','settlement')
+    positions=[p for p in positions if all(p[k]==quoted[0][k] for k in identity)]
+   expected=[{**{k:p[k] for k in fields},'price':prices[p['symbol']]} for p in positions]
    canonical=lambda rows:sorted(json.dumps(p,sort_keys=True) for p in rows)
    if canonical(quoted)!=canonical(expected):raise self.Error('시세나 포지션이 바뀌었어요. 새 내역을 확인하고 다시 종료해주세요.',409)
    total=sum(p['equity'] for p in positions);profit=sum(p['profit'] for p in positions)
@@ -292,8 +297,16 @@ class Economy:
     self.db.execute('INSERT INTO mari_web_stock_trades VALUES(?,?,?,?,?,?,?,?,?)',(rid,uid,p['symbol'],p['side']+'_close',p['quantity'],prices[p['symbol']],p['equity'],p['profit'],at))
     if p['settlement']=='log':self.db.execute('INSERT INTO mari_web_trade_contract VALUES(?,?)',(rid,'log'))
     if p['leverage']==2:self.db.execute('INSERT INTO mari_web_trade_leverage VALUES(?,2)',(rid,))
-   for table in ('mari_web_holdings','mari_web_shorts','mari_web_leveraged','mari_web_log_positions'):
-    self.db.execute(f'DELETE FROM {table} WHERE user_id=?',(uid,))
+   if single:
+    p=positions[0]
+    if p['settlement']=='log':self.db.execute('DELETE FROM mari_web_log_positions WHERE user_id=? AND symbol=? AND side=? AND leverage=?',(uid,p['symbol'],p['side'],p['leverage']))
+    elif p['leverage']==2:self.db.execute('DELETE FROM mari_web_leveraged WHERE user_id=? AND symbol=? AND side=?',(uid,p['symbol'],p['side']))
+    else:
+     table='mari_web_holdings' if p['side']=='long' else 'mari_web_shorts'
+     self.db.execute(f'DELETE FROM {table} WHERE user_id=? AND symbol=?',(uid,p['symbol']))
+   else:
+    for table in ('mari_web_holdings','mari_web_shorts','mari_web_leveraged','mari_web_log_positions'):
+     self.db.execute(f'DELETE FROM {table} WHERE user_id=?',(uid,))
    self.db.execute('INSERT INTO balances VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET balance=balance+excluded.balance',(uid,total))
    result={'ok':True,'closed':len(positions),'total':total,'profit':profit,'balance':self.balance(uid)}
    self.remember(request,uid,fp,result)
