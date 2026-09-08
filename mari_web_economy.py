@@ -13,7 +13,7 @@ PAID={'aim','pubg','reaction','stopwatch','apple','snake','suika','2048','fortun
 def stock_move_bps():
  """Independently choose regime, magnitude (basis points), then direction."""
  bucket=secrets.randbelow(100)
- low,high=(100,1000) if bucket<70 else (1000,2500) if bucket<95 else (2500,4000)
+ low,high=(100,1000) if bucket<50 else (1000,2500) if bucket<85 else (2500,4000)
  magnitude=low+secrets.randbelow(high-low+1)
  return magnitude if secrets.randbelow(2) else -magnitude
 
