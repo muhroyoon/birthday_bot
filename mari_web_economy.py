@@ -14,12 +14,12 @@ PAID={'aim','pubg','reaction','stopwatch','apple','snake','suika','2048','fortun
 def stock_move_bps():
  """Equal directions, reciprocal multipliers: paired moves have zero log drift.
 
- Rise bands (bps) have 85/12/2.8/0.2 weights. A sampled +r pairs with
+ Rise bands (bps) have 50/35/13/2 weights. A sampled +r pairs with
  -r/(1+r), not -r. Fraction keeps the inverse exact until price rounding.
  """
  rising=bool(secrets.randbelow(2))
  bucket=secrets.randbelow(1000)
- low,high=(100,300) if bucket<850 else (301,1000) if bucket<970 else (1001,2500) if bucket<998 else (2501,7000)
+ low,high=(300,1000) if bucket<500 else (1001,2500) if bucket<850 else (2501,4500) if bucket<980 else (4501,7000)
  magnitude=low+secrets.randbelow(high-low+1)
  return magnitude if rising else Fraction(-10000*magnitude,10000+magnitude)
 
