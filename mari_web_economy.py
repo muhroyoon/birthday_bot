@@ -157,11 +157,12 @@ class Economy:
   trades=[dict(zip(('id','symbol','side','quantity','price','total','profit','at'),row)) for row in self.db.execute('SELECT id,symbol,side,qty,price,total,profit,at FROM mari_web_stock_trades WHERE user_id=? ORDER BY at DESC,id DESC LIMIT 10',(str(member.id),))]
   for t in trades:
    row=self.db.execute('SELECT leverage FROM mari_web_trade_leverage WHERE id=?',(t['id'],)).fetchone();t['leverage']=row[0] if row else 1
-  news=[{'symbol':symbol,'at':slot,'title':headline,'body':body} for symbol,slot,headline,body in self.db.execute('SELECT symbol,slot,headline,body FROM mari_web_stock_news ORDER BY slot DESC,symbol LIMIT 24')]
-  return {'positionVersion':2,'positions':self.positions(member.id,items),'news':news,'stocks':items,'balance':self.balance(member.id),'day':self.today().isoformat(),'nextUpdate':(self.stock_slot()+timedelta(minutes=10)).isoformat(),'trades':trades}
+  news=[{'symbol':symbol,'at':slot,'title':headline,'body':body,'sentiment':sentiment} for symbol,slot,headline,body,sentiment in self.db.execute("SELECT n.symbol,n.slot,n.headline,n.body,CASE WHEN d.close>d.open THEN 'positive' WHEN d.close<d.open THEN 'negative' WHEN d.close=d.open THEN 'neutral' ELSE 'unknown' END FROM mari_web_stock_news n LEFT JOIN mari_web_stock_days d ON d.symbol=n.symbol AND d.day=n.slot ORDER BY n.slot DESC,n.symbol LIMIT 24")]
+  return {'positionVersion':2,'bulkClose':True,'positions':self.positions(member.id,items),'news':news,'stocks':items,'balance':self.balance(member.id),'day':self.today().isoformat(),'nextUpdate':(self.stock_slot()+timedelta(minutes=10)).isoformat(),'trades':trades}
  def trade(self,member,data):
   self.settle();request,fp,old=self.receipt(member,data,'trade')
   if old:return old
+  if data.get('action')=='close_all':return self.close_all(member,data,request,fp)
   symbol=data.get('symbol');side=data.get('side');action=data.get('action');qty=data.get('quantity');quoted=data.get('price')
   if side not in ('long','short') or action not in ('open','close'):raise self.Error('롱·숏 거래로 전환됐어요. 페이지를 새로고침해주세요.',409)
   if symbol not in [s[0] for s in STOCKS] or type(qty) is not int or not 1<=qty<=1000000:raise self.Error('종목과 1 이상의 정수 수량을 확인해주세요.')
@@ -189,6 +190,30 @@ class Economy:
    self.db.execute(f'INSERT INTO {table} VALUES(?,?,?,?) ON CONFLICT(user_id,symbol) DO UPDATE SET qty=excluded.qty,cost=excluded.cost',(uid,symbol,owned,cost))
    self.db.execute('INSERT INTO mari_web_stock_trades VALUES(?,?,?,?,?,?,?,?,?)',(request,uid,symbol,side+'_'+action,qty,price,total,profit,time.time()))
    result={'ok':True,'price':price,'quantity':qty,'total':total,'profit':profit,'balance':self.balance(uid)};self.remember(request,uid,fp,result)
+  return result
+ def close_all(self,member,data,request,fp):
+  uid=str(member.id)
+  with self.db:
+   prices=dict(self.db.execute('SELECT symbol,price FROM mari_web_stocks'))
+   positions=self.positions(uid,[{'symbol':s,'price':p} for s,p in prices.items()])
+   fields=('symbol','side','leverage','quantity','cost','notional')
+   expected=[{**{k:p[k] for k in fields},'price':prices[p['symbol']]} for p in positions]
+   quoted=data.get('positions')
+   if not isinstance(quoted,list) or not 1<=len(quoted)<=32 or any(not isinstance(p,dict) or set(p)!=set(fields)|{'price'} or any(type(p[k]) is not int for k in ('leverage','quantity','cost','notional','price')) for p in quoted):raise self.Error('종료할 포지션을 다시 확인해주세요.',409)
+   canonical=lambda rows:sorted(json.dumps(p,sort_keys=True) for p in rows)
+   if canonical(quoted)!=canonical(expected):raise self.Error('시세나 포지션이 바뀌었어요. 새 내역을 확인하고 다시 종료해주세요.',409)
+   total=sum(p['equity'] for p in positions);profit=sum(p['profit'] for p in positions)
+   if self.balance(uid)+total>9000000000000000:raise self.Error('보유 가능한 마리 한도를 초과해요.')
+   at=time.time()
+   for p in positions:
+    rid='bulk:'+secrets.token_hex(16)
+    self.db.execute('INSERT INTO mari_web_stock_trades VALUES(?,?,?,?,?,?,?,?,?)',(rid,uid,p['symbol'],p['side']+'_close',p['quantity'],prices[p['symbol']],p['equity'],p['profit'],at))
+    if p['leverage']==2:self.db.execute('INSERT INTO mari_web_trade_leverage VALUES(?,2)',(rid,))
+   for table in ('mari_web_holdings','mari_web_shorts','mari_web_leveraged'):
+    self.db.execute(f'DELETE FROM {table} WHERE user_id=?',(uid,))
+   self.db.execute('INSERT INTO balances VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET balance=balance+excluded.balance',(uid,total))
+   result={'ok':True,'closed':len(positions),'total':total,'profit':profit,'balance':self.balance(uid)}
+   self.remember(request,uid,fp,result)
   return result
  def trade_leveraged(self,member,data,request,fp):
   uid=str(member.id);symbol=data['symbol'];side=data['side'];qty=data['quantity'];action=data['action']
