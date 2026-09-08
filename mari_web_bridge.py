@@ -358,6 +358,8 @@ class Bridge:
                     UNION ALL
                     SELECT h.user_id,MAX(0,2*h.cost-h.qty*p.price) AS equity
                     FROM mari_web_shorts h JOIN mari_web_stocks p ON p.symbol=h.symbol WHERE h.qty>0
+                    UNION ALL
+                    SELECT h.user_id,MAX(0,h.cost+(h.qty*p.price-h.notional)*CASE WHEN h.side='long' THEN 1 ELSE -1 END) AS equity FROM mari_web_leveraged h JOIN mari_web_stocks p ON p.symbol=h.symbol WHERE h.qty>0
                 ) GROUP BY user_id
             ), users AS (
                 SELECT user_id FROM balances UNION SELECT user_id FROM active_savings UNION SELECT user_id FROM stock_values
@@ -909,9 +911,10 @@ class Bridge:
             async with self.lock:
                 work=Work(self,WebError)
                 return work.status(member) if action=='work/status' else work.mutate(member,action,data)
-        if action in {'stocks','stocks/trade','tickets/status','tickets/start','tickets/fortune'}:
+        if action in {'stocks','stocks/history','stocks/trade','tickets/status','tickets/start','tickets/fortune'}:
             async with self.lock:
                 if action=='stocks':return self.economy.market(member)
+                if action=='stocks/history':return self.economy.history(data)
                 if action=='stocks/trade':return self.economy.trade(member,data)
                 if action=='tickets/status':return self.economy.status(member)
                 game='fortune' if action=='tickets/fortune' else data.get('game')
