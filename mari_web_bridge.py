@@ -868,6 +868,14 @@ class Bridge:
         member = await self.member(uid, gid, fresh=action not in {"account", "logout"})
         if action == 'account' and data.get('summary') is True:
             return {'balance':self.ns['get_balance'](uid),'chatUnread':self.chat_unread(member)}
+        if action=='rankings':
+            from mari_web_rankings import Rankings
+            await self.ensure_server_members()
+            async with self.lock:
+                ranks=Rankings(self,WebError)
+                if data.get('kind')=='stocks':return ranks.stocks(uid)
+                if data.get('kind')=='games':return ranks.game(uid,data)
+                raise WebError('랭킹 종류를 확인해주세요.')
         if action in {'work/status','work/start','work/hit'}:
             from mari_web_work import Work
             async with self.lock:
