@@ -11,13 +11,13 @@ KST=timezone(timedelta(hours=9))
 STOCKS=(('muro','머로증권','금융'),('jeumi','즈미테크','기술'),('samsung','삼성식품','식품'),('gimcheon','김천물류','물류'),('haerangsol','해랑솔에너지','에너지'),('harang','하랑건설','건설'),('hoon','훈이게임즈','게임'),('haneul','하늘반도체','반도체'))
 PAID={'aim','pubg','reaction','stopwatch','apple','snake','suika','2048','fortune'}
 
-def stock_move_bps():
- """Equal directions, reciprocal multipliers: paired moves have zero log drift.
+def stock_move_bps(up_chance=50):
+ """Daily private direction bias with unchanged reciprocal move magnitudes.
 
  Rise bands (bps) have 50/35/13/2 weights. A sampled +r pairs with
  -r/(1+r), not -r. Fraction keeps the inverse exact until price rounding.
  """
- rising=bool(secrets.randbelow(2))
+ rising=secrets.randbelow(100)<up_chance
  bucket=secrets.randbelow(1000)
  low,high=(300,1000) if bucket<500 else (1001,2500) if bucket<850 else (2501,4500) if bucket<980 else (4501,7000)
  magnitude=low+secrets.randbelow(high-low+1)
@@ -33,6 +33,7 @@ class Economy:
   CREATE TABLE IF NOT EXISTS mari_web_stock_news(symbol TEXT,slot TEXT,headline TEXT,body TEXT,PRIMARY KEY(symbol,slot));
   CREATE TABLE IF NOT EXISTS mari_web_stock_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS mari_web_stock_updates(slot TEXT PRIMARY KEY);
+  CREATE TABLE IF NOT EXISTS mari_web_private_regimes(symbol TEXT,day TEXT,bull INTEGER NOT NULL CHECK(bull IN (0,1)),PRIMARY KEY(symbol,day));
   CREATE TABLE IF NOT EXISTS mari_web_shorts(user_id TEXT,symbol TEXT,qty INTEGER NOT NULL,cost INTEGER NOT NULL,PRIMARY KEY(user_id,symbol));
   CREATE TABLE IF NOT EXISTS mari_web_holdings(user_id TEXT,symbol TEXT,qty INTEGER NOT NULL,cost INTEGER NOT NULL,PRIMARY KEY(user_id,symbol));
   CREATE TABLE IF NOT EXISTS mari_web_economy_requests(id TEXT PRIMARY KEY,user_id TEXT,fingerprint TEXT,result TEXT);
@@ -60,6 +61,13 @@ class Economy:
  def debit(self,uid,amount):
   if self.db.execute('UPDATE balances SET balance=balance-? WHERE user_id=? AND balance>=?',(amount,str(uid),amount)).rowcount!=1:raise self.Error('마리 잔액이 부족해요.',409)
  def remember(self,request,uid,fp,result):self.db.execute('INSERT INTO mari_web_economy_requests VALUES(?,?,?,?)',(request,str(uid),fp,json.dumps(result,ensure_ascii=False)))
+ def private_up_chance(self,symbol,slot):
+  day=slot.astimezone(KST).date().isoformat()
+  row=self.db.execute('SELECT bull FROM mari_web_private_regimes WHERE symbol=? AND day=?',(symbol,day)).fetchone()
+  if row is None:
+   self.db.execute('INSERT OR IGNORE INTO mari_web_private_regimes VALUES(?,?,?)',(symbol,day,secrets.randbelow(2)))
+   row=self.db.execute('SELECT bull FROM mari_web_private_regimes WHERE symbol=? AND day=?',(symbol,day)).fetchone()
+  return 55 if row[0] else 45
  def settle(self):
   slot=self.stock_slot()
   with self.db:
@@ -68,6 +76,7 @@ class Economy:
     self.db.execute('UPDATE mari_web_stocks SET day=? WHERE day<?',(slot.isoformat(),slot.isoformat()))
     self.db.execute("INSERT INTO mari_web_stock_settings VALUES('ten_minute_schedule','1')")
    for symbol,_,_ in STOCKS:
+    self.private_up_chance(symbol,slot)
     row=self.db.execute('SELECT price,day FROM mari_web_stocks WHERE symbol=?',(symbol,)).fetchone()
     if not row:
      self.db.execute('INSERT INTO mari_web_stocks VALUES(?,?,?)',(symbol,10000,slot.isoformat()))
@@ -82,7 +91,7 @@ class Economy:
     while date<slot:
      date=date.replace(minute=date.minute//10*10,second=0,microsecond=0)+timedelta(minutes=10);old=price
      # Draw only when a scheduled slot is due; preserve all settled history.
-     price=max(100,(old*10+16)//17,min(10000000,old*170//100,(old*(10000+stock_move_bps())+5000)//10000))
+     price=max(100,(old*10+16)//17,min(10000000,old*170//100,(old*(10000+stock_move_bps(self.private_up_chance(symbol,date)))+5000)//10000))
      self.liquidate(symbol,price,date.isoformat())
      self.db.execute('INSERT INTO mari_web_stock_days VALUES(?,?,?,?)',(symbol,date.isoformat(),old,price))
      self.db.execute('INSERT OR IGNORE INTO mari_web_stock_updates VALUES(?)',(date.isoformat(),))
