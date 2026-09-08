@@ -33,12 +33,14 @@ LEGACY_ACH=ACH
 TIERS=[('bronze','브론즈'),('silver','실버'),('gold','골드'),('master','마스터')]
 TRACKS=[]
 special={
+ 'legacy-fortune':([7,30,100,365],'오늘의 치킨운','운세 확인 일수'),
+ 'legacy-all_in':([5,20,60,180],'함께 건 한 판','몰빵 참여 횟수'),
  'variety':([1,3,5,6],'여섯 가지 모험','서로 다른 새 게임 완료'),
- 'plays':([10,50,100,300],'라운지의 전설','새 게임 완료 횟수'),
- 'work':([1,30,100,500],'광산 개척자','작업 완료 횟수'),
- 'trades':([1,30,100,500],'시장의 기록','주식 거래 횟수'),
- 'rare':([1,3,10,30],'황금빛 손맛','황금용왕어 포획'),
- 'fish':([1,20,100,300],'풍어의 기록','물고기 포획'),
+ 'plays':([50,250,1000,5000],'라운지의 전설','새 게임 완료 횟수'),
+ 'work':([10,100,500,2000],'광산 개척자','작업 완료 횟수'),
+ 'trades':([20,200,1000,5000],'시장의 기록','주식 거래 횟수'),
+ 'rare':([3,10,30,100],'황금빛 손맛','황금용왕어 포획'),
+ 'fish':([10,100,500,2000],'풍어의 기록','물고기 포획'),
  'towerFloors':([5,10,18,25],'하늘의 건축가','한 판 최고 층수'),
  'memoryLevel':([2,5,8,12],'기억의 달인','한 판 통과 단계'),
  'runnerBest':([100,300,500,800],'멈추지 않는 질주','한 판 최고 점수'),
@@ -48,7 +50,7 @@ special={
 for a in LEGACY_ACH:
  stat=a['stat']
  if any(t['id']==stat for t in TRACKS):continue
- targets,name,description=special.get(stat,([1,10,50,100],GAMES.get(stat,a['name']),a['description'].replace(' 1회 완료','').replace(' 1회 참여','').replace(' 웹 기록','')+' 완료 횟수'))
+ targets,name,description=special.get(stat,([10,50,200,1000],GAMES.get(stat,a['name']),a['description'].replace(' 1회 완료','').replace(' 1회 참여','').replace(' 웹 기록','')+' 완료 횟수'))
  TRACKS.append(dict(id=stat,name=name,description=description,targets=targets))
 ACH=[]
 for track in TRACKS:
@@ -115,7 +117,7 @@ class Social:
   tracks=[]
   for track in TRACKS:
    levels=[{'tier':tier,'label':label,'target':track['targets'][i],'item':'tier-'+track['id']+'-'+tier,'earned':'tier-'+track['id']+'-'+tier in owned} for i,(tier,label) in enumerate(TIERS)]
-   progress=max([stats.get(track['id'],0)]+[v['target'] for v in levels if v['earned']])
+   progress=stats.get(track['id'],0)
    tracks.append({**track,'progress':progress,'levels':levels})
   return {'items':ITEMS,'owned':sorted(owned),'style':self.decoration(uid),'balance':self.b.economy.balance(uid),'tracks':tracks,
           'achievements':[{**a,'progress':stats.get(a['stat'],0),'earned':'tier-'+a['id'] in owned} for a in ACH]}
