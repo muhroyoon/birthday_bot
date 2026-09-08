@@ -11,7 +11,7 @@ KST=timezone(timedelta(hours=9))
 STOCKS=(('muro','머로증권','금융'),('jeumi','즈미테크','기술'),('samsung','삼성식품','식품'),('gimcheon','김천물류','물류'),('haerangsol','해랑솔에너지','에너지'),('harang','하랑건설','건설'),('hoon','훈이게임즈','게임'),('haneul','하늘반도체','반도체'))
 PAID={'aim','pubg','reaction','stopwatch','apple','snake','suika','2048','fortune'}
 
-def stock_move_bps(up_chance=50):
+def legacy_stock_move_bps(up_chance=50):
  """Daily private direction bias with unchanged reciprocal move magnitudes.
 
  Rise bands (bps) have 50/35/13/2 weights. A sampled +r pairs with
@@ -24,9 +24,21 @@ def stock_move_bps(up_chance=50):
  return magnitude if rising else Fraction(-10000*magnitude,10000+magnitude)
 
 
+def stock_move_bps(up_chance=50,sideways=False):
+ """80/17/3 magnitude bands, with reciprocal down moves."""
+ rising=secrets.randbelow(100)<up_chance
+ bucket=secrets.randbelow(1000)
+ low,high=(80,400) if bucket<800 else (401,1600) if bucket<970 else (1601,5500)
+ magnitude=low+secrets.randbelow(high-low+1)
+ if sideways:magnitude=round(Fraction(magnitude*35,100))
+ return magnitude if rising else Fraction(-10000*magnitude,10000+magnitude)
+
+
 class Economy:
  def __init__(self,b,error):
   self.b=b;self.db=b.db;self.Error=error
+  from mari_stock_contracts import equity
+  self.db.create_function("mari_log_equity",5,equity,deterministic=True)
   self.db.executescript('''
   CREATE TABLE IF NOT EXISTS mari_web_stocks(symbol TEXT PRIMARY KEY,price INTEGER NOT NULL,day TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS mari_web_stock_days(symbol TEXT,day TEXT,open INTEGER,close INTEGER,PRIMARY KEY(symbol,day));
@@ -42,6 +54,9 @@ class Economy:
   CREATE TABLE IF NOT EXISTS mari_web_fortune_days(user_id TEXT,day TEXT,pass_id TEXT,result TEXT,PRIMARY KEY(user_id,day));
   CREATE TABLE IF NOT EXISTS mari_web_leveraged(user_id TEXT,symbol TEXT,side TEXT,qty INTEGER,cost INTEGER,notional INTEGER,PRIMARY KEY(user_id,symbol,side));
   CREATE TABLE IF NOT EXISTS mari_web_trade_leverage(id TEXT PRIMARY KEY,leverage INTEGER);
+  CREATE TABLE IF NOT EXISTS mari_web_six_hour_regimes(symbol TEXT,window TEXT,regime INTEGER NOT NULL CHECK(regime IN (0,1,2)),PRIMARY KEY(symbol,window));
+  CREATE TABLE IF NOT EXISTS mari_web_log_positions(user_id TEXT,symbol TEXT,side TEXT CHECK(side IN ('long','short')),leverage INTEGER CHECK(leverage IN (1,2)),qty INTEGER NOT NULL,cost INTEGER NOT NULL,notional INTEGER NOT NULL,log_basis TEXT NOT NULL,PRIMARY KEY(user_id,symbol,side,leverage));
+  CREATE TABLE IF NOT EXISTS mari_web_trade_contract(id TEXT PRIMARY KEY,settlement TEXT NOT NULL);
   CREATE INDEX IF NOT EXISTS mari_web_stock_trade_symbol_time ON mari_web_stock_trades(symbol,at);
   ''');self.db.commit()
  def today(self):return datetime.now(KST).date()
@@ -68,6 +83,14 @@ class Economy:
    self.db.execute('INSERT OR IGNORE INTO mari_web_private_regimes VALUES(?,?,?)',(symbol,day,secrets.randbelow(2)))
    row=self.db.execute('SELECT bull FROM mari_web_private_regimes WHERE symbol=? AND day=?',(symbol,day)).fetchone()
   return 55 if row[0] else 45
+ def private_regime(self,symbol,slot):
+  window=slot.astimezone(KST).replace(hour=slot.astimezone(KST).hour//6*6,minute=0,second=0,microsecond=0).isoformat()
+  row=self.db.execute('SELECT regime FROM mari_web_six_hour_regimes WHERE symbol=? AND window=?',(symbol,window)).fetchone()
+  if row is None:
+   draw=secrets.randbelow(100);regime=0 if draw<40 else 1 if draw<60 else 2
+   self.db.execute('INSERT OR IGNORE INTO mari_web_six_hour_regimes VALUES(?,?,?)',(symbol,window,regime))
+   row=self.db.execute('SELECT regime FROM mari_web_six_hour_regimes WHERE symbol=? AND window=?',(symbol,window)).fetchone()
+  return (60,False) if row[0]==0 else (50,True) if row[0]==1 else (40,False)
  def settle(self):
   slot=self.stock_slot()
   with self.db:
@@ -75,8 +98,10 @@ class Economy:
     # Preserve existing prices when switching to the ten-minute schedule.
     self.db.execute('UPDATE mari_web_stocks SET day=? WHERE day<?',(slot.isoformat(),slot.isoformat()))
     self.db.execute("INSERT INTO mari_web_stock_settings VALUES('ten_minute_schedule','1')")
+   self.db.execute("INSERT OR IGNORE INTO mari_web_stock_settings VALUES('log_market_start',?)",((slot+timedelta(minutes=10)).isoformat(),))
+   cutover=datetime.fromisoformat(self.db.execute("SELECT value FROM mari_web_stock_settings WHERE key='log_market_start'").fetchone()[0])
    for symbol,_,_ in STOCKS:
-    self.private_up_chance(symbol,slot)
+    self.private_regime(symbol,slot)
     row=self.db.execute('SELECT price,day FROM mari_web_stocks WHERE symbol=?',(symbol,)).fetchone()
     if not row:
      self.db.execute('INSERT INTO mari_web_stocks VALUES(?,?,?)',(symbol,10000,slot.isoformat()))
@@ -91,7 +116,9 @@ class Economy:
     while date<slot:
      date=date.replace(minute=date.minute//10*10,second=0,microsecond=0)+timedelta(minutes=10);old=price
      # Draw only when a scheduled slot is due; preserve all settled history.
-     price=max(100,(old*10+16)//17,min(10000000,old*170//100,(old*(10000+stock_move_bps(self.private_up_chance(symbol,date)))+5000)//10000))
+     move=stock_move_bps(*self.private_regime(symbol,date)) if date>=cutover else legacy_stock_move_bps(self.private_up_chance(symbol,date))
+     price=max(100,min(10000000,int((old*(10000+move)+5000)//10000)))
+     if date<cutover:price=max((old*10+16)//17,min(old*170//100,price))
      self.liquidate(symbol,price,date.isoformat())
      self.db.execute('INSERT INTO mari_web_stock_days VALUES(?,?,?,?)',(symbol,date.isoformat(),old,price))
      self.db.execute('INSERT OR IGNORE INTO mari_web_stock_updates VALUES(?)',(date.isoformat(),))
@@ -102,6 +129,8 @@ class Economy:
      self.db.execute('INSERT OR IGNORE INTO mari_web_stock_news VALUES(?,?,?,?)',(symbol,date.isoformat(),headline,body))
     self.db.execute('UPDATE mari_web_stocks SET price=?,day=? WHERE symbol=?',(price,slot.isoformat(),symbol))
  def liquidate(self,symbol,price,slot):
+  from mari_stock_contracts import liquidate
+  liquidate(self,symbol,price,datetime.fromisoformat(slot).replace(tzinfo=KST).timestamp())
   # Collateral is isolated per user/symbol/direction. Gap losses never debit the wallet.
   rows=list(self.db.execute('SELECT user_id,qty,cost FROM mari_web_shorts WHERE symbol=? AND qty>0 AND 2*cost<=qty*?',(symbol,price)))
   for uid,qty,cost in rows:
@@ -125,6 +154,10 @@ class Economy:
   for symbol,side,qty,cost,notional in self.db.execute('SELECT symbol,side,qty,cost,notional FROM mari_web_leveraged WHERE user_id=? AND qty>0',(str(uid),)):
    raw=prices[symbol]*qty-notional;profit=max(-cost,raw if side=='long' else -raw)
    result.append({'symbol':symbol,'side':side,'leverage':2,'notional':notional,'quantity':qty,'cost':cost,'entry':notional/qty,'profit':profit,'equity':cost+profit,'liquidation':(notional-cost if side=='long' else notional+cost)/qty})
+  from mari_stock_contracts import position
+  for p in result:p['settlement']='linear'
+  for symbol,side,lev,qty,cost,notional,basis in self.db.execute('SELECT symbol,side,leverage,qty,cost,notional,log_basis FROM mari_web_log_positions WHERE user_id=? AND qty>0',(str(uid),)):
+   result.append(position(symbol,side,lev,qty,cost,notional,basis,prices[symbol]))
   return result
  def stock_notifications(self):
   notices=[]
@@ -157,9 +190,21 @@ class Economy:
   trades=[dict(zip(('id','symbol','side','quantity','price','total','profit','at'),row)) for row in self.db.execute('SELECT id,symbol,side,qty,price,total,profit,at FROM mari_web_stock_trades WHERE user_id=? ORDER BY at DESC,id DESC LIMIT 10',(str(member.id),))]
   for t in trades:
    row=self.db.execute('SELECT leverage FROM mari_web_trade_leverage WHERE id=?',(t['id'],)).fetchone();t['leverage']=row[0] if row else 1
+   row=self.db.execute('SELECT settlement FROM mari_web_trade_contract WHERE id=?',(t['id'],)).fetchone();t['settlement']=row[0] if row else 'linear'
   news=[{'symbol':symbol,'at':slot,'title':headline,'body':body,'sentiment':sentiment} for symbol,slot,headline,body,sentiment in self.db.execute("SELECT n.symbol,n.slot,n.headline,n.body,CASE WHEN d.close>d.open THEN 'positive' WHEN d.close<d.open THEN 'negative' WHEN d.close=d.open THEN 'neutral' ELSE 'unknown' END FROM mari_web_stock_news n LEFT JOIN mari_web_stock_days d ON d.symbol=n.symbol AND d.day=n.slot ORDER BY n.slot DESC,n.symbol LIMIT 24")]
-  return {'positionVersion':2,'bulkClose':True,'positions':self.positions(member.id,items),'news':news,'stocks':items,'balance':self.balance(member.id),'day':self.today().isoformat(),'nextUpdate':(self.stock_slot()+timedelta(minutes=10)).isoformat(),'trades':trades}
+  return {'positionVersion':3,'bulkClose':True,'positions':self.positions(member.id,items),'news':news,'stocks':items,'balance':self.balance(member.id),'day':self.today().isoformat(),'nextUpdate':(self.stock_slot()+timedelta(minutes=10)).isoformat(),'trades':trades}
  def trade(self,member,data):
+  self.settle();request,fp,old=self.receipt(member,data,'trade')
+  if old:return old
+  if data.get('action')=='close_all':return self.close_all(member,data,request,fp)
+  if data.get('settlement')=='linear' and data.get('action')=='close':return self.trade_legacy(member,data)
+  if data.get('settlement')!='log':raise self.Error('새 거래 방식이 적용됐어요. 페이지를 새로고침해주세요.',409)
+  if data.get('side') not in ('long','short') or data.get('action') not in ('open','close'):raise self.Error('거래 방향과 동작을 확인해주세요.')
+  if data.get('symbol') not in [s[0] for s in STOCKS] or type(data.get('quantity')) is not int or not 1<=data['quantity']<=1000000:raise self.Error('종목과 정수 수량을 확인해주세요.')
+  if type(data.get('leverage',1)) is not int or data.get('leverage',1) not in (1,2):raise self.Error('배율을 확인해주세요.')
+  from mari_stock_contracts import trade
+  return trade(self,member,data,request,fp)
+ def trade_legacy(self,member,data):
   self.settle();request,fp,old=self.receipt(member,data,'trade')
   if old:return old
   if data.get('action')=='close_all':return self.close_all(member,data,request,fp)
@@ -196,10 +241,11 @@ class Economy:
   with self.db:
    prices=dict(self.db.execute('SELECT symbol,price FROM mari_web_stocks'))
    positions=self.positions(uid,[{'symbol':s,'price':p} for s,p in prices.items()])
-   fields=('symbol','side','leverage','quantity','cost','notional')
+   fields=('symbol','side','leverage','quantity','cost','notional','settlement')
    expected=[{**{k:p[k] for k in fields},'price':prices[p['symbol']]} for p in positions]
    quoted=data.get('positions')
-   if not isinstance(quoted,list) or not 1<=len(quoted)<=32 or any(not isinstance(p,dict) or set(p)!=set(fields)|{'price'} or any(type(p[k]) is not int for k in ('leverage','quantity','cost','notional','price')) for p in quoted):raise self.Error('종료할 포지션을 다시 확인해주세요.',409)
+   if isinstance(quoted,list):quoted=[{**p,'settlement':p.get('settlement','linear')} if isinstance(p,dict) else p for p in quoted]
+   if not isinstance(quoted,list) or not 1<=len(quoted)<=64 or any(not isinstance(p,dict) or set(p)!=set(fields)|{'price'} or any(type(p[k]) is not int for k in ('leverage','quantity','cost','notional','price')) for p in quoted):raise self.Error('종료할 포지션을 다시 확인해주세요.',409)
    canonical=lambda rows:sorted(json.dumps(p,sort_keys=True) for p in rows)
    if canonical(quoted)!=canonical(expected):raise self.Error('시세나 포지션이 바뀌었어요. 새 내역을 확인하고 다시 종료해주세요.',409)
    total=sum(p['equity'] for p in positions);profit=sum(p['profit'] for p in positions)
@@ -208,8 +254,9 @@ class Economy:
    for p in positions:
     rid='bulk:'+secrets.token_hex(16)
     self.db.execute('INSERT INTO mari_web_stock_trades VALUES(?,?,?,?,?,?,?,?,?)',(rid,uid,p['symbol'],p['side']+'_close',p['quantity'],prices[p['symbol']],p['equity'],p['profit'],at))
+    if p['settlement']=='log':self.db.execute('INSERT INTO mari_web_trade_contract VALUES(?,?)',(rid,'log'))
     if p['leverage']==2:self.db.execute('INSERT INTO mari_web_trade_leverage VALUES(?,2)',(rid,))
-   for table in ('mari_web_holdings','mari_web_shorts','mari_web_leveraged'):
+   for table in ('mari_web_holdings','mari_web_shorts','mari_web_leveraged','mari_web_log_positions'):
     self.db.execute(f'DELETE FROM {table} WHERE user_id=?',(uid,))
    self.db.execute('INSERT INTO balances VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET balance=balance+excluded.balance',(uid,total))
    result={'ok':True,'closed':len(positions),'total':total,'profit':profit,'balance':self.balance(uid)}

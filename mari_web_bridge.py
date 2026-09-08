@@ -360,6 +360,8 @@ class Bridge:
                     FROM mari_web_shorts h JOIN mari_web_stocks p ON p.symbol=h.symbol WHERE h.qty>0
                     UNION ALL
                     SELECT h.user_id,MAX(0,h.cost+(h.qty*p.price-h.notional)*CASE WHEN h.side='long' THEN 1 ELSE -1 END) AS equity FROM mari_web_leveraged h JOIN mari_web_stocks p ON p.symbol=h.symbol WHERE h.qty>0
+            UNION ALL
+            SELECT h.user_id,mari_log_equity(h.cost,h.log_basis,h.leverage,h.side,p.price) AS equity FROM mari_web_log_positions h JOIN mari_web_stocks p ON p.symbol=h.symbol WHERE h.qty>0
                 ) GROUP BY user_id
             ), users AS (
                 SELECT user_id FROM balances UNION SELECT user_id FROM active_savings UNION SELECT user_id FROM stock_values

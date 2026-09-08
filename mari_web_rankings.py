@@ -39,6 +39,8 @@ class Rankings:
             SELECT h.user_id,h.cost,MAX(0,2*h.cost-h.qty*p.price) equity FROM mari_web_shorts h JOIN mari_web_stocks p ON p.symbol=h.symbol WHERE h.qty>0
             UNION ALL
             SELECT h.user_id,h.cost,MAX(0,h.cost+(h.qty*p.price-h.notional)*CASE WHEN h.side='long' THEN 1 ELSE -1 END) equity FROM mari_web_leveraged h JOIN mari_web_stocks p ON p.symbol=h.symbol WHERE h.qty>0
+            UNION ALL
+            SELECT h.user_id,h.cost,mari_log_equity(h.cost,h.log_basis,h.leverage,h.side,p.price) AS equity FROM mari_web_log_positions h JOIN mari_web_stocks p ON p.symbol=h.symbol WHERE h.qty>0
           ) GROUP BY user_id
         ), users AS (SELECT user_id FROM trades UNION SELECT user_id FROM positions)
         SELECT u.user_id,COALESCE(t.realized,0),COALESCE(p.equity,0)-COALESCE(p.cost,0),
