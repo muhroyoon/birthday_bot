@@ -116,7 +116,9 @@ class Adventure:
   CREATE UNIQUE INDEX IF NOT EXISTS adventure_active ON mari_web_adventures(user_id) WHERE done=0;''');self.db.commit()
  def public(self,row):
   if not row:return {'job':None}
-  s=json.loads(row[4]);s.pop('rng',None)
+  s=json.loads(row[4])
+  if s['game'] not in ('territory','dodge'):s.pop('rng',None)
+  else:s['motionVersion']=1
   if s['game']=='memory':
    seq=s.pop('sequence');elapsed=s['tick']-s['phaseAt'];i=elapsed//8
    s['lit']=seq[i] if s['phase']=='show' and i<len(seq) and elapsed%8<5 else -1
@@ -151,6 +153,18 @@ class Adventure:
   if type(seq) is not int or type(x) is not int or type(y) is not int or type(tap) is not int or x not in (-1,0,1) or y not in (-1,0,1) or not 0<=tap<=4:raise self.Error('입력 값을 확인해주세요.')
   if seq<=s['seq'] or s['done']:return self.public(row)
   if seq!=s['seq']+1:raise self.Error('연결 상태를 다시 확인해주세요.',409)
+  if 'frames' in data:
+   if row[3] not in ('territory','dodge'):raise self.Error('지원하지 않는 입력 방식입니다.')
+   frames=data['frames']
+   if not isinstance(frames,list) or not 1<=len(frames)<=30:raise self.Error('입력 기록을 확인해주세요.')
+   for i,f in enumerate(frames):
+    if not isinstance(f,list) or len(f)!=3 or any(type(v) is not int for v in f) or f[0]!=s['tick']+i+1 or f[1] not in (-1,0,1) or f[2] not in (-1,0,1):raise self.Error('입력 기록 순서가 맞지 않아요.',409)
+   now=time.time()
+   if frames[-1][0]>min(900,int((now-row[5])*10)+2):raise self.Error('입력 속도를 확인해주세요.',409)
+   for _,fx,fy in frames:step(s,fx,fy,0)
+   s['seq']=seq
+   with self.db:self.db.execute('UPDATE mari_web_adventures SET state=?,last=?,done=?,score=? WHERE id=?',(json.dumps(s),now,int(s['done']),s['score'],row[0]))
+   return self.public(self.db.execute('SELECT * FROM mari_web_adventures WHERE id=?',(row[0],)).fetchone())
   now=time.time();ticks=min(10,int((now-row[6])*10))
   if now-row[5]>=90:s['done']=True;s['message']='시간 종료'
   for i in range(ticks):step(s,x,y,tap if i==0 else 0)
