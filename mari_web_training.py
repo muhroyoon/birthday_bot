@@ -36,6 +36,8 @@ class TrainingRecords:
         if m['accuracy']>100 or m['precision']>100 or m['elapsed']>(120 if row[2]=='reaction' else row[4]+10 if row[2]=='stopwatch' else row[4]) or time.time()-row[6]+1<m['elapsed']:raise self.Error('연습 시간을 확인해주세요.')
         config={'mode':row[2],'difficulty':row[3],'seconds':row[4],'input':m['input']}
         if row[7]:return self.ranking(config,member.id)
+        from mari_web_weekly import training_board
+        self.b.weekly.record('training:'+data['id'],training_board(row[2],row[3],row[4],m['input']),member.id,member.guild.id,m['score'],m)
         old=self.db.execute('SELECT score,accuracy,average_ms FROM mari_web_training_best WHERE user_id=? AND mode=? AND difficulty=? AND seconds=? AND input=?',(str(member.id),row[2],row[3],row[4],m['input'])).fetchone()
         if not old or (m['score'],m['accuracy'],-m['averageMs'])>(old[0],old[1],-old[2]):
             self.db.execute('INSERT OR REPLACE INTO mari_web_training_best VALUES(?,?,?,?,?,?,?,?,?,?,?)',(str(member.id),str(member.guild.id),row[2],row[3],row[4],m['input'],m['score'],m['accuracy'],m['averageMs'],json.dumps(m),time.time()))
@@ -44,18 +46,7 @@ class TrainingRecords:
     def ranking(self,data,uid=None):
         mode,difficulty,seconds=self.config(data);device=data.get('input','mouse')
         if device not in ('mouse','touch'):raise self.Error('입력 장치를 확인해주세요.')
-        members={}
-        for gid in sorted(self.b.guild_ids):
-            guild=self.b.bot.get_guild(gid)
-            if guild:
-                for member in guild.members:
-                    if not member.bot:members[str(member.id)]=member
-        entries=[];mine=None;total=0
-        for user,gid,raw in self.db.execute('SELECT user_id,guild_id,metrics FROM mari_web_training_best WHERE mode=? AND difficulty=? AND seconds=? AND input=? ORDER BY score DESC,accuracy DESC,average_ms ASC,user_id ASC',(mode,difficulty,seconds,device)):
-            member=members.get(user)
-            if not member:continue
-            total+=1
-            item={'rank':total,'userId':user,'name':member.display_name,'guild':member.guild.name,**json.loads(raw)}
-            if total<=20:entries.append(item)
-            if user==str(uid):mine=item
-        return {'entries':entries,'mine':mine,'total':total}
+        from mari_web_weekly import training_board
+        result=self.b.weekly.ranking(training_board(mode,difficulty,seconds,device),uid)
+        def entry(r):return {**r,**r['metrics'],'guild':r['guild']['name']}
+        return {**result,'entries':[entry(r) for r in result['entries'][:20]],'mine':entry(result['mine']) if result['mine'] else None}

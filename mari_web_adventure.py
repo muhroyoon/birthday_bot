@@ -149,7 +149,7 @@ class Adventure:
   row=self.db.execute('SELECT * FROM mari_web_adventures WHERE user_id=? ORDER BY created DESC LIMIT 1',(str(member.id),)).fetchone()
   if row and not row[7] and time.time()-row[5]>=90:
    s=json.loads(row[4]);s['done']=True;s['message']='시간 종료'
-   self.db.execute('UPDATE mari_web_adventures SET state=?,done=1 WHERE id=?',(json.dumps(s),row[0]));self.db.commit()
+   self.db.execute('UPDATE mari_web_adventures SET state=?,done=1 WHERE id=?',(json.dumps(s),row[0]));self.b.weekly.record('adventure:'+row[0],row[3],row[1],row[2],s['score']);self.db.commit()
    row=self.db.execute('SELECT * FROM mari_web_adventures WHERE id=?',(row[0],)).fetchone()
   return self.public(row)
  def start(self,member,data):
@@ -183,7 +183,9 @@ class Adventure:
    if frames[-1][0]>min(900,int((now-row[5])*10)+2):raise self.Error('입력 속도를 확인해주세요.',409)
    for f in frames:step(s,f[1],f[2],f[3] if len(f)==4 else 0)
    s['seq']=seq
-   with self.db:self.db.execute('UPDATE mari_web_adventures SET state=?,last=?,done=?,score=? WHERE id=?',(json.dumps(s),now,int(s['done']),s['score'],row[0]))
+   with self.db:
+    self.db.execute('UPDATE mari_web_adventures SET state=?,last=?,done=?,score=? WHERE id=?',(json.dumps(s),now,int(s['done']),s['score'],row[0]))
+    if s['done']:self.b.weekly.record('adventure:'+row[0],row[3],row[1],row[2],s['score'])
    return self.public(self.db.execute('SELECT * FROM mari_web_adventures WHERE id=?',(row[0],)).fetchone())
   now=time.time();ticks=min(10,int((now-row[6])*10))
   if row[3]=='memory' and s.get('rules',1)>=3:
@@ -198,5 +200,7 @@ class Adventure:
   # Do not acknowledge a tap until at least one authoritative tick can process it.
   if ticks==0 and not s['done']:return self.public(row)
   s['seq']=seq
-  with self.db:self.db.execute('UPDATE mari_web_adventures SET state=?,last=?,done=?,score=? WHERE id=?',(json.dumps(s),now,int(s['done']),s['score'],row[0]))
+  with self.db:
+   self.db.execute('UPDATE mari_web_adventures SET state=?,last=?,done=?,score=? WHERE id=?',(json.dumps(s),now,int(s['done']),s['score'],row[0]))
+   if s['done']:self.b.weekly.record('adventure:'+row[0],row[3],row[1],row[2],s['score'])
   return self.public(self.db.execute('SELECT * FROM mari_web_adventures WHERE id=?',(row[0],)).fetchone())

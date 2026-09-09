@@ -200,6 +200,8 @@ class Bridge:
         self.runner = None
         self.recruit_cache = {}
         self.create_schema()
+        from mari_web_weekly import Weekly
+        self.weekly = Weekly(self)
         from mari_web_activities import Activities
         self.activities = Activities(self, WebError)
         self.guild_ids.update(int(row[0]) for row in self.db.execute("SELECT guild_id FROM mari_web_servers"))
@@ -442,6 +444,7 @@ class Bridge:
                         (status, json.dumps(stored, ensure_ascii=False), capture.id))
         if capture.done and not capture.logged:
             capture.logged = True
+            self.weekly.record("casino:"+capture.id,capture.game,capture.uid,capture.gid,capture.net_delta)
             self.log_history(capture.uid, capture.gid, self.ns["CASINO_GAMES"][capture.game]["name"],
                              snapshot["title"] + " · " + snapshot["description"][:400], capture.net_delta)
         self.db.commit()
@@ -1033,6 +1036,7 @@ class Bridge:
                 try:
                     async with self.lock:
                         self.economy.settle()
+                        if self.bot.is_ready():self.weekly.settle()
                         if not hasattr(self,'paper_check') or time.time()-self.paper_check>=60:
                             from mari_web_social import Social
                             if not hasattr(self,'social'):self.social=Social(self,WebError)

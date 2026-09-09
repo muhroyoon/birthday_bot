@@ -70,6 +70,7 @@ class Work:
                     if balance+amount>9_000_000_000_000_000:raise self.Error('지갑 보유 한도를 초과해 보상을 받을 수 없어요.',409)
                     self.db.execute('INSERT INTO balances(user_id,balance) VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET balance=balance+excluded.balance',(uid,amount))
                     self.db.execute('UPDATE mari_web_work_jobs SET finished_day=?,reward=?,tier=? WHERE id=?',(self.today(),amount,tier,job_id))
+                    self.b.weekly.record('work:'+job_id,'work',member.id,member.guild.id,amount)
                     self.b.log_history(member.id,member.guild.id,'마리 광산',tier+' 광석 작업 완료',amount)
             else:raise self.Error('지원하지 않는 작업입니다.',404)
             self.db.commit()
