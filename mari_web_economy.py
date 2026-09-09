@@ -237,7 +237,7 @@ class Economy:
    holding=self.db.execute('SELECT qty,cost FROM mari_web_holdings WHERE user_id=? AND symbol=?',(str(member.id),symbol)).fetchone() or (0,0)
    delisted=self.db.execute('SELECT at,price FROM mari_web_delisted WHERE symbol=?',(symbol,)).fetchone()
    items.append({'initialPrice':self.listing_price(symbol),'delistingPrice':self.delisting_price(symbol),'settlementPrice':delisted[1] if delisted else None,'delistedAt':delisted[0] if delisted else None,'symbol':symbol,'name':name,'sector':sector,'price':bars[-1]['close'],'previous':bars[-1]['open'],**page,'quantity':holding[0],'cost':holding[1]})
-  trades=[dict(zip(('id','symbol','side','quantity','price','total','profit','at'),row)) for row in self.db.execute('SELECT id,symbol,side,qty,price,total,profit,at FROM mari_web_stock_trades WHERE user_id=? ORDER BY at DESC,id DESC LIMIT 10',(str(member.id),))]
+  trades=[dict(zip(('id','symbol','side','quantity','price','total','profit','at'),row)) for row in self.db.execute('SELECT id,symbol,side,qty,price,total,profit,at FROM mari_web_stock_trades WHERE user_id=? ORDER BY at DESC,id DESC LIMIT 5',(str(member.id),))]
   for t in trades:
    row=self.db.execute('SELECT leverage FROM mari_web_trade_leverage WHERE id=?',(t['id'],)).fetchone();t['leverage']=row[0] if row else 1
    row=self.db.execute('SELECT settlement FROM mari_web_trade_contract WHERE id=?',(t['id'],)).fetchone();t['settlement']=row[0] if row else 'linear';t['delisting']=t['id'].startswith('delist:')
@@ -257,7 +257,7 @@ class Economy:
   if data.get('action')=='close_all':return self.close_all(member,data,request,fp)
   symbol=data.get('symbol');side=data.get('side');action=data.get('action');qty=data.get('quantity');quoted=data.get('price')
   if side not in ('long','short') or action not in ('open','close'):raise self.Error('롱·숏 거래로 전환됐어요. 페이지를 새로고침해주세요.',409)
-  if symbol not in [s[0] for s in STOCKS] or type(qty) is not int or not 1<=qty<=1000000:raise self.Error('종목과 1 이상의 정수 수량을 확인해주세요.')
+  if symbol not in [s[0] for s in STOCKS] or type(qty) is not int or not 1<=qty<=100000000:raise self.Error('종목과 1~100,000,000주의 정수 수량을 확인해주세요.')
   leverage=data.get('leverage',1)
   if type(leverage) is not int or leverage not in (1,2):raise self.Error('레버리지는 1배 또는 2배로 선택해주세요.')
   if leverage==2:return self.trade_leveraged(member,data,request,fp)
