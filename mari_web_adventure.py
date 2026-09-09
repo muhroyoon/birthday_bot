@@ -14,7 +14,7 @@ def rand(s, n):
 def initial(game, seed):
  s = dict(game=game,rng=seed,tick=0,score=0,done=False,lives=3,x=260,y=300,objects=[],message='시작!',seq=0)
  if game=='runner':s.update(y=300,vy=0)
- if game=='dodge':s.update(y=320,immune=0)
+ if game=='dodge':s.update(y=320,immune=0,dodgeRules=2)
  if game=='tower':s.update(x=0,dir=1,width=190,blocks=[{'x':165,'w':190}],combo=0)
  if game=='memory':s.update(sequence=[rand(s,4)],level=1,index=0,phase='show',phaseAt=0)
  if game=='fishing':s.update(phase='wait',until=20+rand(s,25),tension=50,progress=0,needle=0,fish=[])
@@ -38,9 +38,19 @@ def step(s, x, y, tap):
   s['objects']=[o for o in s['objects'] if o['x']>-50];s['score']=t
  elif g=='dodge':
   s['x']=max(12,min(508,s['x']+x*13));s['y']=max(12,min(348,s['y']+y*13))
-  if t%max(3,10-t//140)==0:
-   ox=rand(s,500)+10;dx=s['x']-ox;dy=s['y']+10;d=max(1,math.hypot(dx,dy))
-   s['objects'].append({'id':t,'x':ox,'y':-10,'dx':dx/d*9,'dy':dy/d*9})
+  if s.get('dodgeRules',1)>=2:
+   phase=min(5,t//150);speed=8+phase*2;interval=max(3,10-phase)
+   if t%interval==0:
+    ox=rand(s,500)+10;dx=s['x']-ox;dy=s['y']+10;d=max(1,math.hypot(dx,dy))
+    for j in range(-1 if phase>=2 else 0,2 if phase>=2 else 1):
+     s['objects'].append({'id':t*10+j+1,'x':ox,'y':-10,'dx':dx/d*speed+j*3,'dy':dy/d*speed,'kind':0})
+   if phase>=3 and t%max(9,24-phase*3)==0:
+    left=rand(s,2)==0;oy=rand(s,280)+30
+    s['objects'].append({'id':t*10+5,'x':-10 if left else 530,'y':oy,'dx':speed if left else -speed,'dy':0,'kind':1})
+  else:
+   if t%max(3,10-t//140)==0:
+    ox=rand(s,500)+10;dx=s['x']-ox;dy=s['y']+10;d=max(1,math.hypot(dx,dy))
+    s['objects'].append({'id':t,'x':ox,'y':-10,'dx':dx/d*9,'dy':dy/d*9})
   for o in s['objects']:o['x']+=o['dx'];o['y']+=o['dy']
   if t>s['immune'] and any(math.hypot(o['x']-s['x'],o['y']-s['y'])<17 for o in s['objects']):s['lives']-=1;s['immune']=t+15;s['message']='피격!'
   s['objects']=[o for o in s['objects'] if -30<o['x']<550 and -30<o['y']<400];s['score']=t
@@ -117,8 +127,8 @@ class Adventure:
  def public(self,row):
   if not row:return {'job':None}
   s=json.loads(row[4])
-  if s['game'] not in ('territory','dodge'):s.pop('rng',None)
-  else:s['motionVersion']=1
+  if s['game'] not in ('territory','dodge','tower'):s.pop('rng',None)
+  else:s['motionVersion']=2
   if s['game']=='memory':
    seq=s.pop('sequence');elapsed=s['tick']-s['phaseAt'];i=elapsed//8
    s['lit']=seq[i] if s['phase']=='show' and i<len(seq) and elapsed%8<5 else -1
@@ -154,14 +164,14 @@ class Adventure:
   if seq<=s['seq'] or s['done']:return self.public(row)
   if seq!=s['seq']+1:raise self.Error('연결 상태를 다시 확인해주세요.',409)
   if 'frames' in data:
-   if row[3] not in ('territory','dodge'):raise self.Error('지원하지 않는 입력 방식입니다.')
+   if row[3] not in ('territory','dodge','tower'):raise self.Error('지원하지 않는 입력 방식입니다.')
    frames=data['frames']
    if not isinstance(frames,list) or not 1<=len(frames)<=30:raise self.Error('입력 기록을 확인해주세요.')
    for i,f in enumerate(frames):
-    if not isinstance(f,list) or len(f)!=3 or any(type(v) is not int for v in f) or f[0]!=s['tick']+i+1 or f[1] not in (-1,0,1) or f[2] not in (-1,0,1):raise self.Error('입력 기록 순서가 맞지 않아요.',409)
+    if not isinstance(f,list) or len(f)!=(4 if row[3]=='tower' else 3) or any(type(v) is not int for v in f) or f[0]!=s['tick']+i+1 or f[1] not in (-1,0,1) or f[2] not in (-1,0,1) or (len(f)==4 and f[3] not in (0,1)):raise self.Error('입력 기록 순서가 맞지 않아요.',409)
    now=time.time()
    if frames[-1][0]>min(900,int((now-row[5])*10)+2):raise self.Error('입력 속도를 확인해주세요.',409)
-   for _,fx,fy in frames:step(s,fx,fy,0)
+   for f in frames:step(s,f[1],f[2],f[3] if len(f)==4 else 0)
    s['seq']=seq
    with self.db:self.db.execute('UPDATE mari_web_adventures SET state=?,last=?,done=?,score=? WHERE id=?',(json.dumps(s),now,int(s['done']),s['score'],row[0]))
    return self.public(self.db.execute('SELECT * FROM mari_web_adventures WHERE id=?',(row[0],)).fetchone())
