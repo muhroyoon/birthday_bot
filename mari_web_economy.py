@@ -225,11 +225,14 @@ class Economy:
   starts=[datetime.fromisoformat(d).replace(tzinfo=KST).timestamp() for d,_,_ in rows]
   following=self.db.execute('SELECT MIN(day) FROM mari_web_stock_days WHERE symbol=? AND day>?',(symbol,rows[-1][0])).fetchone()[0]
   end=datetime.fromisoformat(following).replace(tzinfo=KST).timestamp() if following else 1e15
-  volumes=[0]*len(rows)
-  for at,qty in self.db.execute('SELECT at,qty FROM mari_web_stock_trades WHERE symbol=? AND at>=? AND at<?',(symbol,starts[0],end)):
+  volumes=[0]*len(rows);buys=[0]*len(rows);sells=[0]*len(rows)
+  for at,qty,side in self.db.execute('SELECT at,qty,side FROM mari_web_stock_trades WHERE symbol=? AND at>=? AND at<?',(symbol,starts[0],end)):
    index=bisect_right(starts,at)-1
-   if index>=0:volumes[index]+=qty
-  return {'history':[{'day':d,'open':o,'close':c,'high':max(o,c),'low':min(o,c),'volume':volumes[i]} for i,(d,o,c) in enumerate(rows)],'hasMore':more}
+   if index>=0:
+    volumes[index]+=qty
+    if side in ('buy','long_open','short_close','short_liquidate'):buys[index]+=qty
+    elif side in ('sell','short_open','long_close','long_liquidate'):sells[index]+=qty
+  return {'history':[{'day':d,'open':o,'close':c,'high':max(o,c),'low':min(o,c),'volume':volumes[i],'buyVolume':buys[i],'sellVolume':sells[i]} for i,(d,o,c) in enumerate(rows)],'hasMore':more}
  def market(self,member):
   self.settle();items=[]
   for symbol,name,sector in STOCKS:
