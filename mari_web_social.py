@@ -66,6 +66,11 @@ CHARACTERS=[
 for theme,collection,title,frame,background,badge,description in CHARACTERS:
  for kind,name,price in [('title',title,6000000),('frame',frame,12000000),('background',background,18000000),('badge',badge,8000000)]:
   ITEMS.append(dict(id=f'character-{theme}-{kind}',kind=kind,name=name,style=theme,price=price,collection=collection,description=description,character=theme))
+PREMIUM_THEMES=[('mari','마리의 달빛 산책'),('daeji','대지의 푸른 응원'),('moon-garden','달빛 정원'),('thunder-storm','번개 폭풍')]
+for theme,label in PREMIUM_THEMES:
+ for kind,suffix,price in [('frame','아바타 장식',12000000),('nameplate','이름표',10000000),('effect','프로필 효과',18000000),('profile_frame','프로필 테두리',16000000)]:
+  if kind=='frame' and theme in ('mari','daeji'):continue
+  ITEMS.append(dict(id=f'premium-{theme}-{kind}',kind=kind,name=label+' · '+suffix,style=theme,price=price,collection=label,description='장착한 모습 그대로 미리 보고 나만의 프로필을 꾸며보세요.',character=theme))
 ITEM_MAP={i['id']:i for i in ITEMS}
 
 class Social:
@@ -80,6 +85,10 @@ class Social:
   ''');self.db.commit()
   if 'title' not in {r[1] for r in self.db.execute('PRAGMA table_info(mari_web_stock_talk)')}:
    self.db.execute("ALTER TABLE mari_web_stock_talk ADD COLUMN title TEXT NOT NULL DEFAULT ''");self.db.commit()
+  columns={r[1] for r in self.db.execute('PRAGMA table_info(mari_web_style)')}
+  for field in ('nameplate','effect','profile_frame'):
+   if field not in columns:self.db.execute(f"ALTER TABLE mari_web_style ADD COLUMN {field} TEXT NOT NULL DEFAULT ''")
+  self.db.commit()
  def exists(self,table):return bool(self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",(table,)).fetchone())
  def stats(self,uid):
   stats=dict(plays=0,variety=0,work=0,trades=0,fish=0,rare=0,towerFloors=0,memoryLevel=0,runnerBest=0,dodgeBest=0,territoryCells=0)
@@ -102,8 +111,8 @@ class Social:
   if self.exists('all_in_entries'):stats['legacy-all_in']=self.db.execute('SELECT COUNT(*) FROM all_in_entries WHERE user_id=?',(uid,)).fetchone()[0]
   return stats
  def decoration(self,uid):
-  row=self.db.execute('SELECT title,frame,background,badge,bio FROM mari_web_style WHERE user_id=?',(str(uid),)).fetchone() or ('','','','','')
-  return {**{kind:ITEM_MAP.get(item) for kind,item in zip(('title','frame','background','badge'),row[:4])},'bio':row[4]}
+  row=self.db.execute('SELECT title,frame,background,badge,bio,nameplate,effect,profile_frame FROM mari_web_style WHERE user_id=?',(str(uid),)).fetchone() or ('','','','','','','','')
+  return {**{kind:ITEM_MAP.get(item) for kind,item in zip(('title','frame','background','badge'),row[:4])},'bio':row[4],**{kind:ITEM_MAP.get(item) for kind,item in zip(('nameplate','effect','profile_frame'),row[5:])}}
  def public_profile(self,data):
   uid=data.get('user')
   if not isinstance(uid,str) or not uid.isdigit():raise self.Error('프로필을 확인해주세요.')
@@ -143,7 +152,7 @@ class Social:
   return self.profile(member)
  def equip(self,member,data):
   current=self.profile(member);uid=str(member.id);kind=data.get('kind');item=data.get('item','')
-  if kind not in ('title','frame','background','badge','bio'):raise self.Error('꾸미기 종류를 확인해주세요.')
+  if kind not in ('title','frame','background','badge','bio','nameplate','effect','profile_frame'):raise self.Error('꾸미기 종류를 확인해주세요.')
   if kind=='bio':
    if not isinstance(item,str) or len(item)>80 or any(ord(c)<32 for c in item):raise self.Error('소개는 80자 이내로 입력해주세요.')
   elif item and (item not in current['owned'] or ITEM_MAP[item]['kind']!=kind):raise self.Error('보유한 아이템만 장착할 수 있어요.',403)
