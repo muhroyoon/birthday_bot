@@ -23,7 +23,23 @@ class Activities:
         CREATE TABLE IF NOT EXISTS mari_web_activity_requests(
             request_id TEXT PRIMARY KEY,user_id TEXT NOT NULL,fingerprint TEXT NOT NULL,created_at REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS mari_web_notice_reads(user_id TEXT NOT NULL,event_key TEXT NOT NULL,PRIMARY KEY(user_id,event_key));
+        CREATE TABLE IF NOT EXISTS mari_web_kill_rules(rule_key TEXT PRIMARY KEY, rule_json TEXT NOT NULL);
         """); self.db.commit()
+        self.install_rules()
+
+    def install_rules(self):
+        original=self.ns.get('get_kill_bet_rule')
+        if original is None or getattr(original,'_web_rules',False): return
+        def resolve(key):
+            if isinstance(key,str) and key.startswith('web_'):
+                row=self.db.execute('SELECT rule_json FROM mari_web_kill_rules WHERE rule_key=?',(key,)).fetchone()
+                if row:
+                    rule=json.loads(row[0])
+                    rule['placement_scores']={int(k):v for k,v in rule['placement_scores'].items()}
+                    return rule
+            return original(key)
+        resolve._web_rules=True
+        self.ns['get_kill_bet_rule']=resolve
 
     def number(self,value,minimum=0,maximum=1000000):
         try: n=float(value)
@@ -51,6 +67,7 @@ class Activities:
         return session
 
     def listing(self,member):
+        self.install_rules()
         channels=[{'id':str(c.id),'name':c.name} for c in getattr(member.guild,'text_channels',[]) if self.visible(member,c.id)]
         rows=self.db.execute('SELECT id FROM kill_bet_sessions WHERE guild_id=? ORDER BY id DESC LIMIT 50',(str(member.guild.id),)).fetchall()
         sessions=[]
@@ -68,7 +85,7 @@ class Activities:
             for player in players:
                 key=player['team_name'] or player['pubg_name']
                 teams[key]=teams.get(key,0)+player['total_score']
-            s.update(players=players,rounds=details,canManage=self.manage(member,s),
+            s.update(scoring=self.ns['get_kill_bet_rule'](s['rule_key']),players=players,rounds=details,canManage=self.manage(member,s),
                 standings=[{'name':name,'score':score} for name,score in sorted(teams.items(),key=lambda x:(-x[1],x[0]))],
                 entries=[{'userId':uid,'name':getattr(member.guild.get_member(int(uid)),'display_name','서버 멤버'),'playerId':pid,'status':status} for uid,pid,status in entries])
             sessions.append(s)
@@ -95,6 +112,7 @@ class Activities:
         return self.listing(member)
 
     def _apply(self,member,action,data):
+        self.install_rules()
         if action=='kill/create':
             key=self.text(data.get('rule'),50); rule=self.ns['get_kill_bet_rule'](key)
             if not rule: raise self.Error('킬내기 룰을 선택해주세요.')
@@ -110,6 +128,15 @@ class Activities:
             for p in participants:
                 self.number(p['handicap_kill'],-100,100);self.number(p['handicap_damage'],-100,100)
             target=self.number(data.get('target'),1) if rule['target_score_required'] else None
+            scoring=data.get('scoring')
+            if scoring is not None:
+                if key not in self.ns['KILL_BET_RULES'] or not isinstance(scoring,dict): raise self.Error('점수 설정을 확인해주세요.')
+                rule=dict(rule,placement_scores=dict(rule['placement_scores']))
+                rule['kill_score']=self.number(scoring.get('kill'),0,1000)
+                rule['damage_score_per_100']=self.number(scoring.get('damage'),0,1000)
+                rule['placement_scores'][1]=self.number(scoring.get('chicken'),0,10000)
+                key='web_'+hashlib.sha256(data['requestId'].encode()).hexdigest()[:32]
+                self.db.execute('INSERT INTO mari_web_kill_rules VALUES(?,?)',(key,json.dumps(rule)))
             self.ns['create_kill_bet_session'](member.guild.id,cid,None,member.id,key,'manual',target,participants)
             return
         s=self.session(member,data.get('id'));sid=s['id']
