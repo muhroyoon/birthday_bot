@@ -95,7 +95,7 @@ class Economy:
    draw=secrets.randbelow(100);regime=0 if draw<10 else 1 if draw<35 else 2 if draw<65 else 3 if draw<90 else 4
    self.db.execute('INSERT OR IGNORE INTO mari_web_five_state_regimes VALUES(?,?,?)',(symbol,window,regime))
    row=self.db.execute('SELECT regime FROM mari_web_five_state_regimes WHERE symbol=? AND window=?',(symbol,window)).fetchone()
-  return ((70,False),(60,False),(50,True),(40,False),(30,False))[row[0]]
+  return ((60,False),(55,False),(50,True),(45,False),(40,False))[row[0]]
  def listing_price(self,symbol):
   row=self.db.execute('SELECT initial_price FROM mari_web_stock_listings WHERE symbol=?',(symbol,)).fetchone()
   return row[0] if row else LISTING_PRICES.get(symbol,10000)
