@@ -19,7 +19,7 @@ def initial(game, seed):
  if game=='memory':s.update(sequence=[rand(s,9) for _ in range(3)],tiles=9,level=1,index=0,phase='show',phaseAt=0)
  if game=='fishing':s.update(phase='wait',until=20+rand(s,25),tension=50,progress=0,needle=0,fish=[])
  if game=='territory':
-  s.update(enemies=[{'x':7,'y':5,'dx':1,'dy':1},{'x':14,'y':9,'dx':-1,'dy':-1}],x=0,y=0,claimed=[i for i in range(280) if i%20 in (0,19) or i//20 in (0,13)],trail=[],enemy={'x':10,'y':7,'dx':1,'dy':1})
+  s.update(territoryRules=4,enemies=[{'x':7,'y':5,'dx':1,'dy':1},{'x':14,'y':9,'dx':-1,'dy':-1}],x=0,y=0,claimed=[i for i in range(280) if i%20 in (0,19) or i//20 in (0,13)],trail=[],enemy={'x':10,'y':7,'dx':1,'dy':1})
  return s
 
 def step(s, x, y, tap):
@@ -92,7 +92,7 @@ def step(s, x, y, tap):
     fish={'name':['붕어','무지개송어','푸른참치','황금용왕어'][kind],'size':15+rand(s,60)+kind*20,'rarity':kind}
     s['fish'].append(fish);s['score']+=(kind+1)*100+fish['size'];s['message']=fish['name']+' 포획!';s['phase']='wait';s['until']=t+20+rand(s,25)
    s['tension']=max(0,min(100,s['tension']))
- elif g=='territory' and t%2==0:
+ elif g=='territory' and (s.get('territoryRules',1)>=4 or t%2==0):
   claimed=set(s['claimed']);trail=s['trail'];enemies=s.get('enemies',[s['enemy']]);e=enemies[0]
   if s.get('rules',1)>=3 and t>=450 and len(enemies)<3:
    free=[v for v in range(280) if v not in claimed and v not in trail]
@@ -114,8 +114,8 @@ def step(s, x, y, tap):
        for q in (v-20,v+20,v-1,v+1):
         if 0<=q<280 and abs(q%20-v%20)+abs(q//20-v//20)==1:todo.append(q)
       claimed=set(range(280))-outside;s['claimed']=sorted(claimed);trail.clear();s['message']='영역 확보!'
-  hit=False
-  for e in enemies:
+  hit=any(e['y']*20+e['x'] in trail for e in enemies)
+  for e in (enemies if t%2==0 else []):
    if s.get('rules',1)>=3 and t%30==0:e['dx']=1 if rand(s,100)<50 else -1;e['dy']=1 if rand(s,100)<50 else -1
    for _ in range(2 if s.get('rules',1)>=3 and t>=600 else 1):
     for axis,delta in [('x','dx'),('y','dy')]:
