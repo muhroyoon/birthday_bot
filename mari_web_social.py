@@ -57,6 +57,13 @@ for track in TRACKS:
  for index,(tier,label) in enumerate(TIERS):
   a=dict(id=track['id']+'-'+tier,name=track['name']+' · '+label,description=track['description'],stat=track['id'],target=track['targets'][index],tier=tier)
   ACH.append(a);ITEMS.append(dict(id='tier-'+a['id'],kind='title',name=a['name'],style=tier,price=None,achievement=a['id'],tier=tier))
+CHARACTERS=[
+ ('cosmic-cat','우주 고양이 루나','별을 줍는 집사','달빛 궤도','루나의 은하','별고양이 훈장','작은 달을 타고 행운을 찾는 우주 고양이'),
+ ('sakura-fox','벚꽃 여우 하루','꽃길의 수호자','하루의 꽃고리','벚꽃 여우의 정원','꽃여우 훈장','꽃잎 사이에서 장난치는 정원의 수호 여우'),
+ ('abyss-dragon','심해 용 네로','심해의 계약자','네로의 물결','진주빛 심해','심해용 훈장','빛나는 진주를 지키는 작은 심해 용')]
+for theme,collection,title,frame,background,badge,description in CHARACTERS:
+ for kind,name,price in [('title',title,6000000),('frame',frame,12000000),('background',background,18000000),('badge',badge,8000000)]:
+  ITEMS.append(dict(id=f'character-{theme}-{kind}',kind=kind,name=name,style=theme,price=price,collection=collection,description=description,character=theme))
 ITEM_MAP={i['id']:i for i in ITEMS}
 
 class Social:
