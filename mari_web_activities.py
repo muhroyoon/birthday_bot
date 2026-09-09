@@ -24,6 +24,7 @@ class Activities:
             request_id TEXT PRIMARY KEY,user_id TEXT NOT NULL,fingerprint TEXT NOT NULL,created_at REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS mari_web_notice_reads(user_id TEXT NOT NULL,event_key TEXT NOT NULL,PRIMARY KEY(user_id,event_key));
         CREATE TABLE IF NOT EXISTS mari_web_kill_rules(rule_key TEXT PRIMARY KEY, rule_json TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS mari_web_kill_survival(round_id INTEGER PRIMARY KEY, full_alive INTEGER NOT NULL);
         """); self.db.commit()
         self.install_rules()
 
@@ -40,6 +41,22 @@ class Activities:
             return original(key)
         resolve._web_rules=True
         self.ns['get_kill_bet_rule']=resolve
+        calculate=self.ns.get('calculate_kill_bet_round_scores')
+        if calculate and not getattr(calculate,'_web_survival',False):
+            def score_round(session,round_id):
+                rows=calculate(session,round_id)
+                rule=resolve(session['rule_key'])
+                flag=self.db.execute('SELECT full_alive FROM mari_web_kill_survival WHERE round_id=?',(round_id,)).fetchone()
+                if rule and flag and flag[0] and 'full_alive_chicken' in rule:
+                    awarded=set()
+                    for row in rows:
+                        identity=row['team_name'] if rule['mode']=='team' else row['player_id']
+                        if row['rank']==1 and identity not in awarded:
+                            delta=rule['full_alive_chicken']-rule['placement_scores'].get(1,0)
+                            row['placement_score']+=delta;row['score']+=delta;awarded.add(identity)
+                return rows
+            score_round._web_survival=True
+            self.ns['calculate_kill_bet_round_scores']=score_round
 
     def number(self,value,minimum=0,maximum=1000000):
         try: n=float(value)
@@ -79,7 +96,8 @@ class Activities:
             details=[]
             for (rid,) in rounds:
                 r=self.ns['get_kill_bet_round_by_id'](sid,rid)
-                details.append({**r,'scores':self.ns['get_kill_bet_round_scores'](rid)})
+                alive=self.db.execute('SELECT full_alive FROM mari_web_kill_survival WHERE round_id=?',(rid,)).fetchone()
+                details.append({**r,'fullAlive':bool(alive and alive[0]),'scores':self.ns['get_kill_bet_round_scores'](rid)})
             entries=self.db.execute('SELECT user_id,player_id,status FROM mari_web_kill_entries WHERE session_id=?',(sid,)).fetchall()
             teams={}
             for player in players:
@@ -135,6 +153,11 @@ class Activities:
                 rule['kill_score']=self.number(scoring.get('kill'),0,1000)
                 rule['damage_score_per_100']=self.number(scoring.get('damage'),0,1000)
                 rule['placement_scores'][1]=self.number(scoring.get('chicken'),0,10000)
+                if 'placements' in scoring:
+                    placements=scoring['placements']
+                    if not isinstance(placements,dict): raise self.Error('순위 점수를 확인해주세요.')
+                    for rank in range(1,7):rule['placement_scores'][rank]=self.number(placements.get(str(rank)),0,10000)
+                    rule['full_alive_chicken']=self.number(scoring.get('fullAliveChicken'),0,10000)
                 key='web_'+hashlib.sha256(data['requestId'].encode()).hexdigest()[:32]
                 self.db.execute('INSERT INTO mari_web_kill_rules VALUES(?,?)',(key,json.dumps(rule)))
             self.ns['create_kill_bet_session'](member.guild.id,cid,None,member.id,key,'manual',target,participants)
@@ -175,6 +198,13 @@ class Activities:
             if len(teams)!=1: raise self.Error('팀전 점수는 한 번에 한 팀씩 입력해주세요.')
             team=next(iter(teams))
         round_data=self.ns['get_or_create_open_kill_bet_round'](sid,team)
+        full_alive=data.get('fullAlive',False)
+        if not isinstance(full_alive,bool): raise self.Error('전원 생존 여부를 확인해주세요.')
+        if full_alive and (team is None or any(row['rank']!=1 for _,row in selected)):
+            raise self.Error('전원 생존 치킨은 팀전에서 모두 1위일 때만 선택해주세요.')
+        previous=self.db.execute('SELECT full_alive FROM mari_web_kill_survival WHERE round_id=?',(round_data['id'],)).fetchone()
+        if previous and bool(previous[0])!=full_alive: raise self.Error('같은 판의 전원 생존 여부를 동일하게 입력해주세요.')
+        self.db.execute('INSERT OR IGNORE INTO mari_web_kill_survival VALUES(?,?)',(round_data['id'],int(full_alive)))
         for player,row in selected:
             self.ns['save_kill_bet_round_score'](round_data['id'],player,row['kills'],row['damage'],row['rank'],member.id)
         expected=[p for p in players.values() if team is None or (p['team_name'] or '미지정')==team]
