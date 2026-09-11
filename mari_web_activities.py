@@ -222,8 +222,29 @@ class Activities:
         results=[{'id':str(i),'text':text,'at':at} for i,text,at in self.db.execute('SELECT id,result_text,created_at FROM game_history WHERE guild_id=? AND game_name=? ORDER BY id DESC LIMIT 5',(gid,self.ns.get('ALL_IN_GAME_NAME','몰빵게임')))]
         return {'date':today,'participants':participants,'total':sum(p['amount'] for p in participants),'results':results}
 
+    def stock_trade_notices(self,uid):
+        from mari_web_economy import STOCKS,ARCHIVED_NAMES,KST
+        names={**ARCHIVED_NAMES,**{symbol:name for symbol,name,_ in STOCKS}}
+        notices=[]
+        rows=self.db.execute("""SELECT t.id,t.symbol,t.side,t.qty,t.price,t.total,t.profit,t.at,COALESCE(l.leverage,1)
+            FROM mari_web_stock_trades t LEFT JOIN mari_web_trade_leverage l ON l.id=t.id
+            WHERE t.user_id=? AND t.side IN ('buy','sell','long_open','short_open','long_close','short_close','long_liquidate','short_liquidate')
+            ORDER BY t.at DESC,t.id DESC LIMIT 30""",(str(uid),))
+        for rid,symbol,side,qty,price,total,profit,at,leverage in rows:
+            liquidated=side.endswith('_liquidate');closed=side.endswith('_close') or side=='sell'
+            action='청산' if liquidated else '종료' if closed else '체결'
+            direction='숏' if side.startswith('short') else '롱'
+            name=names.get(symbol,symbol)
+            body=f'{direction} {leverage}배 · {qty:,}주 · 가격 {price:,} 마리'
+            if liquidated:body+=f' · 손익 {profit:+,} 마리'
+            elif closed:body+=f' · 지급 {total:,} 마리 · 손익 {profit:+,} 마리'
+            else:body+=f' · 차감 {total:,} 마리'
+            if rid.startswith('delist:'):body+=' · 상장폐지 정산'
+            notices.append({'key':'stock-trade:'+rid,'category':'stocks','title':f'{name} · 포지션 {action}','body':body,'at':datetime.fromtimestamp(at,KST).isoformat(),'tab':'games','url':'/games/stocks'})
+        return notices
+
     async def notifications(self,member):
-        notices=self.b.economy.stock_notifications()+self.b.weekly.notices(member.id);uid=str(member.id);gid=str(member.guild.id)
+        notices=self.stock_trade_notices(member.id)+self.b.weekly.notices(member.id);uid=str(member.id);gid=str(member.guild.id)
         for day,amount in self.db.execute('SELECT entry_date,amount FROM all_in_entries WHERE user_id=? AND guild_id=? ORDER BY entry_date DESC LIMIT 10',(uid,gid)):
             notices.append({'key':f'all-in:{gid}:{day}:{uid}','category':'all_in','title':'몰빵 참여 완료','body':f'{day} · {amount:,} 마리 참여','at':day+'T00:00:00+09:00','tab':'games'})
         recruits=await self.b.recruit_posts(member)
