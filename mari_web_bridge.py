@@ -556,6 +556,17 @@ class Bridge:
             self.db.rollback()
             raise
 
+    def raffle_entrants(self, member, data):
+        rid=integer(data.get('id'))
+        row=self.db.execute('SELECT winner_id,participant_snapshot FROM mari_web_draws WHERE raffle_id=? AND guild_id=?',(rid,str(member.guild.id))).fetchone()
+        if not row:
+            raise WebError('확정된 추첨 결과가 없어요.',404)
+        entries=[]
+        for uid,count in json.loads(row[1]):
+            person=member.guild.get_member(int(uid))
+            entries.append({'id':str(uid),'name':person.display_name if person else str(uid),'weight':count})
+        return {'winnerId':str(row[0]),'entries':entries}
+
     async def game_action(self, member, action, data):
         uid, gid = member.id, member.guild.id
         if action == "game/start":
@@ -884,6 +895,8 @@ class Bridge:
             return {"session": session}
         uid, gid = self.session(token)
         member = await self.member(uid, gid, fresh=action not in {"account", "logout", "adventure/step", "adventure/status"})
+        if action=='raffles/entrants':
+            return self.raffle_entrants(member,data)
         if action in {'adventure/status','adventure/start','adventure/step'}:
             from mari_web_adventure import Adventure
             async with self.lock:
