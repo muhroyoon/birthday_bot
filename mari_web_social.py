@@ -124,7 +124,20 @@ class Social:
     if member and not member.bot:break
   if not member or member.bot:raise self.Error('연동 서버의 프로필을 찾을 수 없어요.',404)
   titles=[ITEM_MAP[r[0]] for r in self.db.execute('SELECT item FROM mari_web_cosmetics WHERE user_id=?',(uid,)) if r[0] in ITEM_MAP and ITEM_MAP[r[0]].get('achievement')]
-  return {'name':member.display_name,'avatar':str(member.display_avatar.url),'guild':member.guild.name,'style':self.decoration(uid),'titles':titles}
+  return {'name':member.display_name,'avatar':str(member.display_avatar.url),'guild':member.guild.name,'style':self.decoration(uid),'titles':titles,'portfolio':self.public_portfolio(uid)}
+ def public_portfolio(self,uid):
+  # Reuse trade valuation without running settlement or exposing account balances.
+  from mari_web_economy import STOCKS,ARCHIVED_NAMES
+  names={**ARCHIVED_NAMES,**{s:n for s,n,_ in STOCKS}};quotes=[];updated=[]
+  for symbol in names:
+   row=self.db.execute('SELECT close,day FROM mari_web_stock_days WHERE symbol=? ORDER BY day DESC LIMIT 1',(symbol,)).fetchone()
+   if row:quotes.append({'symbol':symbol,'price':row[0]});updated.append(row[1])
+  positions=self.b.economy.positions(uid,quotes)
+  prices={s['symbol']:s['price'] for s in quotes}
+  items=[{**{k:p[k] for k in ('symbol','side','leverage','quantity','cost','entry','profit','equity')},'name':names.get(p['symbol'],p['symbol']),'price':prices[p['symbol']],'profitRate':p['profit']/p['cost']*100 if p['cost'] else 0} for p in positions]
+  items.sort(key=lambda p:(-p['equity'],p['symbol'],p['side'],p['leverage']))
+  cost=sum(p['cost'] for p in items);profit=sum(p['profit'] for p in items)
+  return {'positions':items,'cost':cost,'equity':sum(p['equity'] for p in items),'profit':profit,'profitRate':profit/cost*100 if cost else 0,'asOf':max(updated) if updated else None}
  def profile(self,member):
   uid=str(member.id);stats=self.stats(uid);owned={r[0] for r in self.db.execute('SELECT item FROM mari_web_cosmetics WHERE user_id=?',(uid,))}
   earned={'earned-'+a['id'] for a in LEGACY_ACH if stats.get(a['stat'],0)>=a['target']}
