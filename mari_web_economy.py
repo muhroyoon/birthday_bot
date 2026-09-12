@@ -30,7 +30,7 @@ def stock_move_bps(up_chance=50,sideways=False):
  """80/18/2 magnitude bands, with reciprocal down moves."""
  rising=secrets.randbelow(100)<up_chance
  bucket=secrets.randbelow(1000)
- low,high=(80,400) if bucket<800 else (401,1600) if bucket<980 else (1601,5500)
+ low,high=(80,400) if bucket<800 else (401,1500) if bucket<980 else (1501,3500)
  magnitude=low+secrets.randbelow(high-low+1)
  if sideways:magnitude=round(Fraction(magnitude*35,100))
  return magnitude if rising else Fraction(-10000*magnitude,10000+magnitude)
