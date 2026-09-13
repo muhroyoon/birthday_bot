@@ -904,7 +904,7 @@ class Bridge:
                 if action=='adventure/status':return self.adventure.status(member)
                 if action=='adventure/start':return self.adventure.start(member,data)
                 return self.adventure.control(member,data)
-        if action in {'social/member','social/profile','social/buy','social/equip','social/paper','social/talk','social/talk/send','social/talk/delete'}:
+        if action in {'social/member','social/profile','social/buy','social/equip','social/paper','social/talk','social/talk/send','social/talk/delete','social/talk/react'}:
             from mari_web_social import Social
             async with self.lock:
                 if not hasattr(self,'social'):self.social=Social(self,WebError)

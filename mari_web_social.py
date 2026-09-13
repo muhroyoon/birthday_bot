@@ -82,6 +82,7 @@ class Social:
   CREATE TABLE IF NOT EXISTS mari_web_style(user_id TEXT PRIMARY KEY,title TEXT DEFAULT '',frame TEXT DEFAULT '',background TEXT DEFAULT '',badge TEXT DEFAULT '',bio TEXT DEFAULT '');
   CREATE TABLE IF NOT EXISTS mari_web_stock_talk(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id TEXT,guild_id TEXT,symbol TEXT,body TEXT,name TEXT,avatar TEXT,at REAL,deleted INTEGER DEFAULT 0);
   CREATE INDEX IF NOT EXISTS stock_talk_lookup ON mari_web_stock_talk(symbol,deleted,id);
+  CREATE TABLE IF NOT EXISTS mari_web_stock_reactions(post_id INTEGER NOT NULL,user_id TEXT NOT NULL,emoji TEXT NOT NULL,PRIMARY KEY(post_id,user_id,emoji));
   CREATE TABLE IF NOT EXISTS mari_web_daily_paper(day TEXT PRIMARY KEY,body TEXT,published REAL);
   ''');self.db.commit()
   if 'title' not in {r[1] for r in self.db.execute('PRAGMA table_info(mari_web_stock_talk)')}:
@@ -193,6 +194,21 @@ class Social:
     with self.db:
      self.db.execute('INSERT INTO mari_web_stock_talk(user_id,guild_id,symbol,body,name,avatar,at,title) VALUES(?,?,?,?,?,?,?,?)',(uid,str(member.guild.id),symbol,body.strip(),member.display_name,str(member.display_avatar.url),time.time(),title.strip()))
      self.b.economy.remember(request,uid,fp,{'ok':True})
+  elif action=='social/talk/react':
+   request,fp,old=self.b.economy.receipt(member,data,action)
+   if not old:
+    rid=data.get('id');emoji=data.get('emoji');active=data.get('active')
+    if type(rid) is not int or type(active) is not bool or not isinstance(emoji,str):raise self.Error('이모지 반응을 확인해주세요.')
+    post=self.db.execute('SELECT guild_id FROM mari_web_stock_talk WHERE id=? AND symbol=? AND deleted=0',(rid,symbol)).fetchone()
+    if not post or post[0] not in {str(g) for g in self.b.guild_ids}:raise self.Error('이 글에 반응할 수 없어요.',403)
+    allowed={'👍','👎','❤️','😂','😮','😢','🔥','🚀'}|{e['token'] for e in self.b.server_emojis(member)}
+    key=(rid,uid,emoji)
+    # A removed server emoji can still be removed from the user's own reactions.
+    if active and emoji not in allowed:raise self.Error('현재 서버에서 사용할 수 있는 이모지를 선택해주세요.',403)
+    with self.db:
+     if active:self.db.execute('INSERT OR IGNORE INTO mari_web_stock_reactions VALUES(?,?,?)',key)
+     else:self.db.execute('DELETE FROM mari_web_stock_reactions WHERE post_id=? AND user_id=? AND emoji=?',key)
+     self.b.economy.remember(request,uid,fp,{'ok':True})
   elif action=='social/talk/delete':
    row=self.db.execute('SELECT user_id,guild_id FROM mari_web_stock_talk WHERE id=? AND symbol=?',(data.get('id'),symbol)).fetchone()
    if not row or not(row[0]==uid or (row[1]==str(member.guild.id) and member.guild_permissions.administrator)):raise self.Error('이 글을 삭제할 권한이 없어요.',403)
@@ -207,6 +223,8 @@ class Social:
   total=self.db.execute('SELECT COUNT(*) FROM mari_web_stock_talk WHERE '+where,args).fetchone()[0];pages=max(1,(total+page_size-1)//page_size);page=min(page,pages)
   for rid,user,guild,body,name,avatar,at,title in self.db.execute('SELECT id,user_id,guild_id,body,name,avatar,at,title FROM mari_web_stock_talk WHERE '+where+' ORDER BY id DESC LIMIT ? OFFSET ?',[*args,page_size,(page-1)*page_size]):
    g=self.b.bot.get_guild(int(guild));rows.append(dict(id=rid,userId=user,title=title or body.splitlines()[0][:80],body=body,name=name,avatar=avatar,at=at,guild=g.name if g else '',style=self.decoration(user),canDelete=user==uid or (guild==str(member.guild.id) and member.guild_permissions.administrator)))
+  for post in rows:
+   post['reactions']=[{'emoji':emoji,'count':count,'mine':bool(mine)} for emoji,count,mine in self.db.execute('SELECT emoji,COUNT(*),MAX(user_id=?) FROM mari_web_stock_reactions WHERE post_id=? GROUP BY emoji ORDER BY COUNT(*) DESC,emoji',(uid,post['id']))]
   return {'posts':rows,'total':total,'page':page,'pages':pages,'emojis':self.b.server_emojis(member)}
  def paper(self):
   now=datetime.now(KST);edition=now.date() if now.hour>=9 else now.date()-timedelta(days=1);day=edition.isoformat()
