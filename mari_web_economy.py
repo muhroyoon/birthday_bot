@@ -10,9 +10,9 @@ from mari_stock_policy import (KST, PRICE_INTERVAL_MINUTES, REGIME_PARAMETERS,
                                draw_regime, regime_window,
                                stock_move_bps, legacy_stock_move_bps)
 from mari_web_passes import PaidPasses, PAID
-STOCKS=(('muro','머로증권','금융'),('jeumi','즈미테크','기술'),('samsung','삼성식품','식품'),('gimcheon_bio','김천바이오','바이오'),('haerangsol','해랑솔에너지','에너지'),('harang','하랑건설','건설'),('hoon','훈이게임즈','게임'),('haneul','하늘반도체','반도체'))
-LISTING_PRICES={symbol:(5000 if symbol=='gimcheon_bio' else 10000) for symbol,_,_ in STOCKS}
-ARCHIVED_NAMES={'gimcheon':'김천물류'}
+STOCKS=(('muro','머로증권','금융'),('jeumi_fb','즈미F&B','식품'),('samsung','삼성식품','식품'),('gimcheon_bio','김천바이오','바이오'),('haerangsol','해랑솔에너지','에너지'),('harang','하랑건설','건설'),('hoon','훈이게임즈','게임'),('haneul','하늘반도체','반도체'))
+LISTING_PRICES={symbol:{'gimcheon_bio':5000,'jeumi_fb':15000}.get(symbol,10000) for symbol,_,_ in STOCKS}
+ARCHIVED_NAMES={'gimcheon':'김천물류','jeumi':'즈미테크'}
 
 class Economy(PaidPasses):
  def __init__(self,b,error):
@@ -213,11 +213,14 @@ class Economy(PaidPasses):
   return {'history':[{'day':d,'open':o,'close':c,'high':max(o,c),'low':min(o,c),'volume':volumes[i],'buyVolume':buys[i],'sellVolume':sells[i]} for i,(d,o,c) in enumerate(rows)],'hasMore':more}
  def market(self,member):
   self.settle();items=[]
+  now=time.time()
+  volumes=dict(self.db.execute('SELECT symbol,SUM(qty) FROM mari_web_stock_trades WHERE at>=? AND at<=? GROUP BY symbol',(now-86400,now)))
   for symbol,name,sector in STOCKS:
    page=self.history({'symbol':symbol});bars=page['history']
    holding=self.db.execute('SELECT qty,cost FROM mari_web_holdings WHERE user_id=? AND symbol=?',(str(member.id),symbol)).fetchone() or (0,0)
    delisted=self.db.execute('SELECT at,price FROM mari_web_delisted WHERE symbol=?',(symbol,)).fetchone()
-   items.append({'initialPrice':self.listing_price(symbol),'delistingPrice':self.delisting_price(symbol),'settlementPrice':delisted[1] if delisted else None,'delistedAt':delisted[0] if delisted else None,'symbol':symbol,'name':name,'sector':sector,'price':bars[-1]['close'],'previous':bars[-1]['open'],**page,'quantity':holding[0],'cost':holding[1]})
+   items.append({'volume24h':volumes.get(symbol,0),'initialPrice':self.listing_price(symbol),'delistingPrice':self.delisting_price(symbol),'settlementPrice':delisted[1] if delisted else None,'delistedAt':delisted[0] if delisted else None,'symbol':symbol,'name':name,'sector':sector,'price':bars[-1]['close'],'previous':bars[-1]['open'],**page,'quantity':holding[0],'cost':holding[1]})
+  items.sort(key=lambda item:(-item['volume24h'],item['symbol']))
   trades=[dict(zip(('id','symbol','side','quantity','price','total','profit','at'),row)) for row in self.db.execute('SELECT id,symbol,side,qty,price,total,profit,at FROM mari_web_stock_trades WHERE user_id=? ORDER BY at DESC,id DESC LIMIT 5',(str(member.id),))]
   for t in trades:
    row=self.db.execute('SELECT leverage FROM mari_web_trade_leverage WHERE id=?',(t['id'],)).fetchone();t['leverage']=row[0] if row else 1
