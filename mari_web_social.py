@@ -1,5 +1,6 @@
 """Cosmetic inventory, earned achievements, stock discussion and daily digest."""
 import json
+import re
 import time
 from datetime import datetime,timedelta,timezone
 from mari_web_adventure import GAMES
@@ -184,6 +185,9 @@ class Social:
     if not isinstance(body,str) or not 1<=len(body.strip())<=2000 or any(ord(c)<32 and c not in '\n\t' for c in body):raise self.Error('본문은 1~2,000자로 입력해주세요.')
     title=data.get('title',body.strip().splitlines()[0][:80])
     if not isinstance(title,str) or not 1<=len(title.strip())<=80 or any(ord(c)<32 for c in title):raise self.Error('제목은 1~80자로 입력해주세요.')
+    allowed={e['token'] for e in self.b.server_emojis(member)}
+    for token in re.findall(r'<a?:[A-Za-z0-9_]+:[0-9]{1,20}>',title+' '+body):
+     if token not in allowed:raise self.Error('현재 서버에서 사용할 수 있는 이모지를 선택해주세요.',403)
     last=self.db.execute('SELECT MAX(at) FROM mari_web_stock_talk WHERE user_id=?',(uid,)).fetchone()[0]
     if last and time.time()-last<3:raise self.Error('3초 뒤에 다시 작성해주세요.',429)
     with self.db:
@@ -195,7 +199,7 @@ class Social:
    with self.db:self.db.execute('UPDATE mari_web_stock_talk SET deleted=1 WHERE id=?',(data.get('id'),))
   linked=[str(g) for g in self.b.guild_ids];rows=[];page=data.get('page',1);search=data.get('search','')
   if type(page) is not int or page<1 or not isinstance(search,str) or len(search)>60:raise self.Error('페이지와 검색어를 확인해주세요.')
-  if not linked:return {'posts':[],'total':0,'page':1,'pages':1}
+  if not linked:return {'posts':[],'total':0,'page':1,'pages':1,'emojis':self.b.server_emojis(member)}
   where="symbol=? AND deleted=0 AND guild_id IN ("+','.join('?' for _ in linked)+')';args=[symbol,*linked]
   if search.strip():
    where+=" AND (instr(lower(title),lower(?))>0 OR instr(lower(body),lower(?))>0)";args.extend([search.strip(),search.strip()])
@@ -203,7 +207,7 @@ class Social:
   total=self.db.execute('SELECT COUNT(*) FROM mari_web_stock_talk WHERE '+where,args).fetchone()[0];pages=max(1,(total+page_size-1)//page_size);page=min(page,pages)
   for rid,user,guild,body,name,avatar,at,title in self.db.execute('SELECT id,user_id,guild_id,body,name,avatar,at,title FROM mari_web_stock_talk WHERE '+where+' ORDER BY id DESC LIMIT ? OFFSET ?',[*args,page_size,(page-1)*page_size]):
    g=self.b.bot.get_guild(int(guild));rows.append(dict(id=rid,userId=user,title=title or body.splitlines()[0][:80],body=body,name=name,avatar=avatar,at=at,guild=g.name if g else '',style=self.decoration(user),canDelete=user==uid or (guild==str(member.guild.id) and member.guild_permissions.administrator)))
-  return {'posts':rows,'total':total,'page':page,'pages':pages}
+  return {'posts':rows,'total':total,'page':page,'pages':pages,'emojis':self.b.server_emojis(member)}
  def paper(self):
   now=datetime.now(KST);edition=now.date() if now.hour>=9 else now.date()-timedelta(days=1);day=edition.isoformat()
   if not self.db.execute('SELECT 1 FROM mari_web_daily_paper WHERE day=?',(day,)).fetchone():
