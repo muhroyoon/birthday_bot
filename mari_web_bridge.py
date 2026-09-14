@@ -894,9 +894,14 @@ class Bridge:
                 self.db.commit()
             return {"session": session}
         uid, gid = self.session(token)
-        member = await self.member(uid, gid, fresh=action not in {"account", "logout", "adventure/step", "adventure/status"})
+        member = await self.member(uid, gid, fresh=action not in {"account", "logout", "adventure/step", "adventure/status", "puzzles/step"})
         if action=='raffles/entrants':
             return self.raffle_entrants(member,data)
+        if action in {'puzzles/start','puzzles/step'}:
+            from mari_web_puzzles import Puzzles
+            async with self.lock:
+                if not hasattr(self,'puzzles'):self.puzzles=Puzzles(self,WebError)
+                return self.puzzles.start(member,data) if action=='puzzles/start' else self.puzzles.control(member,data)
         if action in {'adventure/status','adventure/start','adventure/step'}:
             from mari_web_adventure import Adventure
             async with self.lock:

@@ -54,6 +54,8 @@ class Rankings:
         from mari_web_adventure import GAMES,Adventure
         from mari_web_weekly import training_board
         game=data.get('game')
+        from mari_web_puzzles import Puzzles,GAMES as PUZZLES
+        if game in PUZZLES:return Puzzles(self.b,self.Error).ranking(uid,game)
         if game in GAMES or game in self.b.ns['CASINO_GAMES'] or game=='work':
             if game=='all_in':return self.result([],uid,'money','몰빵은 주간 랭킹 상금 대상이 아닙니다.')
             return self.b.weekly.ranking(game,uid,data.get('period')=='previous')
