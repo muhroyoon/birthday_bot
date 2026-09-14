@@ -7,15 +7,20 @@ import time
 GAMES = {'fishing':'마리 낚시','runner':'장애물 달리기','memory':'기억력 게임',
          'tower':'타워 쌓기','territory':'땅따먹기','dodge':'탄막 피하기'}
 
+ENDLESS_GAMES = {'tower','runner','memory','dodge'}
+
+def tower_speed(s):
+ return min(32,12+(s.get('floors',len(s['blocks'])-1)+1)*3//4) if s.get('endless') else (12+len(s['blocks'])*3//4 if s.get('rules',1)>=3 else 7+len(s['blocks'])//3)
+
 def rand(s, n):
  s['rng'] = (s['rng'] * 1664525 + 1013904223) & 0xffffffff
  return s['rng'] % n
 
 def initial(game, seed):
- s = dict(game=game,rng=seed,tick=0,score=0,done=False,lives=3,x=260,y=300,objects=[],message='시작!',seq=0,rules=3)
+ s = dict(game=game,rng=seed,tick=0,score=0,done=False,lives=3,x=260,y=300,objects=[],message='시작!',seq=0,rules=3,endless=game in ENDLESS_GAMES)
  if game=='runner':s.update(y=300,vy=0,nextSpawn=22,immune=0)
  if game=='dodge':s.update(y=320,immune=0,dodgeRules=2)
- if game=='tower':s.update(x=0,dir=1,width=150,blocks=[{'x':185,'w':150}],combo=0)
+ if game=='tower':s.update(x=0,dir=1,width=150,blocks=[{'x':185,'w':150}],combo=0,floors=0)
  if game=='memory':s.update(sequence=[rand(s,9) for _ in range(3)],tiles=9,level=1,index=0,phase='show',phaseAt=0)
  if game=='fishing':s.update(phase='wait',until=20+rand(s,25),tension=50,progress=0,needle=0,fish=[])
  if game=='territory':
@@ -25,12 +30,12 @@ def initial(game, seed):
 def step(s, x, y, tap):
  if s['done']:return
  s['tick']+=1;t=s['tick'];g=s['game']
- if t>=900:s['done']=True;s['message']='시간 종료';return
+ if t>=900 and not s.get('endless'):s['done']=True;s['message']='시간 종료';return
  if g=='runner':
   if tap and s['y']>=300:s['vy']=-24
   s['vy']+=3;s['y']=min(300,s['y']+s['vy'])
   if s['y']==300:s['vy']=0
-  speed=12+t//150
+  speed=min(28,12+t//150) if s.get('endless') else 12+t//150
   if t>=s.get('nextSpawn',22):
    s['objects'].append({'id':t,'x':540,'w':24+rand(s,19),'h':30+rand(s,26)})
    s['nextSpawn']=t+max(19,25-t//150)+rand(s,6)
@@ -58,16 +63,18 @@ def step(s, x, y, tap):
   if t>s['immune'] and any(math.hypot(o['x']-s['x'],o['y']-s['y'])<17 for o in s['objects']):s['lives']-=1;s['immune']=t+15;s['message']='피격!'
   s['objects']=[o for o in s['objects'] if -30<o['x']<550 and -30<o['y']<400];s['score']=t
  elif g=='tower':
-  s['x']+=s['dir']*((12+len(s['blocks'])*3//4) if s.get('rules',1)>=3 else (7+len(s['blocks'])//3))
+  s['x']+=s['dir']*tower_speed(s)
   if s['x']<0 or s['x']+s['width']>520:s['dir']*=-1;s['x']=max(0,min(520-s['width'],s['x']))
   if tap:
    last=s['blocks'][-1];left=max(last['x'],s['x']);right=min(last['x']+last['w'],s['x']+s['width'])
    if right-left<8:s['done']=True;s['message']='블록이 떨어졌어요';return
-   perfect=abs(last['x']-s['x'])<=(max(2,5-len(s['blocks'])//6) if s.get('rules',1)>=3 else 8)
+   perfect=abs(last['x']-s['x'])<=(max(2,5-(s.get('floors',len(s['blocks'])-1)+1)//6) if s.get('rules',1)>=3 else 8)
    if perfect:left=last['x'];right=left+last['w']
    s['combo']=s['combo']+1 if perfect else 0;s['width']=right-left;s['blocks'].append({'x':left,'w':right-left})
-   s['score']+=100+(50 if perfect else 0);s['dir']=-1 if s.get('rules',1)>=3 and len(s['blocks'])%2==0 else 1;s['x']=520-s['width'] if s['dir']==-1 else 0;s['message']='퍼펙트!' if perfect else f"{len(s['blocks'])-1}층 성공"
-   if len(s['blocks'])>=26:s['done']=True;s['message']='25층 완성!'
+   s['floors']=s.get('floors',len(s['blocks'])-2)+1
+   if s.get('endless'):s['blocks']=s['blocks'][-32:]
+   s['score']+=100+(50 if perfect else 0);s['dir']=-1 if s.get('rules',1)>=3 and (s['floors']+1)%2==0 else 1;s['x']=520-s['width'] if s['dir']==-1 else 0;s['message']='퍼펙트!' if perfect else f"{s['floors']}층 성공"
+   if len(s['blocks'])>=26 and not s.get('endless'):s['done']=True;s['message']='25층 완성!'
  elif g=='memory':
   seq=s['sequence']
   if s.get('rules',1)<3 and s['phase']=='show' and t-s['phaseAt']>=len(seq)*8+8:s['phase']='input';s['message']='순서대로 눌러주세요'
@@ -76,7 +83,7 @@ def step(s, x, y, tap):
    s['index']+=1
    if s['index']==len(seq):
     s['score']+=len(seq)*100;s['level']+=1;s['index']=0;s['sequence'].append(rand(s,s.get('tiles',4)));s['phase']='show';s['phaseAt']=t;s['message']='다음 순서를 기억하세요'
-    if s['level']>12:s['done']=True;s['message']='12단계 완성!'
+    if s['level']>12 and not s.get('endless'):s['done']=True;s['message']='12단계 완성!'
  elif g=='fishing':
   if s['phase']=='wait' and t>=s['until']:s['phase']='bite';s['until']=t+20;s['message']='입질! 지금 낚아채세요'
   elif s['phase']=='bite':
@@ -145,11 +152,13 @@ class Adventure:
    elapsed=s['tick']-s['phaseAt'];i=elapsed//8
    s['lit']=seq[i] if s['phase']=='show' and i<len(seq) and elapsed%8<5 else -1
   return {'job':{'id':row[0],**s},'balance':self.b.economy.balance(row[1])}
+ def record(self,row,s):
+  self.b.weekly.record('adventure:'+row[0],row[3],row[1],row[2],s['score'],{'accuracy':max(0,s['lives'])/3*100,'averageMs':s['tick']*100})
  def status(self,member):
   row=self.db.execute('SELECT * FROM mari_web_adventures WHERE user_id=? ORDER BY created DESC LIMIT 1',(str(member.id),)).fetchone()
-  if row and not row[7] and time.time()-row[5]>=90:
-   s=json.loads(row[4]);s['done']=True;s['message']='시간 종료'
-   self.db.execute('UPDATE mari_web_adventures SET state=?,done=1 WHERE id=?',(json.dumps(s),row[0]));self.b.weekly.record('adventure:'+row[0],row[3],row[1],row[2],s['score']);self.db.commit()
+  if row and not row[7] and (time.time()-row[6]>=180 if json.loads(row[4]).get('endless') else time.time()-row[5]>=90):
+   s=json.loads(row[4]);s['done']=True;s['message']='연결 종료 · 기록 저장' if s.get('endless') else '시간 종료'
+   self.db.execute('UPDATE mari_web_adventures SET state=?,done=1,score=? WHERE id=?',(json.dumps(s),s['score'],row[0]));self.record(row,s);self.db.commit()
    row=self.db.execute('SELECT * FROM mari_web_adventures WHERE id=?',(row[0],)).fetchone()
   return self.public(row)
  def start(self,member,data):
@@ -173,6 +182,12 @@ class Adventure:
   if type(seq) is not int or type(x) is not int or type(y) is not int or type(tap) is not int or x not in (-1,0,1) or y not in (-1,0,1) or not 0<=tap<=9:raise self.Error('입력 값을 확인해주세요.')
   if seq<=s['seq'] or s['done']:return self.public(row)
   if seq!=s['seq']+1:raise self.Error('연결 상태를 다시 확인해주세요.',409)
+  if data.get('finish') is True:
+   s['done']=True;s['message']='도전 종료 · 기록 저장';s['seq']=seq
+   with self.db:
+    self.db.execute('UPDATE mari_web_adventures SET state=?,last=?,done=1,score=? WHERE id=?',(json.dumps(s),time.time(),s['score'],row[0]))
+    self.record(row,s)
+   return self.public(self.db.execute('SELECT * FROM mari_web_adventures WHERE id=?',(row[0],)).fetchone())
   if 'frames' in data:
    if row[3] not in ('territory','dodge','tower','runner','fishing'):raise self.Error('지원하지 않는 입력 방식입니다.')
    frames=data['frames']
@@ -180,12 +195,12 @@ class Adventure:
    for i,f in enumerate(frames):
     if not isinstance(f,list) or len(f)!=(4 if row[3] in ('tower','runner','fishing') else 3) or any(type(v) is not int for v in f) or f[0]!=s['tick']+i+1 or f[1] not in (-1,0,1) or f[2] not in (-1,0,1) or (len(f)==4 and f[3] not in (0,1)):raise self.Error('입력 기록 순서가 맞지 않아요.',409)
    now=time.time()
-   if frames[-1][0]>min(900,int((now-row[5])*10)+2):raise self.Error('입력 속도를 확인해주세요.',409)
+   if frames[-1][0]>(int((now-row[5])*10)+2 if s.get('endless') else min(900,int((now-row[5])*10)+2)):raise self.Error('입력 속도를 확인해주세요.',409)
    for f in frames:step(s,f[1],f[2],f[3] if len(f)==4 else 0)
    s['seq']=seq
    with self.db:
     self.db.execute('UPDATE mari_web_adventures SET state=?,last=?,done=?,score=? WHERE id=?',(json.dumps(s),now,int(s['done']),s['score'],row[0]))
-    if s['done']:self.b.weekly.record('adventure:'+row[0],row[3],row[1],row[2],s['score'])
+    if s['done']:self.record(row,s)
    return self.public(self.db.execute('SELECT * FROM mari_web_adventures WHERE id=?',(row[0],)).fetchone())
   now=time.time();ticks=min(10,int((now-row[6])*10))
   if row[3]=='memory' and s.get('rules',1)>=3:
@@ -193,8 +208,8 @@ class Adventure:
     if now-row[6]<0:raise self.Error('시간을 확인해주세요.')
     if now-s.get('showStarted',row[5]) >= (len(s['sequence'])*7+8)/10:s['phase']='input';s['message']='지금 순서대로 누르세요'
    if data.get('level')!=s['level'] or data.get('index')!=s['index']:tap=0
-  if now-row[5]>=90:s['done']=True;s['message']='시간 종료'
-  before_level=s.get('level');s['tick']=max(s['tick'],min(899,int((now-row[5])*10)-ticks)) if row[3]=='memory' else s['tick']
+  if now-row[5]>=90 and not s.get('endless'):s['done']=True;s['message']='시간 종료'
+  before_level=s.get('level');s['tick']=max(s['tick'],(int((now-row[5])*10)-ticks if s.get('endless') else min(899,int((now-row[5])*10)-ticks))) if row[3]=='memory' else s['tick']
   for i in range(ticks):step(s,x,y,tap if i==0 else 0)
   if row[3]=='memory' and s.get('level')!=before_level:s['showStarted']=now
   # Do not acknowledge a tap until at least one authoritative tick can process it.
@@ -202,5 +217,5 @@ class Adventure:
   s['seq']=seq
   with self.db:
    self.db.execute('UPDATE mari_web_adventures SET state=?,last=?,done=?,score=? WHERE id=?',(json.dumps(s),now,int(s['done']),s['score'],row[0]))
-   if s['done']:self.b.weekly.record('adventure:'+row[0],row[3],row[1],row[2],s['score'])
+   if s['done']:self.record(row,s)
   return self.public(self.db.execute('SELECT * FROM mari_web_adventures WHERE id=?',(row[0],)).fetchone())

@@ -100,7 +100,7 @@ class Social:
     if game in ('runner','dodge'):stats[game+'Best']=best
    for (raw,) in self.db.execute("SELECT state FROM mari_web_adventures WHERE user_id=? AND game IN ('fishing','tower','memory','territory')",(uid,)):
     s=json.loads(raw);fish=s.get('fish',[]);stats['fish']+=len(fish);stats['rare']+=sum(f['rarity']==3 for f in fish)
-    stats['towerFloors']=max(stats['towerFloors'],len(s.get('blocks',[]))-1)
+    stats['towerFloors']=max(stats['towerFloors'],s.get('floors',len(s.get('blocks',[]))-1))
     stats['memoryLevel']=max(stats['memoryLevel'],s.get('level',1)-1)
     stats['territoryCells']=max(stats['territoryCells'],len(s.get('claimed',[])))
   if self.exists('mari_web_work_jobs'):stats['work']=self.db.execute('SELECT COUNT(*) FROM mari_web_work_jobs WHERE user_id=? AND finished_day IS NOT NULL',(uid,)).fetchone()[0]
