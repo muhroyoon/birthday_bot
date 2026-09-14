@@ -571,6 +571,8 @@ class Bridge:
         uid, gid = member.id, member.guild.id
         if action == "game/start":
             game = data.get("game")
+            if game == "number_baseball":
+                raise WebError("숫자야구는 미니게임으로 변경됐어요. 게임 라운지에서 새 화면을 열어주세요.",409)
             if game not in GAME_FUNCTIONS:
                 raise WebError("지원하지 않는 게임이에요.")
             existing = self.rounds.get(uid)
@@ -894,9 +896,17 @@ class Bridge:
                 self.db.commit()
             return {"session": session}
         uid, gid = self.session(token)
-        member = await self.member(uid, gid, fresh=action not in {"account", "logout", "adventure/step", "adventure/status", "puzzles/step"})
+        member = await self.member(uid, gid, fresh=action not in {"account", "logout", "adventure/step", "adventure/status", "puzzles/step", "baseball/status", "baseball/guess"})
         if action=='raffles/entrants':
             return self.raffle_entrants(member,data)
+        if action in {'baseball/start','baseball/status','baseball/guess'}:
+            async with self.lock:
+                if not hasattr(self,'baseball'):
+                    from mari_web_baseball import Baseball
+                    self.baseball=Baseball(self,WebError)
+                if action=='baseball/status':return self.baseball.status(member)
+                if action=='baseball/start':return self.baseball.start(member,data)
+                return self.baseball.guess(member,data)
         if action in {'puzzles/start','puzzles/step'}:
             from mari_web_puzzles import Puzzles
             async with self.lock:

@@ -55,6 +55,12 @@ class Rankings:
         from mari_web_weekly import training_board
         game=data.get('game')
         from mari_web_puzzles import Puzzles,GAMES as PUZZLES
+        if game=='number_baseball':
+            result=self.b.weekly.ranking('number_baseball_skill',uid,data.get('period')=='previous')
+            result['metric']='guesses';result['note']='정답까지 적은 시도 횟수 → 짧은 소요 시간 → 먼저 달성한 순서. 미니게임 개편 이후 성공 기록만 집계합니다.'
+            for row in result['entries']:row['value']=9-row['score']
+            if result['mine']:result['mine']['value']=9-result['mine']['score']
+            return result
         if game in PUZZLES:return Puzzles(self.b,self.Error).ranking(uid,game)
         if game in GAMES or game in self.b.ns['CASINO_GAMES'] or game=='work':
             if game=='all_in':return self.result([],uid,'money','몰빵은 주간 랭킹 상금 대상이 아닙니다.')

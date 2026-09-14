@@ -1,4 +1,6 @@
 """Five deterministic logic puzzles, authoritative moves and KST daily boards."""
+from collections import deque
+from functools import lru_cache
 import copy
 import hashlib
 import json
@@ -21,9 +23,44 @@ def car_move(b,i,d):
  if occupied.intersection(cells(q,n)):return False
  b['cars'][i]=q;return True
 
-def make(game,seed,proof=None):
+def parking_neighbors(state,cars):
+ occupied=set()
+ for i,c in enumerate(cars):
+  for k in range(c['length']):occupied.add((state[i]+k,c['y']) if c['axis']=='h' else (c['x'],state[i]+k))
+ for i,c in enumerate(cars):
+  for d in (-1,1):
+   z=state[i]-1 if d<0 else state[i]+c['length'];p=(z,c['y']) if c['axis']=='h' else (c['x'],z)
+   if 0<=z<6 and p not in occupied:
+    q=list(state);q[i]+=d;yield tuple(q),[i,d]
+
+@lru_cache(maxsize=1)
+def parking_difficulties():
+ # Enumerate this compact lane layout once, then measure minimum legal moves to any exit.
+ cars=make('parking',12)['cars'];start=tuple(c['x'] if c['axis']=='h' else c['y'] for c in cars)
+ seen={start};todo=deque([start])
+ while todo:
+  for q,_ in parking_neighbors(todo.popleft(),cars):
+   if q not in seen:seen.add(q);todo.append(q)
+ distance={q:0 for q in seen if q[0]==4};todo=deque(sorted(distance))
+ while todo:
+  state=todo.popleft()
+  for q,_ in parking_neighbors(state,cars):
+   if q not in distance:distance[q]=distance[state]+1;todo.append(q)
+ return cars,distance
+
+def free_parking(seed,level,proof):
+ r=random.Random(seed);cars,dist=parking_difficulties();target=min(max(dist.values()),2+level)
+ state=r.choice(sorted(q for q,d in dist.items() if d==target));result=copy.deepcopy(cars)
+ for i,c in enumerate(result):c['x' if c['axis']=='h' else 'y']=state[i]
+ if proof is not None:
+  while dist[state]:
+   state,event=next((q,e) for q,e in parking_neighbors(state,cars) if dist[q]==dist[state]-1);proof.append(event)
+ return {'game':'parking','n':6,'cars':result}
+
+def make(game,seed,proof=None,level=None):
  r=random.Random(seed)
  if game=='parking':
+  if level is not None:return free_parking(seed,level,proof)
   cars=[(4,2,2,'h'),(0,0,3,'v'),(1,0,2,'h'),(3,0,2,'v'),(4,0,2,'h'),(1,3,3,'h'),(4,3,2,'v'),(0,5,3,'h'),(5,3,3,'v'),(1,1,2,'v')]
   b={'game':game,'n':6,'cars':[dict(x=x,y=y,length=l,axis=a) for x,y,l,a in cars]}
   backwards=[]
@@ -33,11 +70,11 @@ def make(game,seed,proof=None):
   while b['cars'][0]['x']>0:
    if not car_move(b,0,-1):break
    backwards.append([0,1])
-  if solved(b):return make(game,seed+1,proof)
+  if solved(b):return make(game,seed+1,proof,level)
   if proof is not None:proof.extend(reversed(backwards))
   return b
  if game=='power':
-  n=5;m=[0]*(n*n);seen={0};todo=[0]
+  n=5 if level is None else min(8,3+(level-1)//3);m=[0]*(n*n);seen={0};todo=[0]
   while todo:
    a=todo[-1];neighbors=[(k,(a//n+dy)*n+a%n+dx) for k,(dx,dy) in enumerate(DIRS) if 0<=a%n+dx<n and 0<=a//n+dy<n and (a//n+dy)*n+a%n+dx not in seen]
    if not neighbors:todo.pop();continue
@@ -52,38 +89,46 @@ def make(game,seed,proof=None):
     while mask!=correct[i]:proof.append([i]);mask=rotate(mask)
   return b
  if game=='warehouse':
-  n=7;walls=[i for i in range(n*n) if i%n in (0,n-1) or i//n in (0,n-1)]+[10,38];goals=[16,18,32];boxes=goals[:];p=24;backwards=[]
-  for _ in range(800):
+  n=7 if level is None else min(9,6+(level-1)//4)
+  walls=[i for i in range(n*n) if i%n in (0,n-1) or i//n in (0,n-1)]
+  if level is None:walls += [10,38];goals=[16,18,32];p=24
+  else:
+   candidates=[y*n+x for y in range(2,n-2) for x in range(2,n-2)];goals=r.sample(candidates,min(8,len(candidates),2+(level-1)//3));p=n+1
+  boxes=goals[:];backwards=[]
+  for _ in range(800 if level is None else min(2500,150+level*100)):
    d=r.randrange(4);dx,dy=DIRS[d];q=p+dx+dy*n
    if q in walls or q in boxes:continue
    behind=p-dx-dy*n
    if behind in boxes and r.random()<.75:boxes[boxes.index(behind)]=p
    p=q;backwards.append([(d+2)%4])
-  if set(boxes)==set(goals):return make(game,seed+1,proof)
+  if set(boxes)==set(goals):return make(game,seed+1,proof,level)
   if proof is not None:proof.extend(reversed(backwards))
   return {'game':game,'n':n,'walls':walls,'goals':goals,'boxes':boxes,'player':p}
  if game=='untangle':
   import math
-  nodes=[[int(500+380*math.cos(i*2*math.pi/9)),int(500+380*math.sin(i*2*math.pi/9))] for i in range(9)];r.shuffle(nodes)
+  side=3 if level is None else min(5,2+(level-1)//4);count=side*side
+  nodes=[[int(500+380*math.cos(i*2*math.pi/count)),int(500+380*math.sin(i*2*math.pi/count))] for i in range(count)];r.shuffle(nodes)
   edges=[]
-  for y in range(3):
-   for x in range(3):
-    a=y*3+x
-    if x<2:edges.append([a,a+1])
-    if y<2:edges.append([a,a+3])
-    if x<2 and y<2 and r.random()<.6:edges.append([a,a+4])
-  if proof is not None:proof.extend([[i,100+(i%3)*400,100+(i//3)*400] for i in range(9)])
-  return {'game':game,'n':9,'nodes':nodes,'edges':edges}
- n=9;y=4;mirrors={};path={y*n+x for x in range(n)}
- for x in (1,3,5,7):
-  ny=r.choice([a for a in range(1,8) if a!=y]);down=ny>y
+  for y in range(side):
+   for x in range(side):
+    a=y*side+x
+    if x<side-1:edges.append([a,a+1])
+    if y<side-1:edges.append([a,a+side])
+    if x<side-1 and y<side-1 and r.random()<(.6 if level is None else min(.9,.2+level*.05)):edges.append([a,a+side+1])
+  b={'game':game,'n':count,'nodes':nodes,'edges':edges}
+  if solved(b):return make(game,seed+1,proof,level)
+  if proof is not None:proof.extend([[i,100+round((i%side)*800/(side-1)),100+round((i//side)*800/(side-1))] for i in range(count)])
+  return b
+ n=9 if level is None else min(11,5+2*((level-1)//4));y=n//2;source=y*n;mirrors={};path={y*n+x for x in range(n)}
+ for x in range(1,n-1,2):
+  ny=r.choice([a for a in range(1,n-1) if a!=y]);down=ny>y
   mirrors[y*n+x]=1 if down else 0;mirrors[ny*n+x]=1 if down else 0
   path.update(a*n+x for a in range(min(y,ny),max(y,ny)+1));path.update(ny*n+a for a in range(x,n));y=ny
- target=y*n+8
- for i in r.sample([i for i in range(n*n) if i not in path],4):mirrors[i]=r.randrange(2)
- walls=r.sample([i for i in range(n*n) if i not in path and i not in mirrors],8)
- b={'game':game,'n':n,'source':36,'target':target,'walls':walls,'mirrors':{str(i):r.randrange(2) for i in mirrors}}
- if solved(b):b['mirrors']['37']=1-b['mirrors']['37']
+ target=y*n+n-1
+ for i in r.sample([i for i in range(n*n) if i not in path],min(4 if level is None else 1+level//2,sum(i not in path for i in range(n*n)))):mirrors[i]=r.randrange(2)
+ available=[i for i in range(n*n) if i not in path and i not in mirrors];walls=r.sample(available,min(len(available),8 if level is None else 2+level))
+ b={'game':game,'n':n,'source':source,'target':target,'walls':walls,'mirrors':{str(i):r.randrange(2) for i in mirrors}}
+ if solved(b):b['mirrors'][str(source+1)]=1-b['mirrors'][str(source+1)]
  if proof is not None:proof.extend([[i] for i,v in mirrors.items() if b['mirrors'][str(i)]!=v])
  return b
 
@@ -97,7 +142,7 @@ def powered(b):
  return seen
 
 def beam(b):
- n=b['n'];x=0;y=4;dx=1;dy=0;seen=set();path=[]
+ n=b['n'];x=b['source']%n;y=b['source']//n;dx=1;dy=0;seen=set();path=[]
  for _ in range(n*n*4):
   if not(0<=x<n and 0<=y<n):break
   a=y*n+x;key=(a,dx,dy)
@@ -170,7 +215,10 @@ class Puzzles:
   CREATE INDEX IF NOT EXISTS puzzle_ranking ON mari_web_puzzles(game,day,mode,done,moves,elapsed);
   CREATE INDEX IF NOT EXISTS puzzle_resume ON mari_web_puzzles(user_id,game,mode,created);''');self.db.commit()
  def day(self):return datetime.now(KST).date().isoformat()
- def public(self,row):return {'id':row[0],'game':row[3],'mode':row[4],'day':row[5],'created':row[6],'elapsed':row[12],'seq':row[9],**json.loads(row[8])}
+ def public(self,row):
+  state=json.loads(row[8])
+  if row[4]=='free' and state.get('level') is None:state['level']=1+self.db.execute("SELECT COUNT(*) FROM mari_web_puzzles WHERE user_id=? AND game=? AND mode='free' AND done=1 AND created<?",(row[1],row[3],row[6])).fetchone()[0]
+  return {'id':row[0],'game':row[3],'mode':row[4],'day':row[5],'created':row[6],'elapsed':row[12],'seq':row[9],**state}
  def start(self,member,data):
   game=data.get('game');mode=data.get('mode','daily');day=self.day()
   if game not in GAMES or mode not in ('daily','free'):raise self.Error('게임 모드를 확인해주세요.')
@@ -180,7 +228,8 @@ class Puzzles:
   with self.db:
    if not row or mode=='free' and row[10]:
     seed=int(hashlib.sha256(('puzzles-v1:'+game+':'+day).encode()).hexdigest()[:16],16) if mode=='daily' else secrets.randbits(32)
-    board=make(game,seed);state={'board':board,'initial':copy.deepcopy(board),'history':[],'moves':0,'done':False};jid=secrets.token_urlsafe(24);now=time.time()
+    level=1+self.db.execute("SELECT COUNT(*) FROM mari_web_puzzles WHERE user_id=? AND game=? AND mode='free' AND done=1",(str(member.id),game)).fetchone()[0] if mode=='free' else None
+    board=make(game,seed,level=level);state={'board':board,'initial':copy.deepcopy(board),'history':[],'moves':0,'done':False,'level':level};jid=secrets.token_urlsafe(24);now=time.time()
     self.db.execute('INSERT INTO mari_web_puzzles(id,user_id,guild_id,game,mode,day,created,last,state) VALUES(?,?,?,?,?,?,?,?,?)',(jid,str(member.id),str(member.guild.id),game,mode,day,now,now,json.dumps(state)))
     row=self.db.execute('SELECT * FROM mari_web_puzzles WHERE id=?',(jid,)).fetchone()
    self.b.economy.remember(request,member.id,fp,{'id':row[0]})

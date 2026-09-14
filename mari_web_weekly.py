@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 KST=timezone(timedelta(hours=9))
 WEEK=7*86400
 PRIZES=(30000000,15000000,5000000)
-NAMES={'flick':'에임 연습','reaction':'반응속도','stopwatch':'스톱워치','apple':'사과게임','snake':'지렁이 게임','suika':'수박게임','2048':'2048','fishing':'마리 낚시','runner':'장애물 달리기','memory':'기억력 게임','tower':'타워 쌓기','territory':'땅따먹기','dodge':'탄막 피하기','work':'마리 광산'}
+NAMES={'number_baseball_skill':'숫자야구','flick':'에임 연습','reaction':'반응속도','stopwatch':'스톱워치','apple':'사과게임','snake':'지렁이 게임','suika':'수박게임','2048':'2048','fishing':'마리 낚시','runner':'장애물 달리기','memory':'기억력 게임','tower':'타워 쌓기','territory':'땅따먹기','dodge':'탄막 피하기','work':'마리 광산'}
 
 def week_start(now):
     d=datetime.fromtimestamp(now,KST)
@@ -62,6 +62,13 @@ class Weekly:
             result.append({**row,'rank':len(result)+1,'name':m.display_name,'username':m.name,'avatar':str(m.display_avatar.url),'guild':self.b.guild_info(m.guild)})
         return result
 
+    def eligible(self,board,week):
+        if board=='number_baseball_skill':
+            first=self.db.execute('SELECT MIN(week) FROM mari_web_weekly_records WHERE board=?',(board,)).fetchone()[0]
+            # The transition week retains the old game's accrued awards, without a second prize pool.
+            return first is not None and week>first
+        return official(board)
+
     def settle(self,now=None):
         now=time.time() if now is None else now
         deadline=self.db.execute('SELECT next_end FROM mari_web_weekly_meta WHERE id=1').fetchone()[0]
@@ -75,7 +82,7 @@ class Weekly:
                     if self.db.execute('SELECT 1 FROM mari_web_weekly_results WHERE week=? AND board=?',(week,board)).fetchone():continue
                     rows=self.decorate(self.rows(week,board))
                     self.db.execute('INSERT INTO mari_web_weekly_results VALUES(?,?,?)',(week,board,json.dumps(rows)))
-                    if not official(board):continue
+                    if not self.eligible(board,week):continue
                     for row,amount in zip(rows,PRIZES):
                         cur=self.db.execute('INSERT OR IGNORE INTO mari_web_weekly_awards VALUES(?,?,?,?,?,?)',(week,board,row['userId'],row['rank'],amount,now))
                         if cur.rowcount:
@@ -91,7 +98,7 @@ class Weekly:
         metric='ms' if mode in ('reaction','stopwatch') else 'percent' if mode in ('precision','path') else 'speed' if mode in ('flick','grid') else 'money' if mode=='work' or mode in self.b.ns.get('CASINO_GAMES',{}) else 'score'
         for row in rows:row['value']=row['averageMs'] if metric=='ms' else row['score']
         return {'entries':rows[:100],'mine':next((r for r in rows if r['userId']==str(uid)),None),'total':len(rows),'metric':metric,
-                'note':'선택한 주의 기록 기준입니다. 동점은 점수·정확도·평균 시간 비교 후 먼저 달성한 기록을 우선합니다.','weekly':{'start':datetime.fromtimestamp(week,KST).isoformat(),'end':datetime.fromtimestamp(week+WEEK,KST).isoformat(),'prizeEligible':official(board),'prizes':PRIZES,'previous':previous,'settled':bool(archived)}}
+                'note':'선택한 주의 기록 기준입니다. 동점은 점수·정확도·평균 시간 비교 후 먼저 달성한 기록을 우선합니다.','weekly':{'start':datetime.fromtimestamp(week,KST).isoformat(),'end':datetime.fromtimestamp(week+WEEK,KST).isoformat(),'prizeEligible':self.eligible(board,week),'prizes':PRIZES,'previous':previous,'settled':bool(archived)}}
 
     def notices(self,uid):
         rows=self.db.execute('SELECT week,board,rank,amount,paid_at FROM mari_web_weekly_awards WHERE user_id=? ORDER BY paid_at DESC LIMIT 30',(str(uid),)).fetchall()
