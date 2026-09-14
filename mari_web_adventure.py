@@ -18,7 +18,7 @@ def rand(s, n):
 
 def initial(game, seed):
  s = dict(game=game,rng=seed,tick=0,score=0,done=False,lives=3,x=260,y=300,objects=[],message='시작!',seq=0,rules=3,endless=game in ENDLESS_GAMES)
- if game=='runner':s.update(y=300,vy=0,nextSpawn=22,immune=0)
+ if game=='runner':s.update(y=300,vy=0,nextSpawn=32,immune=0,runnerRules=2,jumps=0,airJumpAvailable=False,doubleUntil=0,items=[],nextItem=12,lastJumpTick=-100)
  if game=='dodge':s.update(y=320,immune=0,dodgeRules=2)
  if game=='tower':s.update(x=0,dir=1,width=150,blocks=[{'x':185,'w':150}],combo=0,floors=0)
  if game=='memory':s.update(sequence=[rand(s,9) for _ in range(3)],tiles=9,level=1,index=0,phase='show',phaseAt=0)
@@ -27,11 +27,55 @@ def initial(game, seed):
   s.update(territoryRules=4,enemies=[{'x':7,'y':5,'dx':1,'dy':1},{'x':14,'y':9,'dx':-1,'dy':-1}],x=0,y=0,claimed=[i for i in range(280) if i%20 in (0,19) or i//20 in (0,13)],trail=[],enemy={'x':10,'y':7,'dx':1,'dy':1})
  return s
 
+def runner_speed(s):
+ return min(30,14+s['tick']//120)
+
+def overlap_time(a,b,lo,hi):
+ if a==b:return (0,1) if lo<a<hi else (1,0)
+ p=(lo-a)/(b-a);q=(hi-a)/(b-a)
+ return max(0,min(p,q)),min(1,max(p,q))
+
+def runner_contact(old_x,new_x,w,top,h,old_y,new_y):
+ x=overlap_time(old_x,new_x,76-w,100);y=overlap_time(old_y,new_y,top-34,top+h)
+ return max(x[0],y[0])<min(x[1],y[1])
+
+def runner_step(s,tap):
+ t=s['tick'];old_y=s['y'];speed=runner_speed(s)
+ if tap:
+  if s['y']>=300:s.update(vy=-27,jumps=1,airJumpAvailable=t<s['doubleUntil'],lastJumpTick=t)
+  elif s['airJumpAvailable'] and s['jumps']==1:s.update(vy=-24,jumps=2,airJumpAvailable=False,lastJumpTick=t,message='더블 점프!')
+ s['vy']+=3;s['y']=min(300,s['y']+s['vy'])
+ if s['y']==300:s.update(vy=0,jumps=0,airJumpAvailable=False)
+ if t>=s['nextItem']:
+  s['items'].append({'id':t,'x':540,'y':292});s['nextItem']=t+145+rand(s,45)
+ items=[]
+ for o in s['items']:
+  old=o['x'];o['x']-=speed
+  if runner_contact(old-14,o['x']-14,28,o['y']-14,28,old_y,s['y']):
+   s['doubleUntil']=t+120
+   if s['y']<300 and s['jumps']==1:s['airJumpAvailable']=True
+   s['message']='더블 점프 · 12초'
+  elif o['x']>-30:items.append(o)
+ s['items']=items
+ if t>=s['nextSpawn']:
+  stage=min(5,t//180);roll=rand(s,100)
+  kind='vent' if roll<25 else 'crate' if roll<50 else 'wide' if roll<75 else 'barrier' if roll<90 or stage==0 else 'drone'
+  if stage>=1 and roll<16 and s['doubleUntil']-t>math.ceil(464/speed)+34:kind='high'
+  w,h,top={'vent':(30,34,300),'crate':(36,54,280),'wide':(68,38,296),'barrier':(28,76,258),'drone':(44,28,210),'high':(36,122,212)}[kind]
+  s['objects'].append({'id':t,'x':540,'w':w,'h':h,'top':top,'kind':kind})
+  s['nextSpawn']=t+(34 if kind=='high' else max(17,27-stage*2))+rand(s,5)
+ for o in s['objects']:
+  old=o['x'];o['x']-=speed
+  if not o.get('hit') and t>s['immune'] and runner_contact(old,o['x'],o['w'],o['top'],o['h'],old_y,s['y']):
+   s['lives']-=1;o['hit']=True;s['immune']=t+12;s['message']='공중 드론과 충돌!' if o['kind']=='drone' else '장애물과 충돌!'
+ s['objects']=[o for o in s['objects'] if o['x']+o['w']>-30];s['score']=t
+
 def step(s, x, y, tap):
  if s['done']:return
  s['tick']+=1;t=s['tick'];g=s['game']
  if t>=900 and not s.get('endless'):s['done']=True;s['message']='시간 종료';return
- if g=='runner':
+ if g=='runner' and s.get('runnerRules',1)>=2:runner_step(s,tap)
+ elif g=='runner':
   if tap and s['y']>=300:s['vy']=-24
   s['vy']+=3;s['y']=min(300,s['y']+s['vy'])
   if s['y']==300:s['vy']=0
