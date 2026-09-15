@@ -133,7 +133,7 @@ class Pubg:
             if self.jobs[id]['created']<now-1800 and id not in self.tasks:del self.jobs[id]
         completed=sorted((j for j in self.jobs.values() if j['id'] not in self.tasks),key=lambda j:j['created'])
         for j in completed[:-30]:del self.jobs[j['id']]
-        key='report:v3:'+platform+':'+name.lower()+':'+mode+':'+kind+':'+season
+        key='report:v4:'+platform+':'+name.lower()+':'+mode+':'+kind+':'+season
         active=next((j for j in self.jobs.values() if j['uid']==uid and j['status']=='loading'),None)
         if active:
             if active['key']==key:return self.view(uid,active['id'])

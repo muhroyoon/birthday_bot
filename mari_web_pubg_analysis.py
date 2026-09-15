@@ -159,13 +159,15 @@ def summary(matches):
 
 def season_metrics(raw, ranked=False):
     """Keep unsupported fields null; normal K/D uses official losses, ranked uses deaths."""
-    def val(k):return number(raw[k]) if k in raw else None
+    deprecated={'avgSurvivalTime','roundMostKills','longestKill','headshotKills','headshotKillRatio','revives','heals','boosts','weaponsAcquired','teamKills','playTime','killStreak'}
+    def val(k):return number(raw[k]) if k in raw and not (ranked and k in deprecated) else None
     n=val('roundsPlayed');kills=val('kills');wins=val('wins');deaths=val('deaths' if ranked else 'losses')
     def ratio(a,b,m=1):return round(a/b*m,2) if a is not None and b and b>0 else None
     def tier(k):
         v=raw.get(k) or {}
         return ' '.join(str(v.get(x,'')) for x in ('tier','subTier')).strip() or None
     top=val('top10s')
+    if ranked and n and val('top10Ratio') is not None and 0<=val('top10Ratio')<=1:top=round(val('top10Ratio')*n)
     return {'matches':n,'wins':wins,'kills':kills,'deaths':deaths,'kd':ratio(kills,deaths),'winRate':ratio(wins,n,100),
       'top10Rate':round(val('top10Ratio')*100,2) if ranked and val('top10Ratio') is not None else ratio(top,n,100),
       'top10':top,'averageDamage':ratio(val('damageDealt'),n),'totalDamage':val('damageDealt'),'averageRank':val('avgRank'),
