@@ -100,7 +100,7 @@ class Pubg:
             if self.jobs[id]['created']<now-1800 and id not in self.tasks:del self.jobs[id]
         completed=sorted((j for j in self.jobs.values() if j['id'] not in self.tasks),key=lambda j:j['created'])
         for j in completed[:-30]:del self.jobs[j['id']]
-        key='report:v1:'+platform+':'+name.lower()+':'+mode+':'+kind
+        key='report:v2:'+platform+':'+name.lower()+':'+mode+':'+kind
         active=next((j for j in self.jobs.values() if j['uid']==uid and j['status']=='loading'),None)
         if active:
             if active['key']==key:return self.view(uid,active['id'])
@@ -157,7 +157,7 @@ class Pubg:
                     job['report']=report
                     for index,(row,raw) in enumerate(pairs):
                         job['progress']=f'자기장·교전 분석 중 · {index+1}/{len(pairs)}'
-                        cachekey='detail:v1:'+platform+':'+row['id']+':'+account
+                        cachekey='detail:v2:'+platform+':'+row['id']+':'+account
                         detail=self.cached(cachekey)
                         if not detail:
                             asset=next((a.get('attributes',{}).get('URL') for a in raw.get('included',[]) if a.get('type')=='asset'),None)

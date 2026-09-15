@@ -51,6 +51,9 @@ def telemetry_metrics(events, account):
         if kind=='LogPlayerRedeploy':dead.discard(uid)
         if kind=='LogPlayerPosition' and uid and loc:
             positions[uid]=(t,loc,c.get('teamId'),number(c.get('health')))
+            # Positive-health position records also establish a return after recall/respawn,
+            # including matches where a separate redeploy event is absent.
+            if number(c.get('health'))>0:dead.discard(uid)
             if uid==account:
                 team=c.get('teamId')
                 if number(c.get('health'))>0 and uid not in dead:
@@ -82,7 +85,7 @@ def telemetry_metrics(events, account):
             if victim.get('accountId')==account:
                 damage_taken+=amount
                 if e.get('damageTypeCategory')=='Damage_BlueZone':blue+=amount
-            if attacker.get('accountId')==account and victim.get('accountId')!=account and attacker.get('teamId')!=victim.get('teamId'):
+            if amount>0 and attacker.get('accountId')==account and victim.get('accountId')!=account and attacker.get('teamId')!=victim.get('teamId'):
                 weapon=str(e.get('damageCauserName','Unknown'))[:80]
                 w=weapons.setdefault(weapon,{'weapon':weapon,'damage':0,'hits':0,'distanceSum':0})
                 w['damage']+=amount;w['hits']+=1
