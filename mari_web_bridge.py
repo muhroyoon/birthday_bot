@@ -864,6 +864,10 @@ class Bridge:
         return {'online':len(unique),'windowSeconds':90,'users':users if authenticated else [],'guests':sum(1 for item in unique.values() if not item[2]),'identified':authenticated}
 
     async def dispatch(self, action, token, data):
+        if action == 'pubg/status':
+            from mari_web_pubg import Pubg
+            if not hasattr(self,'pubg'):self.pubg=Pubg(self,WebError)
+            return self.pubg.status()
         if action=="presence": return self.presence(token,data)
         if action=="catalog/popularity":return self.catalog.popularity()
         if action=="catalog/view":
@@ -896,6 +900,10 @@ class Bridge:
                 self.db.commit()
             return {"session": session}
         uid, gid = self.session(token)
+        if action in ('pubg/search','pubg/report'):
+            from mari_web_pubg import Pubg
+            if not hasattr(self,'pubg'):self.pubg=Pubg(self,WebError)
+            return await self.pubg.start(uid,data) if action=='pubg/search' else self.pubg.view(uid,data.get('id'))
         member = await self.member(uid, gid, fresh=action not in {"account", "logout", "adventure/step", "adventure/status", "puzzles/step", "baseball/status", "baseball/guess"})
         if action=='raffles/entrants':
             return self.raffle_entrants(member,data)
