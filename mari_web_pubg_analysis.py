@@ -24,6 +24,13 @@ def match_row(raw, account):
     p=next((p for p in included if p.get('type')=='participant' and p.get('attributes',{}).get('stats',{}).get('playerId')==account),None)
     if not p:return None
     a=raw.get('data',{}).get('attributes',{});s=p['attributes']['stats']
+    roster=next((r for r in included if r.get('type')=='roster' and any(v.get('id')==p.get('id') for v in r.get('relationships',{}).get('participants',{}).get('data',[]))),{})
+    ids={v.get('id') for v in roster.get('relationships',{}).get('participants',{}).get('data',[])}
+    teammates=[]
+    for v in included:
+        if v.get('type')=='participant' and v.get('id') in ids:
+            st=v.get('attributes',{}).get('stats',{})
+            teammates.append({'name':st.get('name',''),'kills':number(st.get('kills')),'damage':round(number(st.get('damageDealt'))),'knocks':number(st.get('DBNOs')),'survival':number(st.get('timeSurvived'))})
     return {'id':raw['data']['id'],'at':a.get('createdAt',''),'map':MAPS.get(a.get('mapName'),a.get('mapName','알 수 없는 맵')),
             'mapId':a.get('mapName',''),'mode':a.get('gameMode',''),'type':a.get('matchType',''),
             'custom':bool(a.get('isCustomMatch')),'rank':int(number(s.get('winPlace'))),
@@ -31,6 +38,7 @@ def match_row(raw, account):
             'assists':number(s.get('assists')),'revives':number(s.get('revives')),'knocks':number(s.get('DBNOs')),
             'headshots':number(s.get('headshotKills')),'survival':number(s.get('timeSurvived')),
             'walk':number(s.get('walkDistance')),'ride':number(s.get('rideDistance')),
+            'longestKill':number(s.get('longestKill')),'swim':number(s.get('swimDistance')),'heals':number(s.get('heals')),'boosts':number(s.get('boosts')),'team':teammates,'totalTeams':sum(r.get('type')=='roster' for r in included),
             'telemetry':'pending'}
 
 def telemetry_metrics(events, account):
@@ -141,4 +149,28 @@ def summary(matches):
         half=n//2;recent=matches[:half];prior=matches[half:half*2]
         k['trend']={'each':half,'recentDamage':round(sum(m['damage'] for m in recent)/half,1),
                     'priorDamage':round(sum(m['damage'] for m in prior)/half,1)}
+    k['finishRate']=round(k['wins']/k['top10']*100,1) if k['top10'] else None
+    k['maps']=[]
+    for name in dict.fromkeys(m.get('map','알 수 없는 맵') for m in matches):
+        rows=[m for m in matches if m.get('map','알 수 없는 맵')==name]
+        k['maps'].append({'map':name,'matches':len(rows),'damage':round(sum(m['damage'] for m in rows)/len(rows),1),'rank':round(sum(m['rank'] for m in rows)/len(rows),1),'wins':sum(m['rank']==1 for m in rows),'early':sum(m['survival']<180 and m['rank']!=1 for m in rows)})
     return k
+
+
+def season_metrics(raw, ranked=False):
+    """Keep unsupported fields null; normal K/D uses official losses, ranked uses deaths."""
+    def val(k):return number(raw[k]) if k in raw else None
+    n=val('roundsPlayed');kills=val('kills');wins=val('wins');deaths=val('deaths' if ranked else 'losses')
+    def ratio(a,b,m=1):return round(a/b*m,2) if a is not None and b and b>0 else None
+    def tier(k):
+        v=raw.get(k) or {}
+        return ' '.join(str(v.get(x,'')) for x in ('tier','subTier')).strip() or None
+    top=val('top10s')
+    return {'matches':n,'wins':wins,'kills':kills,'deaths':deaths,'kd':ratio(kills,deaths),'winRate':ratio(wins,n,100),
+      'top10Rate':round(val('top10Ratio')*100,2) if ranked and val('top10Ratio') is not None else ratio(top,n,100),
+      'top10':top,'averageDamage':ratio(val('damageDealt'),n),'totalDamage':val('damageDealt'),'averageRank':val('avgRank'),
+      'assists':val('assists'),'knocks':val('dBNOs'),'headshotRate':ratio(val('headshotKills'),kills,100),'headshots':val('headshotKills'),
+      'maxKills':val('roundMostKills'),'longestKill':val('longestKill'),'averageSurvival':val('avgSurvivalTime') if ranked else ratio(val('timeSurvived'),n),
+      'playTime':val('playTime') if ranked else val('timeSurvived'),'revives':val('revives'),'heals':val('heals'),'boosts':val('boosts'),
+      'walk':val('walkDistance'),'ride':val('rideDistance'),'swim':val('swimDistance'),'teamKills':val('teamKills'),'roadKills':val('roadKills'),
+      'tier':tier('currentTier'),'bestTier':tier('bestTier'),'rp':val('currentRankPoint'),'bestRp':val('bestRankPoint')}
