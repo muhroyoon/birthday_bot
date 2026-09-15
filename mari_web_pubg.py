@@ -23,7 +23,7 @@ class Pubg:
 
     def status(self):
         platform=os.environ.get('PUBG_DEFAULT_PLATFORM','steam')
-        return {'configured':bool(os.environ.get('PUBG_API_KEY')),'aiConfigured':bool(os.environ.get('OPENAI_API_KEY')),
+        return {'configured':bool(os.environ.get('PUBG_API_KEY')),'aiConfigured':False,
                 'defaultPlatform':platform if platform in PLATFORMS else 'steam'}
 
     def cached(self,key):
@@ -68,28 +68,8 @@ class Pubg:
         return result
 
     async def coach(self,http,report,uid):
-        if not os.environ.get('OPENAI_API_KEY') or not report['summary']:return {'status':'not_configured','text':None}
-        # Only aggregate game metrics leave the server; names, account IDs and raw telemetry do not.
-        facts={'summary':report['summary'],'mode':report['mode'],'type':report['type']}
-        payload=json.dumps(facts,ensure_ascii=False,sort_keys=True)
-        key='ai:v1:'+hashlib.sha256(payload.encode()).hexdigest()
-        cached=self.cached(key)
-        if cached:return cached
-        quota='ai-usage:'+str(uid)+':'+str(int(time.time()//86400));used=self.cached(quota) or 0
-        if used>=20:return {'status':'limited','text':None}
-        self.save(quota,used+1,86400)
-        try:
-            async with http.post('https://api.openai.com/v1/responses',allow_redirects=False,
-                headers={'Authorization':'Bearer '+os.environ['OPENAI_API_KEY']},
-                json={'model':os.environ.get('PUBG_AI_MODEL','gpt-4.1-mini'),'store':False,'max_output_tokens':1100,
-                      'instructions':'한국어 PUBG 코치. 입력은 서버가 계산한 수치다. 잘한 점, 주의할 점, 다음 경기 목표를 각각 한두 문장으로 작성하라. 없는 사실, 확률, 백분위, 실력 등급을 만들지 마라. 자기장 포함률은 위치 선택이 섞인 체감 지표이며 순수 운이 아니다. 진입 평균은 진입 성공 표본만 계산된다. 표본 5경기 미만이면 판단을 유보하라. 적 시야, 엄폐, 팀원 잘못, 에임, 핵 사용은 단정하지 마라. 직선거리와 실제 이동경로를 구별하라. 조언은 제안으로 표현하고 모욕하지 마라. 500자 이내 평문으로 쓰라.',
-                      'input':payload}) as res:
-                if res.status!=200:return {'status':'error','text':None}
-                data=await res.json()
-                text='\n'.join(c.get('text','') for item in data.get('output',[]) if item.get('type')=='message' for c in item.get('content',[]) if c.get('type')=='output_text').strip()
-                if not text or data.get('status')!='completed':return {'status':'error','text':None}
-                result={'status':'ready','text':text[:2400]};self.save(key,result,86400);return result
-        except Exception:return {'status':'error','text':None}
+        # Paid AI commentary is disabled; reports use measured PUBG metrics only.
+        return {'status':'disabled','text':None}
 
     async def json_request(self,http,url,params=None,auth=False,large=False):
         parsed=urlparse(url)
