@@ -5,7 +5,6 @@ import json
 import secrets
 import time
 from datetime import datetime, timedelta
-from fractions import Fraction
 
 from mari_stock_policy import (KST, PRICE_INTERVAL_MINUTES, REGIME_PARAMETERS,
                                draw_regime, regime_window, draw_regime_duration,
@@ -85,22 +84,10 @@ class Economy(PaidPasses):
    self.db.execute('INSERT INTO mari_web_random_regimes VALUES(?,?,?,?)',(symbol,start.isoformat(),expires.isoformat(),regime))
    row=(start.isoformat(),expires.isoformat(),regime);start=expires
   return REGIME_PARAMETERS[row[2]]
- def account_pressure(self,symbol,slot):
-  # Only authenticated, voluntarily submitted trades count. Net quantities
-  # decide direction within an account; every account then has equal weight.
-  end=slot.timestamp()
-  rows=self.db.execute('''SELECT user_id,SUM(CASE WHEN side IN ('buy','long_open','short_close') THEN qty ELSE -qty END)
-   FROM mari_web_stock_trades WHERE symbol=? AND at>=? AND at<?
-   AND side IN ('buy','sell','long_open','long_close','short_open','short_close')
-   AND id NOT LIKE 'delist:%' AND id NOT LIKE 'liquidate:%'
-   GROUP BY user_id''',(symbol,end-1800,end))
-  votes=[1 if net>0 else -1 for _,net in rows if net]
-  return Fraction(2*sum(votes),max(10,len(votes)))
  def market_parameters(self,symbol,slot):
   cutover=datetime.fromisoformat(self.db.execute("SELECT value FROM mari_web_stock_settings WHERE key='random_regime_start_v1'").fetchone()[0])
   if slot<cutover:return self.private_regime(symbol,slot)
-  chance,sideways=self.random_regime(symbol,slot)
-  return chance+self.account_pressure(symbol,slot),sideways
+  return self.random_regime(symbol,slot)
  def listing_price(self,symbol):
   row=self.db.execute('SELECT initial_price FROM mari_web_stock_listings WHERE symbol=?',(symbol,)).fetchone()
   return row[0] if row else LISTING_PRICES.get(symbol,10000)

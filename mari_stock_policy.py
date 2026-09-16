@@ -22,9 +22,7 @@ REGIME_PARAMETERS = ((60, False), (55, False), (50, True),
 
 
 def draw_move(bands, up_chance, sideways=False):
-    # Account pressure can add fractional percentage points.
-    rising = (secrets.randbelow(10000) < up_chance * 100
-              if isinstance(up_chance, Fraction) else secrets.randbelow(100) < up_chance)
+    rising = secrets.randbelow(100) < up_chance
     bucket = secrets.randbelow(1000)
     low, high = next((low, high) for threshold, low, high in bands
                      if bucket < threshold)
