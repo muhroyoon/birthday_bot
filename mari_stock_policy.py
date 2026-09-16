@@ -55,11 +55,6 @@ def draw_regime_duration():
     return timedelta(minutes=10 * (3 + secrets.randbelow(10)))
 
 
-def draw_volatility_duration():
-    # Uniform 10-minute slots from one through six hours, inclusive.
-    return timedelta(minutes=10 * (6 + secrets.randbelow(31)))
-
-
 def draw_volatility():
     draw = secrets.randbelow(100)
     return next(index for index,threshold in enumerate(VOLATILITY_THRESHOLDS)

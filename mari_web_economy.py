@@ -7,7 +7,7 @@ import time
 from datetime import datetime, timedelta
 
 from mari_stock_policy import (KST, PRICE_INTERVAL_MINUTES, REGIME_PARAMETERS,
-                               draw_regime, regime_window, draw_regime_duration, draw_volatility, draw_volatility_duration,
+                               draw_regime, regime_window, draw_regime_duration, draw_volatility,
                                stock_move_bps, legacy_stock_move_bps)
 from mari_web_passes import PaidPasses, PAID
 STOCKS=(('muro','머로증권','금융'),('jeumi_fb','즈미F&B','식품'),('samsung','삼성식품','식품'),('gimcheon_bio','김천바이오','바이오'),('haerangsol','해랑솔에너지','에너지'),('harang','하랑건설','건설'),('hoon','훈이게임즈','게임'),('haneul','하늘반도체','반도체'))
@@ -83,6 +83,8 @@ class Economy(PaidPasses):
   while row is None or start<=slot:
    regime=draw_regime();expires=start+draw_regime_duration()
    self.db.execute('INSERT INTO mari_web_random_regimes VALUES(?,?,?,?)',(symbol,start.isoformat(),expires.isoformat(),regime))
+   # Independent values, one shared schedule and settlement transaction.
+   self.db.execute('INSERT INTO mari_web_volatility_states VALUES(?,?,?,?)',(symbol,start.isoformat(),expires.isoformat(),draw_volatility()))
    row=(start.isoformat(),expires.isoformat(),regime);start=expires
   return REGIME_PARAMETERS[row[2]]
  def market_parameters(self,symbol,slot):
@@ -90,13 +92,15 @@ class Economy(PaidPasses):
   if slot<cutover:return self.private_regime(symbol,slot)
   return self.random_regime(symbol,slot)
  def private_volatility(self,symbol,slot):
+  self.random_regime(symbol,slot)
   stamp=slot.astimezone(KST).isoformat()
   row=self.db.execute('SELECT start,expires,state FROM mari_web_volatility_states WHERE symbol=? AND start<=? ORDER BY start DESC LIMIT 1',(symbol,stamp)).fetchone()
-  start=datetime.fromisoformat(row[1]) if row else slot
-  while row is None or start<=slot:
-   state=draw_volatility();expires=start+draw_volatility_duration()
-   self.db.execute('INSERT INTO mari_web_volatility_states VALUES(?,?,?,?)',(symbol,start.isoformat(),expires.isoformat(),state))
-   row=(start.isoformat(),expires.isoformat(),state);start=expires
+  # Hold a legacy state until the next regime draw, even if its old expiry differs.
+  if row is None:
+   start,expires=self.db.execute('SELECT start,expires FROM mari_web_random_regimes WHERE symbol=? AND start<=? ORDER BY start DESC LIMIT 1',(symbol,stamp)).fetchone()
+   state=draw_volatility()
+   self.db.execute('INSERT INTO mari_web_volatility_states VALUES(?,?,?,?)',(symbol,start,expires,state))
+   row=(start,expires,state)
   return row[2]
  def listing_price(self,symbol):
   row=self.db.execute('SELECT initial_price FROM mari_web_stock_listings WHERE symbol=?',(symbol,)).fetchone()

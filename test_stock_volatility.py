@@ -24,12 +24,14 @@ class VolatilityTests(unittest.TestCase):
    with patch.object(policy.secrets,'randbelow',side_effect=[0,999,1999]):up=policy.stock_move_bps(50,False,state)
    with patch.object(policy.secrets,'randbelow',side_effect=[99,999,1999]):down=policy.stock_move_bps(50,False,state)
    self.assertEqual(up,3500);self.assertEqual((1+up/10000)*(1+down/10000),1)
- def test_independent_schedule_restart_and_catchup(self):
-  with patch('mari_web_economy.draw_volatility',side_effect=[0,4,2]),patch('mari_web_economy.draw_volatility_duration',return_value=timedelta(hours=1)):
+ def test_shared_schedule_restart_and_catchup(self):
+  with patch('mari_web_economy.draw_volatility',side_effect=[0,4,2]),patch('mari_web_economy.draw_regime',side_effect=[1,3,0]),patch('mari_web_economy.draw_regime_duration',return_value=timedelta(hours=1)):
    self.assertEqual(self.e.private_volatility('muro',self.start),0)
    self.assertEqual(self.e.private_volatility('muro',self.start+timedelta(minutes=50)),0)
    self.assertEqual(self.e.private_volatility('muro',self.start+timedelta(hours=2)),2)
-  self.assertEqual(self.f.db.execute('SELECT COUNT(*) FROM mari_web_random_regimes').fetchone()[0],0)
+  regimes=self.f.db.execute('SELECT symbol,start,expires FROM mari_web_random_regimes ORDER BY start').fetchall()
+  self.assertEqual(len(regimes),3)
+  self.assertEqual(regimes,self.f.db.execute('SELECT symbol,start,expires FROM mari_web_volatility_states ORDER BY start').fetchall())
   self.f.db.commit();e=Economy(self.f.bridge,self.e.Error)
   with patch('mari_web_economy.draw_volatility',side_effect=AssertionError('reroll')):
    self.assertEqual(e.private_volatility('muro',self.start+timedelta(hours=1)),4)
@@ -51,7 +53,24 @@ class VolatilityTests(unittest.TestCase):
   self.assertNotIn('volatility',json.dumps(public))
   for row in before:self.assertIn(row,list(self.f.db.execute('SELECT * FROM mari_web_stock_days')))
 
- def test_volatility_keeps_one_to_six_hours(self):
-  for draw,minutes in [(0,60),(30,360)]:
-   with patch.object(policy.secrets,'randbelow',return_value=draw):
-    self.assertEqual(policy.draw_volatility_duration(),timedelta(minutes=minutes))
+ def test_existing_state_is_held_until_next_regime_then_replaced(self):
+  for old_minutes in (20,360):
+   symbol=str(old_minutes)
+   end=self.start+timedelta(minutes=60)
+   self.f.db.execute('INSERT INTO mari_web_random_regimes VALUES(?,?,?,?)',(symbol,self.start.isoformat(),end.isoformat(),1))
+   self.f.db.execute('INSERT INTO mari_web_volatility_states VALUES(?,?,?,?)',(symbol,self.start.isoformat(),(self.start+timedelta(minutes=old_minutes)).isoformat(),0))
+   with patch('mari_web_economy.draw_volatility',side_effect=AssertionError('early redraw')):
+    self.assertEqual(self.e.private_volatility(symbol,self.start+timedelta(minutes=50)),0)
+   with patch('mari_web_economy.draw_volatility',return_value=4),patch('mari_web_economy.draw_regime',return_value=3),patch('mari_web_economy.draw_regime_duration',return_value=timedelta(minutes=30)):
+    self.assertEqual(self.e.private_volatility(symbol,end),4)
+    self.assertEqual(self.e.random_regime(symbol,end),(45,False))
+   self.assertEqual(self.f.db.execute('SELECT start,expires FROM mari_web_random_regimes WHERE symbol=? ORDER BY start DESC LIMIT 1',(symbol,)).fetchone(),self.f.db.execute('SELECT start,expires FROM mari_web_volatility_states WHERE symbol=? ORDER BY start DESC LIMIT 1',(symbol,)).fetchone())
+ def test_symbols_have_independent_schedules_and_both_draws_roll_back(self):
+  with patch('mari_web_economy.draw_regime_duration',side_effect=[timedelta(minutes=30),timedelta(minutes=120)]):
+   with self.f.db:
+    self.e.random_regime('muro',self.start);self.e.random_regime('hoon',self.start)
+  self.assertNotEqual(*[r[0] for r in self.f.db.execute('SELECT expires FROM mari_web_random_regimes ORDER BY symbol')])
+  before=list(self.f.db.execute('SELECT * FROM mari_web_random_regimes'))
+  with self.assertRaises(RuntimeError),patch('mari_web_economy.draw_volatility',side_effect=RuntimeError('failed draw')):
+   with self.f.db:self.e.random_regime('muro',self.start+timedelta(minutes=30))
+  self.assertEqual(before,list(self.f.db.execute('SELECT * FROM mari_web_random_regimes')))
