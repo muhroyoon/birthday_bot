@@ -5,9 +5,10 @@ import json
 import secrets
 import time
 from datetime import datetime, timedelta
+from fractions import Fraction
 
 from mari_stock_policy import (KST, PRICE_INTERVAL_MINUTES, REGIME_PARAMETERS,
-                               draw_regime, regime_window,
+                               draw_regime, regime_window, draw_regime_duration,
                                stock_move_bps, legacy_stock_move_bps)
 from mari_web_passes import PaidPasses, PAID
 STOCKS=(('muro','머로증권','금융'),('jeumi_fb','즈미F&B','식품'),('samsung','삼성식품','식품'),('gimcheon_bio','김천바이오','바이오'),('haerangsol','해랑솔에너지','에너지'),('harang','하랑건설','건설'),('hoon','훈이게임즈','게임'),('haneul','하늘반도체','반도체'))
@@ -36,6 +37,7 @@ class Economy(PaidPasses):
   CREATE TABLE IF NOT EXISTS mari_web_trade_leverage(id TEXT PRIMARY KEY,leverage INTEGER);
   CREATE TABLE IF NOT EXISTS mari_web_six_hour_regimes(symbol TEXT,window TEXT,regime INTEGER NOT NULL CHECK(regime IN (0,1,2)),PRIMARY KEY(symbol,window));
   CREATE TABLE IF NOT EXISTS mari_web_five_state_regimes(symbol TEXT,window TEXT,regime INTEGER NOT NULL CHECK(regime IN (0,1,2,3,4)),PRIMARY KEY(symbol,window));
+  CREATE TABLE IF NOT EXISTS mari_web_random_regimes(symbol TEXT,start TEXT,expires TEXT NOT NULL,regime INTEGER NOT NULL CHECK(regime BETWEEN 0 AND 4),PRIMARY KEY(symbol,start));
   CREATE TABLE IF NOT EXISTS mari_web_log_positions(user_id TEXT,symbol TEXT,side TEXT CHECK(side IN ('long','short')),leverage INTEGER CHECK(leverage IN (1,2)),qty INTEGER NOT NULL,cost INTEGER NOT NULL,notional INTEGER NOT NULL,log_basis TEXT NOT NULL,PRIMARY KEY(user_id,symbol,side,leverage));
   CREATE TABLE IF NOT EXISTS mari_web_stock_listings(symbol TEXT PRIMARY KEY,initial_price INTEGER NOT NULL CHECK(initial_price>0));
   CREATE TABLE IF NOT EXISTS mari_web_delisted(symbol TEXT PRIMARY KEY,at TEXT NOT NULL,price INTEGER NOT NULL);
@@ -74,6 +76,31 @@ class Economy(PaidPasses):
    self.db.execute('INSERT OR IGNORE INTO mari_web_five_state_regimes VALUES(?,?,?)',(symbol,window,regime))
    row=self.db.execute('SELECT regime FROM mari_web_five_state_regimes WHERE symbol=? AND window=?',(symbol,window)).fetchone()
   return REGIME_PARAMETERS[row[0]]
+ def random_regime(self,symbol,slot):
+  stamp=slot.astimezone(KST).isoformat()
+  row=self.db.execute('SELECT start,expires,regime FROM mari_web_random_regimes WHERE symbol=? AND start<=? ORDER BY start DESC LIMIT 1',(symbol,stamp)).fetchone()
+  start=datetime.fromisoformat(row[1]) if row else slot
+  while row is None or start<=slot:
+   regime=draw_regime();expires=start+draw_regime_duration()
+   self.db.execute('INSERT INTO mari_web_random_regimes VALUES(?,?,?,?)',(symbol,start.isoformat(),expires.isoformat(),regime))
+   row=(start.isoformat(),expires.isoformat(),regime);start=expires
+  return REGIME_PARAMETERS[row[2]]
+ def account_pressure(self,symbol,slot):
+  # Only authenticated, voluntarily submitted trades count. Net quantities
+  # decide direction within an account; every account then has equal weight.
+  end=slot.timestamp()
+  rows=self.db.execute('''SELECT user_id,SUM(CASE WHEN side IN ('buy','long_open','short_close') THEN qty ELSE -qty END)
+   FROM mari_web_stock_trades WHERE symbol=? AND at>=? AND at<?
+   AND side IN ('buy','sell','long_open','long_close','short_open','short_close')
+   AND id NOT LIKE 'delist:%' AND id NOT LIKE 'liquidate:%'
+   GROUP BY user_id''',(symbol,end-1800,end))
+  votes=[1 if net>0 else -1 for _,net in rows if net]
+  return Fraction(2*sum(votes),max(10,len(votes)))
+ def market_parameters(self,symbol,slot):
+  cutover=datetime.fromisoformat(self.db.execute("SELECT value FROM mari_web_stock_settings WHERE key='random_regime_start_v1'").fetchone()[0])
+  if slot<cutover:return self.private_regime(symbol,slot)
+  chance,sideways=self.random_regime(symbol,slot)
+  return chance+self.account_pressure(symbol,slot),sideways
  def listing_price(self,symbol):
   row=self.db.execute('SELECT initial_price FROM mari_web_stock_listings WHERE symbol=?',(symbol,)).fetchone()
   return row[0] if row else LISTING_PRICES.get(symbol,10000)
@@ -114,6 +141,8 @@ class Economy(PaidPasses):
   slot=self.stock_slot()
   with self.db:
    self.restore_linear_positions()
+   # Switch only from the next tick; never rewrite or reprice settled history.
+   self.db.execute("INSERT OR IGNORE INTO mari_web_stock_settings VALUES('random_regime_start_v1',?)",((slot+timedelta(minutes=PRICE_INTERVAL_MINUTES)).isoformat(),))
    if not self.db.execute("SELECT 1 FROM mari_web_stock_settings WHERE key='ten_minute_schedule'").fetchone():
     # Preserve existing prices when switching to the ten-minute schedule.
     self.db.execute('UPDATE mari_web_stocks SET day=? WHERE day<?',(slot.isoformat(),slot.isoformat()))
@@ -124,7 +153,8 @@ class Economy(PaidPasses):
     self.db.execute('INSERT OR IGNORE INTO mari_web_stock_listings VALUES(?,?)',(symbol,LISTING_PRICES[symbol]))
     initial=self.listing_price(symbol);floor=self.delisting_price(symbol)
     if self.db.execute('SELECT 1 FROM mari_web_delisted WHERE symbol=?',(symbol,)).fetchone():continue
-    self.private_regime(symbol,slot)
+    random_start=datetime.fromisoformat(self.db.execute("SELECT value FROM mari_web_stock_settings WHERE key='random_regime_start_v1'").fetchone()[0])
+    if slot<random_start:self.private_regime(symbol,slot)
     row=self.db.execute('SELECT price,day FROM mari_web_stocks WHERE symbol=?',(symbol,)).fetchone()
     if not row:
      self.db.execute('INSERT INTO mari_web_stocks VALUES(?,?,?)',(symbol,initial,slot.isoformat()))
@@ -141,7 +171,7 @@ class Economy(PaidPasses):
     while date<slot:
      date=date.replace(minute=date.minute//PRICE_INTERVAL_MINUTES*PRICE_INTERVAL_MINUTES,second=0,microsecond=0)+timedelta(minutes=PRICE_INTERVAL_MINUTES);old=price
      # Draw only when a scheduled slot is due; preserve all settled history.
-     move=stock_move_bps(*self.private_regime(symbol,date)) if date>=cutover else legacy_stock_move_bps(self.private_up_chance(symbol,date))
+     move=stock_move_bps(*self.market_parameters(symbol,date)) if date>=cutover else legacy_stock_move_bps(self.private_up_chance(symbol,date))
      price=max(floor,min(10000000,int((old*(10000+move)+5000)//10000)))
      if date<cutover:price=max((old*10+16)//17,min(old*170//100,price))
      self.liquidate(symbol,price,date.isoformat())

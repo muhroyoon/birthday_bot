@@ -22,7 +22,9 @@ REGIME_PARAMETERS = ((60, False), (55, False), (50, True),
 
 
 def draw_move(bands, up_chance, sideways=False):
-    rising = secrets.randbelow(100) < up_chance
+    # Account pressure can add fractional percentage points.
+    rising = (secrets.randbelow(10000) < up_chance * 100
+              if isinstance(up_chance, Fraction) else secrets.randbelow(100) < up_chance)
     bucket = secrets.randbelow(1000)
     low, high = next((low, high) for threshold, low, high in bands
                      if bucket < threshold)
@@ -44,6 +46,11 @@ def draw_regime():
     draw = secrets.randbelow(100)
     return next(index for index, threshold in enumerate(REGIME_THRESHOLDS)
                 if draw < threshold)
+
+
+def draw_regime_duration():
+    # Uniform 10-minute slots from one through six hours, inclusive.
+    return timedelta(minutes=PRICE_INTERVAL_MINUTES * (6 + secrets.randbelow(31)))
 
 
 def regime_window(slot):
