@@ -21,8 +21,8 @@ LEGACY_MOVE_BANDS = ((500, 300, 1000), (850, 1001, 2500),
 # Row order is persisted as an integer in mari_web_five_state_regimes.
 # Do not reorder: surge, bull, sideways, bear, crash.
 REGIME_THRESHOLDS = (10, 35, 65, 90, 100)
-REGIME_PARAMETERS = ((60, False), (55, False), (50, True),
-                     (45, False), (40, False))
+REGIME_PARAMETERS = ((52, False), (51, False), (50, True),
+                     (49, False), (48, False))
 
 
 def draw_move(bands, up_chance, sideways=False):

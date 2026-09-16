@@ -10,7 +10,7 @@ class PrivateRegimeTests(unittest.IsolatedAsyncioTestCase):
  async def asyncSetUp(self):self.f=Fixture();self.token=await self.f.login();self.e=self.f.bridge.economy
  async def asyncTearDown(self):self.f.db.close()
  def test_exact_direction_probabilities(self):
-  for chance in (40,45,50,55,60):
+  for chance in (48,49,50,51,52):
    positive=0
    for draw in range(100):
     with patch('mari_web_economy.secrets.randbelow',side_effect=[draw,0,0]):positive+=stock_move_bps(chance)>0
@@ -31,7 +31,7 @@ class PrivateRegimeTests(unittest.IsolatedAsyncioTestCase):
   self.f.db.execute("INSERT OR REPLACE INTO mari_web_five_state_regimes VALUES('muro','2026-09-10T00:00:00+09:00',3)");self.f.db.commit()
   self.f.db.execute("UPDATE mari_web_stock_settings SET value='2026-09-11T00:00:00+09:00' WHERE key='random_regime_start_v1'");self.f.db.commit()
   with patch.object(self.e,'stock_slot',return_value=datetime(2026,9,10,0,10,tzinfo=KST)),patch('mari_web_economy.stock_move_bps',return_value=100) as moves:
-   market=self.e.market(self.f.members[1]);self.assertEqual([c.args for c in moves.call_args_list[1:3]],[(45,False),(45,False)])
+   market=self.e.market(self.f.members[1]);self.assertEqual([c.args for c in moves.call_args_list[1:3]],[(49,False),(49,False)])
   def keys(v):
    if isinstance(v,dict):return set(v).union(*(keys(x) for x in v.values()))
    if isinstance(v,list):return set().union(*(keys(x) for x in v))
@@ -41,28 +41,28 @@ class PrivateRegimeTests(unittest.IsolatedAsyncioTestCase):
   self.assertEqual(len(self.f.db.execute('SELECT * FROM mari_web_five_state_regimes').fetchall()),16)
 
  def test_five_states_exact_weights_and_independent_symbols(self):
-  counts={60:0,55:0,50:0,45:0,40:0}
+  counts={52:0,51:0,50:0,49:0,48:0}
   slot=datetime(2026,9,9,3,tzinfo=KST)
   with self.f.db:
    for draw in range(100):
     with patch('mari_web_economy.secrets.randbelow',return_value=draw):
      chance,sideways=self.e.private_regime('symbol-'+str(draw),slot)
-    expected=60 if draw<10 else 55 if draw<35 else 50 if draw<65 else 45 if draw<90 else 40
+    expected=52 if draw<10 else 51 if draw<35 else 50 if draw<65 else 49 if draw<90 else 48
     self.assertEqual((chance,sideways),(expected,expected==50));counts[chance]+=1
-  self.assertEqual(counts,{60:10,55:25,50:30,45:25,40:10})
+  self.assertEqual(counts,{52:10,51:25,50:30,49:25,48:10})
 
  def test_six_hour_boundaries_and_restart_preserve_draws(self):
   with self.f.db:
    for hour in (0,6,12,18):
     with patch('mari_web_economy.secrets.randbelow',return_value=0) as rng:
-     self.assertEqual(self.e.private_regime('muro',datetime(2026,9,9,hour,tzinfo=KST)),(60,False))
-     self.assertEqual(self.e.private_regime('muro',datetime(2026,9,9,hour+5,59,tzinfo=KST)),(60,False))
+     self.assertEqual(self.e.private_regime('muro',datetime(2026,9,9,hour,tzinfo=KST)),(52,False))
+     self.assertEqual(self.e.private_regime('muro',datetime(2026,9,9,hour+5,59,tzinfo=KST)),(52,False))
      self.assertEqual(rng.call_count,1)
   restarted=Economy(self.f.bridge,WebError)
   with patch('mari_web_economy.secrets.randbelow',side_effect=AssertionError('must not reroll')):
-   self.assertEqual(restarted.private_regime('muro',datetime(2026,9,9,15,tzinfo=KST)),(60,False))
+   self.assertEqual(restarted.private_regime('muro',datetime(2026,9,9,15,tzinfo=KST)),(52,False))
   with self.f.db,patch('mari_web_economy.secrets.randbelow',return_value=99):
-   self.assertEqual(restarted.private_regime('muro',datetime(2026,9,10,0,tzinfo=KST)),(40,False))
+   self.assertEqual(restarted.private_regime('muro',datetime(2026,9,10,0,tzinfo=KST)),(48,False))
 
  def test_upgrade_preserves_old_regimes_prices_and_positions(self):
   slot=datetime(2026,9,9,3,tzinfo=KST)

@@ -63,7 +63,7 @@ class VolatilityTests(unittest.TestCase):
     self.assertEqual(self.e.private_volatility(symbol,self.start+timedelta(minutes=50)),0)
    with patch('mari_web_economy.draw_volatility',return_value=4),patch('mari_web_economy.draw_regime',return_value=3),patch('mari_web_economy.draw_regime_duration',return_value=timedelta(minutes=30)):
     self.assertEqual(self.e.private_volatility(symbol,end),4)
-    self.assertEqual(self.e.random_regime(symbol,end),(45,False))
+    self.assertEqual(self.e.random_regime(symbol,end),(49,False))
    self.assertEqual(self.f.db.execute('SELECT start,expires FROM mari_web_random_regimes WHERE symbol=? ORDER BY start DESC LIMIT 1',(symbol,)).fetchone(),self.f.db.execute('SELECT start,expires FROM mari_web_volatility_states WHERE symbol=? ORDER BY start DESC LIMIT 1',(symbol,)).fetchone())
  def test_symbols_have_independent_schedules_and_both_draws_roll_back(self):
   with patch('mari_web_economy.draw_regime_duration',side_effect=[timedelta(minutes=30),timedelta(minutes=120)]):
