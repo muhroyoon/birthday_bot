@@ -8,7 +8,7 @@ from fractions import Fraction
 import secrets
 
 KST = timezone(timedelta(hours=9))
-PRICE_INTERVAL_MINUTES = 10
+PRICE_INTERVAL_MINUTES = 5
 REGIME_INTERVAL_HOURS = 6
 SIDEWAYS_PERCENT = 35
 MOVE_BANDS = ((800, 80, 400), (980, 401, 1500), (1000, 1501, 3500))
@@ -51,8 +51,13 @@ def draw_regime():
 
 
 def draw_regime_duration():
+    # Uniform 10-minute slots from 30 minutes through two hours.
+    return timedelta(minutes=10 * (3 + secrets.randbelow(10)))
+
+
+def draw_volatility_duration():
     # Uniform 10-minute slots from one through six hours, inclusive.
-    return timedelta(minutes=PRICE_INTERVAL_MINUTES * (6 + secrets.randbelow(31)))
+    return timedelta(minutes=10 * (6 + secrets.randbelow(31)))
 
 
 def draw_volatility():

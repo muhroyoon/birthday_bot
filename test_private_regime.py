@@ -31,7 +31,7 @@ class PrivateRegimeTests(unittest.IsolatedAsyncioTestCase):
   self.f.db.execute("INSERT OR REPLACE INTO mari_web_five_state_regimes VALUES('muro','2026-09-10T00:00:00+09:00',3)");self.f.db.commit()
   self.f.db.execute("UPDATE mari_web_stock_settings SET value='2026-09-11T00:00:00+09:00' WHERE key='random_regime_start_v1'");self.f.db.commit()
   with patch.object(self.e,'stock_slot',return_value=datetime(2026,9,10,0,10,tzinfo=KST)),patch('mari_web_economy.stock_move_bps',return_value=100) as moves:
-   market=self.e.market(self.f.members[1]);self.assertEqual([c.args for c in moves.call_args_list[:2]],[(45,False),(45,False)])
+   market=self.e.market(self.f.members[1]);self.assertEqual([c.args for c in moves.call_args_list[1:3]],[(45,False),(45,False)])
   def keys(v):
    if isinstance(v,dict):return set(v).union(*(keys(x) for x in v.values()))
    if isinstance(v,list):return set().union(*(keys(x) for x in v))

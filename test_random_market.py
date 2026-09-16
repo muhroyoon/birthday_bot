@@ -24,7 +24,7 @@ class RandomMarketTests(unittest.TestCase):
    self.assertEqual(restarted.random_regime('muro',self.start+timedelta(hours=6)),(55,False))
    self.assertEqual(restarted.random_regime('muro',self.start),(60,False))
  def test_duration_endpoints(self):
-  for draw,minutes in [(0,60),(30,360)]:
+  for draw,minutes in [(0,30),(9,120)]:
    with patch('mari_stock_policy.secrets.randbelow',return_value=draw):
     self.assertEqual(draw_regime_duration(),timedelta(minutes=minutes))
  def test_trades_do_not_change_direction_probability_or_schedule(self):

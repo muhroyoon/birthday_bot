@@ -7,7 +7,7 @@ import time
 from datetime import datetime, timedelta
 
 from mari_stock_policy import (KST, PRICE_INTERVAL_MINUTES, REGIME_PARAMETERS,
-                               draw_regime, regime_window, draw_regime_duration, draw_volatility,
+                               draw_regime, regime_window, draw_regime_duration, draw_volatility, draw_volatility_duration,
                                stock_move_bps, legacy_stock_move_bps)
 from mari_web_passes import PaidPasses, PAID
 STOCKS=(('muro','머로증권','금융'),('jeumi_fb','즈미F&B','식품'),('samsung','삼성식품','식품'),('gimcheon_bio','김천바이오','바이오'),('haerangsol','해랑솔에너지','에너지'),('harang','하랑건설','건설'),('hoon','훈이게임즈','게임'),('haneul','하늘반도체','반도체'))
@@ -94,7 +94,7 @@ class Economy(PaidPasses):
   row=self.db.execute('SELECT start,expires,state FROM mari_web_volatility_states WHERE symbol=? AND start<=? ORDER BY start DESC LIMIT 1',(symbol,stamp)).fetchone()
   start=datetime.fromisoformat(row[1]) if row else slot
   while row is None or start<=slot:
-   state=draw_volatility();expires=start+draw_regime_duration()
+   state=draw_volatility();expires=start+draw_volatility_duration()
    self.db.execute('INSERT INTO mari_web_volatility_states VALUES(?,?,?,?)',(symbol,start.isoformat(),expires.isoformat(),state))
    row=(start.isoformat(),expires.isoformat(),state);start=expires
   return row[2]
@@ -138,6 +138,8 @@ class Economy(PaidPasses):
   slot=self.stock_slot()
   with self.db:
    self.restore_linear_positions()
+   self.db.execute("INSERT OR IGNORE INTO mari_web_stock_settings VALUES('five_minute_start_v1',?)",((slot+timedelta(minutes=PRICE_INTERVAL_MINUTES)).isoformat(),))
+   five_minute_start=datetime.fromisoformat(self.db.execute("SELECT value FROM mari_web_stock_settings WHERE key='five_minute_start_v1'").fetchone()[0])
    # Switch only from the next tick; never rewrite or reprice settled history.
    self.db.execute("INSERT OR IGNORE INTO mari_web_stock_settings VALUES('random_regime_start_v1',?)",((slot+timedelta(minutes=PRICE_INTERVAL_MINUTES)).isoformat(),))
    self.db.execute("INSERT OR IGNORE INTO mari_web_stock_settings VALUES('volatility_start_v1',?)",((slot+timedelta(minutes=PRICE_INTERVAL_MINUTES)).isoformat(),))
@@ -168,7 +170,13 @@ class Economy(PaidPasses):
     date=datetime.fromisoformat(day)
     if date>=slot:continue
     while date<slot:
-     date=date.replace(minute=date.minute//PRICE_INTERVAL_MINUTES*PRICE_INTERVAL_MINUTES,second=0,microsecond=0)+timedelta(minutes=PRICE_INTERVAL_MINUTES);old=price
+     # Preserve ten-minute catch-up before deployment; use five minutes only after cutover.
+     if date<five_minute_start:
+      date=min(date.replace(minute=date.minute//10*10,second=0,microsecond=0)+timedelta(minutes=10),five_minute_start)
+     else:
+      date=date.replace(minute=date.minute//PRICE_INTERVAL_MINUTES*PRICE_INTERVAL_MINUTES,second=0,microsecond=0)+timedelta(minutes=PRICE_INTERVAL_MINUTES)
+     if date>slot:break
+     old=price
      # Draw only when a scheduled slot is due; preserve all settled history.
      if date>=volatility_start:
       move=stock_move_bps(*self.market_parameters(symbol,date),volatility=self.private_volatility(symbol,date))

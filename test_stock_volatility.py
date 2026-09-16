@@ -25,7 +25,7 @@ class VolatilityTests(unittest.TestCase):
    with patch.object(policy.secrets,'randbelow',side_effect=[99,999,1999]):down=policy.stock_move_bps(50,False,state)
    self.assertEqual(up,3500);self.assertEqual((1+up/10000)*(1+down/10000),1)
  def test_independent_schedule_restart_and_catchup(self):
-  with patch('mari_web_economy.draw_volatility',side_effect=[0,4,2]),patch('mari_web_economy.draw_regime_duration',return_value=timedelta(hours=1)):
+  with patch('mari_web_economy.draw_volatility',side_effect=[0,4,2]),patch('mari_web_economy.draw_volatility_duration',return_value=timedelta(hours=1)):
    self.assertEqual(self.e.private_volatility('muro',self.start),0)
    self.assertEqual(self.e.private_volatility('muro',self.start+timedelta(minutes=50)),0)
    self.assertEqual(self.e.private_volatility('muro',self.start+timedelta(hours=2)),2)
@@ -50,3 +50,8 @@ class VolatilityTests(unittest.TestCase):
   import json
   self.assertNotIn('volatility',json.dumps(public))
   for row in before:self.assertIn(row,list(self.f.db.execute('SELECT * FROM mari_web_stock_days')))
+
+ def test_volatility_keeps_one_to_six_hours(self):
+  for draw,minutes in [(0,60),(30,360)]:
+   with patch.object(policy.secrets,'randbelow',return_value=draw):
+    self.assertEqual(policy.draw_volatility_duration(),timedelta(minutes=minutes))
