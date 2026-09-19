@@ -31,6 +31,7 @@ class Economy(PaidPasses):
   CREATE TABLE IF NOT EXISTS mari_web_economy_requests(id TEXT PRIMARY KEY,user_id TEXT,fingerprint TEXT,result TEXT);
   CREATE TABLE IF NOT EXISTS mari_web_stock_trades(id TEXT PRIMARY KEY,user_id TEXT,symbol TEXT,side TEXT,qty INTEGER,price INTEGER,total INTEGER,profit INTEGER,at REAL);
   CREATE TABLE IF NOT EXISTS mari_web_passes(id TEXT PRIMARY KEY,user_id TEXT,guild_id TEXT,game TEXT,seed INTEGER,created REAL,submitted INTEGER DEFAULT 0,result TEXT);
+  CREATE TABLE IF NOT EXISTS mari_web_game_tickets(user_id TEXT PRIMARY KEY,quantity INTEGER NOT NULL CHECK(quantity>=0));
   CREATE TABLE IF NOT EXISTS mari_web_fortune_days(user_id TEXT,day TEXT,pass_id TEXT,result TEXT,PRIMARY KEY(user_id,day));
   CREATE TABLE IF NOT EXISTS mari_web_leveraged(user_id TEXT,symbol TEXT,side TEXT,qty INTEGER,cost INTEGER,notional INTEGER,PRIMARY KEY(user_id,symbol,side));
   CREATE TABLE IF NOT EXISTS mari_web_trade_leverage(id TEXT PRIMARY KEY,leverage INTEGER);
