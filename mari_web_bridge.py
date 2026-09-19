@@ -952,12 +952,13 @@ class Bridge:
             async with self.lock:
                 work=Work(self,WebError)
                 return work.status(member) if action=='work/status' else work.mutate(member,action,data)
-        if action in {'stocks','stocks/history','stocks/trade','tickets/status','tickets/start','tickets/fortune'}:
+        if action in {'stocks','stocks/history','stocks/trade','tickets/status','tickets/start','tickets/fortune','tickets/buy'}:
             async with self.lock:
                 if action=='stocks':return self.economy.market(member)
                 if action=='stocks/history':return self.economy.history(data)
                 if action=='stocks/trade':return self.economy.trade(member,data)
                 if action=='tickets/status':return self.economy.status(member)
+                if action=='tickets/buy':return self.economy.buy_tickets(member,data)
                 game='fortune' if action=='tickets/fortune' else data.get('game')
                 if game in ('apple','snake','suika','2048'):
                     config={'mode':game,'difficulty':'normal','seconds':120 if game=='apple' else 180 if game=='snake' else 600}
