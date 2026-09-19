@@ -31,7 +31,7 @@ class Baseball:
   row=self.db.execute('SELECT * FROM mari_web_baseball WHERE user_id=? AND done=0',(str(member.id),)).fetchone()
   with self.db:
    if not row:
-    self.b.economy.debit(member.id,COST)
+    self.b.economy.consume_ticket(member.id)
     jid=secrets.token_urlsafe(24);answer=''.join(secrets.SystemRandom().sample('0123456789',4))
     self.db.execute('INSERT INTO mari_web_baseball(id,user_id,guild_id,answer,created,guesses) VALUES(?,?,?,?,?,?)',(jid,str(member.id),str(member.guild.id),answer,time.time(),'[]'))
     row=self.db.execute('SELECT * FROM mari_web_baseball WHERE id=?',(jid,)).fetchone()
