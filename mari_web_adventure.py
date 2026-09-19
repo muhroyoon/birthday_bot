@@ -214,10 +214,10 @@ class Adventure:
   active=self.db.execute('SELECT * FROM mari_web_adventures WHERE user_id=? AND done=0',(str(member.id),)).fetchone()
   if active:return self.public(active)
   with self.db:
-   self.b.economy.debit(member.id,150000);jid=secrets.token_urlsafe(24);now=time.time();s=initial(game,secrets.randbits(32))
+   self.b.economy.consume_ticket(member.id);jid=secrets.token_urlsafe(24);now=time.time();s=initial(game,secrets.randbits(32))
    self.db.execute('INSERT INTO mari_web_adventures VALUES(?,?,?,?,?,?,?,0,0)',(jid,str(member.id),str(member.guild.id),game,json.dumps(s),now,now))
    self.b.economy.remember(request,member.id,fp,{'id':jid})
-   self.b.log_history(member.id,member.guild.id,GAMES[game],'입장권 구매',-150000)
+   self.b.log_history(member.id,member.guild.id,GAMES[game],'게임 티켓 1장 사용',0)
   return self.public(self.db.execute('SELECT * FROM mari_web_adventures WHERE id=?',(jid,)).fetchone())
  def control(self,member,data):
   row=self.db.execute('SELECT * FROM mari_web_adventures WHERE id=? AND user_id=? AND guild_id=?',(data.get('id'),str(member.id),str(member.guild.id))).fetchone()
