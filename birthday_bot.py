@@ -14947,37 +14947,122 @@ async def voice_channel_log(interaction: discord.Interaction, member: discord.Me
     )
 
 
-@bot.tree.command(name="끼리끼리조회", description="두 인원의 음성채널 체류 시간과 겹친 시간을 비교합니다.")
-@app_commands.rename(member1="인원1", member2="인원2", start_date="시작일", end_date="종료일")
-@app_commands.describe(
-    member1="첫 번째 인원",
-    member2="두 번째 인원",
-    start_date="예: 2026-05-01, 비워두면 최근 30일",
-    end_date="예: 2026-05-31, 비워두면 현재까지",
-)
-async def pair_voice_compare(
-    interaction: discord.Interaction,
-    member1: discord.Member,
-    member2: discord.Member,
-    start_date: str | None = None,
-    end_date: str | None = None,
-):
+def pair_voice_period(period, start_date='', end_date=''):
+    start_date, end_date = start_date.strip(), end_date.strip()
+    if start_date or end_date:
+        return parse_date_range(start_date, end_date, default_days=30)
+    now = get_kst_now()
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if period == 'today':
+        return today, now
+    if period == 'yesterday':
+        return today - timedelta(days=1), today - timedelta(seconds=1)
+    if period == 'custom':
+        raise ValueError('직접 입력은 시작일 또는 종료일을 입력해주세요.')
+    if period not in ('week', '30days'):
+        raise ValueError('조회기간을 다시 선택해주세요.')
+    return now - timedelta(days=7 if period == 'week' else 30), now
+
+
+def filter_pair_voice_intervals(intervals, excluded_ids):
+    return [item for item in intervals if int(item['channel_id']) not in excluded_ids]
+
+
+class PairVoiceCompareModal(discord.ui.Modal):
+    def __init__(self, owner_id, members=(), excluded_ids=(), period='30days', start_date='', end_date=''):
+        super().__init__(title='끼리끼리 조회 설정', timeout=600)
+        self.owner_id = owner_id
+        self.people = discord.ui.UserSelect(placeholder='비교할 두 인원을 선택하세요', min_values=2, max_values=2, required=True, default_values=list(members))
+        self.period = discord.ui.Select(options=[discord.SelectOption(label=label, value=value, default=value == period) for label, value in [('오늘','today'),('어제','yesterday'),('최근 일주일','week'),('최근 30일','30days'),('직접 입력','custom')]], required=True)
+        self.start = discord.ui.TextInput(placeholder='YYYY-MM-DD · 비워두면 선택 기간 적용', default=start_date, required=False, max_length=10)
+        self.end = discord.ui.TextInput(placeholder='YYYY-MM-DD · 해당 날짜 전체 포함', default=end_date, required=False, max_length=10)
+        self.channels = discord.ui.ChannelSelect(channel_types=[discord.ChannelType.voice, discord.ChannelType.stage_voice], placeholder='제외할 채널 선택 · 선택하지 않으면 전체', min_values=0, max_values=25, required=False, default_values=[discord.SelectDefaultValue(id=int(cid), type=discord.SelectDefaultValueType.channel) for cid in sorted(excluded_ids)])
+        for label, child, description in [
+            ('조회 인원 (2명)', self.people, None),
+            ('조회기간', self.period, '아래 날짜를 입력하면 직접 입력한 날짜를 우선 적용합니다.'),
+            ('시작일 (한국 시간)', self.start, '시작일만 입력하면 현재까지 조회합니다.'),
+            ('종료일 (한국 시간)', self.end, '종료일만 입력하면 최근 30일 시작점부터 조회합니다.'),
+            ('제외할 음성채널 (여러 개 선택)', self.channels, '선택한 채널은 총 체류·함께한 시간·비율에서 모두 제외합니다.'),
+        ]:
+            self.add_item(discord.ui.Label(text=label, component=child, description=description))
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message('명령어를 실행한 사람만 사용할 수 있습니다.', ephemeral=True)
+            return False
+        return True
+
+    async def on_submit(self, interaction):
+        if interaction.guild is None:
+            await interaction.response.send_message('서버에서만 사용할 수 있습니다.', ephemeral=True)
+            return
+        members = [interaction.guild.get_member(person.id) for person in self.people.values]
+        if len(members) != 2 or any(member is None for member in members) or members[0].id == members[1].id:
+            await interaction.response.send_message('현재 서버의 서로 다른 두 인원을 선택해주세요.', ephemeral=True)
+            return
+        excluded = {channel.id for channel in self.channels.values}
+        view = PairVoiceCompareView(self.owner_id, members, excluded, self.period.values[0], self.start.value, self.end.value)
+        await view.show_period(interaction, view.period, view.start_date, view.end_date)
+
+
+class PairVoiceCompareView(discord.ui.View):
+    def __init__(self, owner_id, members, excluded_ids, period='30days', start_date='', end_date=''):
+        super().__init__(timeout=600)
+        self.owner_id, self.members = owner_id, members
+        self.excluded_ids = set(excluded_ids)
+        self.period, self.start_date, self.end_date = period, start_date, end_date
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message('명령어를 실행한 사람만 사용할 수 있습니다.', ephemeral=True)
+            return False
+        return True
+
+    async def show_period(self, interaction, period, start_date='', end_date=''):
+        self.period, self.start_date, self.end_date = period, start_date, end_date
+        try:
+            since, until = pair_voice_period(period, start_date, end_date)
+        except ValueError as error:
+            await interaction.response.send_message(str(error), view=self, ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await send_pair_voice_compare(interaction, *self.members, since, until, self.excluded_ids, self)
+
+    @discord.ui.button(label='오늘', style=discord.ButtonStyle.secondary)
+    async def today(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.show_period(interaction, 'today')
+
+    @discord.ui.button(label='어제', style=discord.ButtonStyle.secondary)
+    async def yesterday(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.show_period(interaction, 'yesterday')
+
+    @discord.ui.button(label='일주일', style=discord.ButtonStyle.secondary)
+    async def week(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.show_period(interaction, 'week')
+
+    @discord.ui.button(label='최근 30일', style=discord.ButtonStyle.secondary)
+    async def month(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.show_period(interaction, '30days')
+
+    @discord.ui.button(label='인원·기간·제외채널 수정', style=discord.ButtonStyle.primary, row=1)
+    async def edit(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(PairVoiceCompareModal(self.owner_id, self.members, self.excluded_ids, self.period, self.start_date, self.end_date))
+
+
+@bot.tree.command(name='끼리끼리조회', description='인원·기간·제외 채널을 선택해 두 사람의 음성 기록을 비교합니다.')
+async def pair_voice_compare(interaction: discord.Interaction):
     if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        await interaction.response.send_message('서버에서만 사용할 수 있습니다.', ephemeral=True)
         return
+    await interaction.response.send_modal(PairVoiceCompareModal(interaction.user.id))
 
-    if member1.id == member2.id:
-        await interaction.response.send_message("서로 다른 두 인원을 선택해주세요.", ephemeral=True)
-        return
 
-    try:
-        since, until = parse_date_range(start_date, end_date, default_days=30)
-    except ValueError as e:
-        await interaction.response.send_message(str(e), ephemeral=True)
-        return
-
+async def send_pair_voice_compare(interaction, member1, member2, since, until, excluded_ids, view):
     intervals_1 = get_voice_channel_intervals_between(interaction.guild.id, member1.id, since, until)
     intervals_2 = get_voice_channel_intervals_between(interaction.guild.id, member2.id, since, until)
+
+    intervals_1 = filter_pair_voice_intervals(intervals_1, excluded_ids)
+    intervals_2 = filter_pair_voice_intervals(intervals_2, excluded_ids)
 
     total_1 = sum_voice_intervals_seconds(intervals_1)
     total_2 = sum_voice_intervals_seconds(intervals_2)
@@ -14985,7 +15070,7 @@ async def pair_voice_compare(
     overlap_total = sum(overlap_by_channel.values())
 
     if total_1 <= 0 and total_2 <= 0:
-        await interaction.response.send_message("해당 기간 기준 두 인원의 음성채널 기록이 없습니다.", ephemeral=True)
+        await interaction.edit_original_response(content="선택한 기간과 제외 채널 조건에 해당하는 음성 기록이 없습니다.", embed=None, view=view)
         return
 
     solo_1 = max(0, total_1 - overlap_total)
@@ -15053,8 +15138,9 @@ async def pair_voice_compare(
         value="\n".join(channel_lines) if channel_lines else "같은 채널에 함께 있었던 기록이 없습니다.",
         inline=False,
     )
+    embed.add_field(name="제외한 음성채널", value=" · ".join(f"<#{cid}>" for cid in sorted(excluded_ids)) if excluded_ids else "없음", inline=False)
     embed.set_footer(text="함께 체류 시간은 두 사람이 같은 음성채널에 동시에 있었던 시간만 집계합니다.")
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.edit_original_response(content=None, embed=embed, view=view)
 
 
 @bot.tree.command(name="팀섞기규칙설정", description="관전자 제외용 접두어를 설정합니다.")
@@ -17610,5 +17696,6 @@ if _mari_web_os.environ.get("MARIBOT_WEB_ENABLED") == "1":
     _install_mari_web(globals())
 
 bot.run(TOKEN)
+
 
 
