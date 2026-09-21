@@ -11705,35 +11705,132 @@ class RecruitView(discord.ui.View):
         await self.auto_close()
 
 
-class GeneralRecruitModal(discord.ui.Modal, title="종합 구인"):
-    game_name = discord.ui.TextInput(
-        label="게임 이름",
-        placeholder="예: 발로란트, 배그, 마크",
-        max_length=100,
+def ensure_general_recruit_schema():
+    conn.execute("CREATE TABLE IF NOT EXISTS general_recruit_posts (message_id TEXT PRIMARY KEY, state TEXT NOT NULL)")
+    conn.commit()
+
+
+def get_general_recruit(message_id):
+    row = conn.execute("SELECT state FROM general_recruit_posts WHERE message_id=?", (str(message_id),)).fetchone()
+    return json.loads(row[0]) if row else None
+
+
+def save_general_recruit(message_id, state):
+    conn.execute(
+        "INSERT OR REPLACE INTO general_recruit_posts(message_id, state) VALUES (?, ?)",
+        (str(message_id), json.dumps(state, ensure_ascii=False)),
     )
+    conn.commit()
+
+
+class GeneralRecruitView(discord.ui.View):
+    """음성채널 없이 참가 신청을 받으며 재시작 후에도 동일한 글을 처리한다."""
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.lock = asyncio.Lock()
+
+    @staticmethod
+    def build_embed(state):
+        count = len(state['participants'])
+        limit = state['max_players']
+        status = '모집 종료' if state['closed'] else ('정원 마감' if count >= limit else '모집중!')
+        members = ' · '.join(f'<@{user_id}>' for user_id in state['participants'])
+        embed = discord.Embed(
+            title=f"🎮 {state['game_name']} {status}",
+            description=(f"모집자 : <@{state['host_id']}>\n"
+                         f"참여 인원 : {count} / {limit}명 (모집자 포함)\n"
+                         f"남은 자리 : {max(0, limit - count)}명\n\n"
+                         f"참가자 : {members}\n\n메모 : {state['message_content'] or '없음'}"),
+            color=0x95A5A6 if state['closed'] else (0xF1C40F if count >= limit else 0x57F287),
+        )
+        embed.set_footer(text='음성채널 접속 없이 참여할 수 있어요. 정원이 차도 참여 취소는 가능합니다.')
+        return embed
+
+    async def change(self, interaction, action):
+        await interaction.response.defer(ephemeral=True)
+        async with self.lock:
+            state = get_general_recruit(interaction.message.id)
+            user_id = interaction.user.id
+            error = None
+            if state is None or state['closed']:
+                error = '이미 종료되었거나 찾을 수 없는 구인 글입니다.'
+            elif action == 'join':
+                if user_id in state['participants']:
+                    error = '이미 참여 중입니다.'
+                elif len(state['participants']) >= state['max_players']:
+                    error = '모집 인원이 가득 찼습니다.'
+                else:
+                    state['participants'].append(user_id)
+            elif action == 'cancel':
+                if user_id == state['host_id']:
+                    error = '모집자는 참여 취소 대신 모집 종료를 이용해주세요.'
+                elif user_id not in state['participants']:
+                    error = '참여 중인 구인 글이 아닙니다.'
+                else:
+                    state['participants'].remove(user_id)
+            elif action == 'close':
+                if user_id != state['host_id']:
+                    error = '모집자만 종료할 수 있습니다.'
+                else:
+                    state['closed'] = True
+            if error:
+                await interaction.followup.send(error, ephemeral=True)
+                return
+            save_general_recruit(interaction.message.id, state)
+            # 공용 persistent view 자체를 비활성화하면 다른 모집 글까지 영향을 받는다.
+            await interaction.message.edit(
+                embed=self.build_embed(state), view=None if state['closed'] else self,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            messages = {'join': '참여 신청했습니다.', 'cancel': '참여를 취소했습니다.', 'close': '모집을 종료했습니다.'}
+            await interaction.followup.send(messages[action], ephemeral=True)
+
+    @discord.ui.button(label='참여하기', style=discord.ButtonStyle.green, custom_id='general_recruit:join')
+    async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.change(interaction, 'join')
+
+    @discord.ui.button(label='참여 취소', style=discord.ButtonStyle.secondary, custom_id='general_recruit:cancel')
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.change(interaction, 'cancel')
+
+    @discord.ui.button(label='모집 종료', style=discord.ButtonStyle.red, custom_id='general_recruit:close')
+    async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.change(interaction, 'close')
+
+
+class GeneralRecruitModal(discord.ui.Modal, title='게임 구인'):
+    game_name = discord.ui.TextInput(label='게임 이름', placeholder='예: 발로란트, 배그, 마크', max_length=100)
+    player_count = discord.ui.TextInput(label='총 모집 인원 (본인 포함)', placeholder='2~100명 사이 숫자만 입력', default='4', max_length=3)
     message_content = discord.ui.TextInput(
-        label="구인 메모",
-        placeholder="예: 2명만 가볍게 하실 분",
-        style=discord.TextStyle.paragraph,
-        max_length=500,
-        required=False,
+        label='구인 메모', placeholder='예: 오늘 저녁 9시, 초보 환영',
+        style=discord.TextStyle.paragraph, max_length=500, required=False,
     )
+
+    def __init__(self, message=''):
+        super().__init__()
+        self.message_content.default = message[:500]
 
     async def on_submit(self, interaction: discord.Interaction):
-        if not interaction.user.voice:
-            await interaction.response.send_message("음성채널에 먼저 들어가주세요.", ephemeral=True)
+        if interaction.guild is None or interaction.channel.id not in get_recruit_channel_ids(interaction.guild.id):
+            await interaction.response.send_message('등록된 서버 구인 채널에서만 사용할 수 있습니다.', ephemeral=True)
             return
-
-        await create_recruit_post(
-            interaction=interaction,
-            text_channel=interaction.channel,
-            voice_channel=interaction.user.voice.channel,
-            host=interaction.user,
-            game_name=str(self.game_name).strip(),
-            message_content=str(self.message_content).strip() or " ",
-            mention_here=False,
-            max_players=None,
-        )
+        game_name = str(self.game_name).strip()
+        try:
+            max_players = int(str(self.player_count).strip())
+        except ValueError:
+            max_players = 0
+        if not game_name or not 2 <= max_players <= 100:
+            await interaction.response.send_message('게임 이름과 모집자 포함 2~100명 사이의 총인원을 입력해주세요.', ephemeral=True)
+            return
+        state = dict(host_id=interaction.user.id, game_name=game_name,
+                     message_content=str(self.message_content).strip(), max_players=max_players,
+                     participants=[interaction.user.id], closed=False)
+        view = GeneralRecruitView()
+        # DB 저장 전에는 참여 버튼을 노출하지 않는다.
+        await interaction.response.send_message(embed=view.build_embed(state), allowed_mentions=discord.AllowedMentions.none())
+        message = await interaction.original_response()
+        save_general_recruit(message.id, state)
+        await message.edit(view=view)
 
 
 class WelcomeDmModal(discord.ui.Modal, title="환영 DM 설정"):
@@ -12765,8 +12862,6 @@ async def savings_setting(interaction: discord.Interaction, days: int, interest_
     )
 
 
-@bot.tree.command(name="설정확인", description="현재 채널 설정을 확인합니다.")
-@app_commands.checks.has_permissions(administrator=True)
 async def show_settings(interaction: discord.Interaction):
     guild_id = interaction.guild.id
     keys = [
@@ -12803,8 +12898,6 @@ async def show_settings(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="역할설정확인", description="현재 역할 설정을 확인합니다.")
-@app_commands.checks.has_permissions(administrator=True)
 async def show_role_settings(interaction: discord.Interaction):
     guild_id = interaction.guild.id
     keys = [
@@ -12825,8 +12918,6 @@ async def show_role_settings(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="문구설정확인", description="현재 등록된 커스텀 문구를 확인합니다.")
-@app_commands.checks.has_permissions(administrator=True)
 async def show_template_settings(interaction: discord.Interaction):
     guild_id = interaction.guild.id
     embed = discord.Embed(title="문구 설정", color=0x9B59B6)
@@ -12851,6 +12942,22 @@ async def show_template_settings(interaction: discord.Interaction):
         inline=False,
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="설정확인", description="채널·역할·문구 설정을 선택해서 확인합니다.")
+@app_commands.checks.has_permissions(administrator=True)
+@app_commands.rename(category="분류")
+@app_commands.choices(category=[app_commands.Choice(name="채널", value="channels"), app_commands.Choice(name="역할", value="roles"), app_commands.Choice(name="문구", value="templates")])
+async def settings_lookup(interaction: discord.Interaction, category: str = "channels"):
+    if interaction.guild is None:
+        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+    handlers = {"channels": show_settings, "roles": show_role_settings, "templates": show_template_settings}
+    handler = handlers.get(category)
+    if handler is None:
+        await interaction.response.send_message("채널·역할·문구 중 하나를 선택해주세요.", ephemeral=True)
+        return
+    await handler(interaction)
 
 
 @bot.tree.command(name="환영메시지", description="특정 역할에 대한 환영메시지를 설정합니다.")
@@ -14063,7 +14170,7 @@ async def assign_manual_credit_debt(
         f"{member.mention}님에게 관리자 부채 `{format_money(amount)}`을 부여했습니다.",
         f"부채 번호: `#{debt_id}`",
         f"현재 관리자 부채 합계: `{format_money(total_manual_debt)}`",
-        "이 금액은 대출 한도와 신용레벨에는 영향을 주지 않지만, /내신용, /신용조회, 노동 횟수에는 반영됩니다.",
+        "이 금액은 대출 한도와 신용레벨에는 영향을 주지 않지만, /신용조회, 노동 횟수에는 반영됩니다.",
     ]
     if note:
         lines.append(f"사유: {note}")
@@ -15230,8 +15337,9 @@ async def disconnect_music_after_finish(guild: discord.Guild, song_token: int):
     await voice_client.disconnect(force=True)
 
 
-@bot.tree.command(name="구인", description="배그 구인")
-async def recruit(interaction: discord.Interaction, message: str):
+@bot.tree.command(name="구인", description="음성채널에서는 배그 구인, 미접속 시 원하는 게임 구인을 만듭니다.")
+@app_commands.describe(message="구인 메모 (선택)")
+async def recruit(interaction: discord.Interaction, message: str = ""):
     if interaction.guild is None:
         await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
         return
@@ -15248,7 +15356,7 @@ async def recruit(interaction: discord.Interaction, message: str):
         )
         return
     if not interaction.user.voice:
-        await interaction.response.send_message("음성채널에 먼저 들어가주세요.", ephemeral=True)
+        await interaction.response.send_modal(GeneralRecruitModal(message))
         return
 
     await create_recruit_post(
@@ -15257,31 +15365,13 @@ async def recruit(interaction: discord.Interaction, message: str):
         voice_channel=interaction.user.voice.channel,
         host=interaction.user,
         game_name="PUBG",
-        message_content=message,
+        message_content=message or " ",
         mention_here=True,
         max_players=MAX_PLAYERS,
     )
 
 
-@bot.tree.command(name="종겜구인", description="원하는 게임으로 구인 글 작성")
-async def general_recruit(interaction: discord.Interaction):
-    if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
-        return
 
-    recruit_channel_ids = get_recruit_channel_ids(interaction.guild.id)
-    if not recruit_channel_ids:
-        await interaction.response.send_message("구인 채널이 아직 설정되지 않았습니다.", ephemeral=True)
-        return
-    if interaction.channel.id not in recruit_channel_ids:
-        channel_mentions = " ".join(f"<#{channel_id}>" for channel_id in recruit_channel_ids)
-        await interaction.response.send_message(
-            f"등록된 구인 채널에서만 사용할 수 있습니다.\n{channel_mentions}",
-            ephemeral=True,
-        )
-        return
-
-    await interaction.response.send_modal(GeneralRecruitModal())
 
 
 @bot.tree.command(name="노래재생", description="유튜브 링크 한 곡을 현재 음성채널에서 재생합니다.")
@@ -15672,16 +15762,14 @@ async def loan_money(interaction: discord.Interaction, amount: int):
     )
 
 
-@bot.tree.command(name="내신용", description="현재 신용레벨과 대출 상태를 확인합니다.")
-async def my_credit(interaction: discord.Interaction):
-    embed = build_credit_embed(interaction.user, interaction.guild.id if interaction.guild else None)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="신용조회", description="특정 인원의 신용레벨과 대출 상태를 조회합니다.")
+
+@bot.tree.command(name="신용조회", description="내 신용 정보를 확인하거나 선택한 인원의 정보를 조회합니다.")
 @app_commands.rename(member="인원")
-async def credit_lookup(interaction: discord.Interaction, member: discord.Member):
-    embed = build_credit_embed(member, interaction.guild.id if interaction.guild else None)
+@app_commands.describe(member="생략하면 내 신용 정보 조회")
+async def credit_lookup(interaction: discord.Interaction, member: discord.Member | None = None):
+    embed = build_credit_embed(member or interaction.user, interaction.guild.id if interaction.guild else None)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
@@ -16150,8 +16238,7 @@ async def seotda(interaction: discord.Interaction, amount: int, member: discord.
     )
 
 
-@bot.tree.command(name="도박명령어", description="도박 및 재화 시스템 관련 명령어를 확인합니다.")
-async def gambling_commands(interaction: discord.Interaction):
+def build_economy_commands_embed():
     embed = discord.Embed(
         title="🎲 도박 / 재화 시스템 명령어",
         description=(
@@ -16191,7 +16278,7 @@ async def gambling_commands(interaction: discord.Interaction):
         value=(
             "`/신용대출 [금액]` - 남은 대출 한도 내에서 추가 대출\n"
             "`/대출상환 [대출번호] [금액]` - 특정 대출 부분 상환\n"
-            "`/내신용` - 내 신용레벨, 대출, 노동 현황 확인\n"
+            "`/신용조회` - 내 신용레벨, 대출, 노동 현황 확인\n"
             "`/신용조회 [인원]` - 특정 인원의 신용 정보 조회\n"
             "`/신용레벨표` - 레벨별 대출 한도와 이자율 확인\n"
             "`/노동` - 아오지탄광에서 광맥을 골라 채굴 진행\n"
@@ -16222,18 +16309,17 @@ async def gambling_commands(interaction: discord.Interaction):
         value=(
             "각 게임 패널의 `확률 보기` 버튼 - 해당 게임 확률과 배당 확인\n"
             "`/족보` - 최근 게임 결과 확인\n"
-            "`/관리자명령어` - 관리자/일반 명령어 전체 목록"
+            "`/도움말` - 일반 안내 / 분류에서 관리자 안내 선택"
         ),
         inline=False,
     )
 
-    await interaction.response.send_message(embed=embed)
+    return embed
 
 
-@bot.tree.command(name="관리자명령어", description="관리자 명령어와 일반 명령어를 카테고리별로 확인합니다.")
-async def admin_commands_guide(interaction: discord.Interaction):
+def build_command_guide_embeds():
     admin_embed = discord.Embed(
-        title="🛠 [관리자명령어]",
+        title="🛠 관리자 도움말",
         description=(
             "서버 운영에 필요한 관리자 전용 명령어를 한눈에 볼 수 있도록 정리했습니다.\n"
             "카테고리별로 필요한 명령어를 빠르게 찾아보세요."
@@ -16257,7 +16343,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         value=(
             "`/세팅 환영dm`, `/세팅 규칙안내문`, `/세팅 등업패널문구`\n"
             "`/세팅 신입알림문구`, `/세팅 신입경과일`, `/적금세팅`, `/세팅 성과급금액`\n"
-            "`/문구설정확인`, `/설정확인`, `/역할설정확인`"
+            "`/설정확인 분류:채널·역할·문구`"
         ),
         inline=False,
     )
@@ -16328,7 +16414,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         value=(
             "기초생활수급비 패널, `/잔액`, `/랭킹`, `/송금`, `/송금내역`\n"
             "`/사업자 목록`, `/추첨권구매`, `/추첨권현황`\n"
-            "`/도박명령어`, `/족보`, 게임 패널의 `확률 보기` 버튼"
+            "`/도움말 분류:경제/게임`, `/족보`, 게임 패널의 `확률 보기` 버튼"
         ),
         inline=False,
     )
@@ -16336,7 +16422,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         name="🏦 적금 / 대출 / 신용",
         value=(
             "`/적금`, `/내적금`, `/적금수령`, `/적금중도해지`\n"
-            "`/신용대출`, `/대출상환`, `/내신용`, `/신용조회`, `/신용레벨표`, `/노동`, `/노동가챠`, `/노동현황`\n"
+            "`/신용대출`, `/대출상환`, `/신용조회`, `/신용레벨표`, `/노동`, `/노동가챠`, `/노동현황`\n"
             "`/차용증`, `/차용증목록`, `/차용증상환`, `/차용증삭제`"
         ),
         inline=False,
@@ -16358,7 +16444,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
     general_embed.add_field(
         name="👥 구인 / 팀 / 기타",
         value=(
-            "`/구인`, `/종겜구인`, `/팀`, `/팀섞기로그`, `/음성로그`, `/끼리끼리조회`\n"
+            "`/구인` (음성 접속 여부에 따라 배그/일반 게임 구인), `/팀`, `/팀섞기로그`, `/음성로그`, `/끼리끼리조회`\n"
             "`/노래재생`, `/노래정지`\n"
             "`/등업패널`, `/규칙버튼`, `/닉네임패널생성`"
         ),
@@ -16369,7 +16455,7 @@ async def admin_commands_guide(interaction: discord.Interaction):
         value=(
             "`/적금 50000`  50,000마리 적금\n"
             "카지노 게임 채널의 베팅 시작 버튼으로 게임 참여\n"
-            "`/내신용`  대출, 신용레벨, 노동 현황 확인\n"
+            "`/신용조회`  대출, 신용레벨, 노동 현황 확인\n"
             "`/차용증 @유저`  모달에서 원금, 이자, 상환일 입력\n"
             "섯다 채널의 유저 대결 버튼으로 상대와 대결 요청"
         ),
@@ -16377,7 +16463,19 @@ async def admin_commands_guide(interaction: discord.Interaction):
     )
     general_embed.set_footer(text="일반 유저가 자주 쓰는 명령어만 모아두었습니다.")
 
-    await interaction.response.send_message(embeds=[admin_embed, general_embed], ephemeral=True)
+    return admin_embed, general_embed
+
+
+@bot.tree.command(name="도움말", description="일반·경제/게임·관리자 기능 안내를 선택합니다.")
+@app_commands.rename(category="분류")
+@app_commands.choices(category=[app_commands.Choice(name="일반", value="general"), app_commands.Choice(name="경제/게임", value="economy"), app_commands.Choice(name="관리자", value="admin")])
+async def command_help(interaction: discord.Interaction, category: str = "general"):
+    if category == "economy":
+        embed = build_economy_commands_embed()
+    else:
+        admin_embed, general_embed = build_command_guide_embeds()
+        embed = admin_embed if category == "admin" else general_embed
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="내전공지", description="참여 버튼이 있는 내전 공지를 작성합니다.")
 @app_commands.checks.has_permissions(administrator=True)
@@ -17461,6 +17559,8 @@ async def on_ready():
     bot.add_view(UpgradePanelView())
     bot.add_view(InquiryPanelView())
     bot.add_view(ScrimSignupView())
+    ensure_general_recruit_schema()
+    bot.add_view(GeneralRecruitView())
     bot.add_view(VoiceBonusPanelView())
     bot.add_view(DailySupportPanelView())
     bot.add_view(DailyAttendanceView())
@@ -17510,4 +17610,5 @@ if _mari_web_os.environ.get("MARIBOT_WEB_ENABLED") == "1":
     _install_mari_web(globals())
 
 bot.run(TOKEN)
+
 
