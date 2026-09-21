@@ -863,6 +863,69 @@ class Bridge:
         users=sorted([item[2] for item in unique.values() if item[2]],key=lambda user:(user['name'].casefold(),user['id']))
         return {'online':len(unique),'windowSeconds':90,'users':users if authenticated else [],'guests':sum(1 for item in unique.values() if not item[2]),'identified':authenticated}
 
+    async def _claim_session(self, data):
+        code = data.get('code')
+        if not isinstance(code, str) or not 20 <= len(code) <= 64:
+            raise WebError('올바른 연결 코드를 입력해주세요.')
+        identity = self.codes.get(digest(code))
+        if not identity or identity[2] <= time.time():
+            raise WebError('코드가 만료됐거나 이미 사용됐어요. /웹연결로 다시 발급해주세요.', 401)
+        uid, gid, _ = identity
+        linked_member = await self.member(uid, gid, fresh=True)
+        async with self.lock:
+            if self.codes.pop(digest(code), None) is None:
+                raise WebError('이미 사용된 코드입니다.', 401)
+            session = secrets.token_urlsafe(32)
+            self.db.execute('DELETE FROM mari_web_sessions WHERE expires_at<=?', (time.time(),))
+            self.db.execute('INSERT INTO mari_web_sessions VALUES(?,?,?,?)', (digest(session), str(uid), str(gid), time.time() + 43200))
+            self.linked_profile(linked_member)
+            self.db.commit()
+        return {'session': session}
+
+    async def _social_action(self, member, action, data):
+        from mari_web_social import Social
+        async with self.lock:
+            if not hasattr(self, 'social'):
+                self.social = Social(self, WebError)
+            if action == 'social/profile':
+                return self.social.profile(member)
+            if action == 'social/member':
+                return self.social.public_profile(data)
+            if action == 'social/buy':
+                return self.social.buy(member, data)
+            if action == 'social/equip':
+                return self.social.equip(member, data)
+            if action == 'social/paper':
+                return self.social.paper()
+            return self.social.talk(member, data, action)
+
+    async def _economy_action(self, member, action, data):
+        async with self.lock:
+            if action == 'stocks':
+                return self.economy.market(member)
+            if action == 'stocks/history':
+                return self.economy.history(data)
+            if action == 'stocks/trade':
+                return self.economy.trade(member, data)
+            if action == 'tickets/status':
+                return self.economy.status(member)
+            if action == 'tickets/buy':
+                return self.economy.buy_tickets(member, data)
+            game = 'fortune' if action == 'tickets/fortune' else data.get('game')
+            if game in ('apple', 'snake', 'suika', '2048'):
+                config = {'mode': game, 'difficulty': 'normal', 'seconds': 120 if game == 'apple' else 180 if game == 'snake' else 600}
+                return self.training.start(member, {**data, **config})
+            return self.economy.start(member, data, game)
+
+    async def _training_action(self, member, action, data):
+        async with self.lock:
+            if action == 'training/start':
+                return self.training.start(member, data)
+            if action == 'training/ticket':
+                row = self.training.ticket(member, data)
+                return {'id': data.get('id'), 'seed': row[5], 'config': {'mode': row[2], 'difficulty': row[3], 'seconds': row[4]}}
+            return self.training.submit(member, data)
+
     async def dispatch(self, action, token, data):
         if action == 'pubg/status':
             from mari_web_pubg import Pubg
@@ -881,24 +944,7 @@ class Bridge:
         if action in {"oauth/login", "oauth/logout", "servers", "servers/connect", "servers/select"}:
             return await self.oauth_action(action, token, data)
         if action == "claim":
-            code = data.get("code")
-            if not isinstance(code, str) or not 20 <= len(code) <= 64:
-                raise WebError("올바른 연결 코드를 입력해주세요.")
-            identity = self.codes.get(digest(code))
-            if not identity or identity[2] <= time.time():
-                raise WebError("코드가 만료됐거나 이미 사용됐어요. /웹연결로 다시 발급해주세요.", 401)
-            uid, gid, _ = identity
-            linked_member = await self.member(uid, gid, fresh=True)
-            async with self.lock:
-                if self.codes.pop(digest(code), None) is None:
-                    raise WebError("이미 사용된 코드입니다.", 401)
-                session = secrets.token_urlsafe(32)
-                self.db.execute("DELETE FROM mari_web_sessions WHERE expires_at<=?", (time.time(),))
-                self.db.execute("INSERT INTO mari_web_sessions VALUES(?,?,?,?)",
-                                (digest(session), str(uid), str(gid), time.time() + 43200))
-                self.linked_profile(linked_member)
-                self.db.commit()
-            return {"session": session}
+            return await self._claim_session(data)
         uid, gid = self.session(token)
         if action in ('pubg/search','pubg/report'):
             from mari_web_pubg import Pubg
@@ -928,15 +974,7 @@ class Bridge:
                 if action=='adventure/start':return self.adventure.start(member,data)
                 return self.adventure.control(member,data)
         if action in {'social/member','social/profile','social/buy','social/equip','social/paper','social/talk','social/talk/send','social/talk/delete','social/talk/react'}:
-            from mari_web_social import Social
-            async with self.lock:
-                if not hasattr(self,'social'):self.social=Social(self,WebError)
-                if action=='social/profile':return self.social.profile(member)
-                if action=='social/member':return self.social.public_profile(data)
-                if action=='social/buy':return self.social.buy(member,data)
-                if action=='social/equip':return self.social.equip(member,data)
-                if action=='social/paper':return self.social.paper()
-                return self.social.talk(member,data,action)
+            return await self._social_action(member, action, data)
         if action == 'account' and data.get('summary') is True:
             return {'balance':self.ns['get_balance'](uid),'chatUnread':self.chat_unread(member)}
         if action=='rankings':
@@ -953,24 +991,9 @@ class Bridge:
                 work=Work(self,WebError)
                 return work.status(member) if action=='work/status' else work.mutate(member,action,data)
         if action in {'stocks','stocks/history','stocks/trade','tickets/status','tickets/start','tickets/fortune','tickets/buy'}:
-            async with self.lock:
-                if action=='stocks':return self.economy.market(member)
-                if action=='stocks/history':return self.economy.history(data)
-                if action=='stocks/trade':return self.economy.trade(member,data)
-                if action=='tickets/status':return self.economy.status(member)
-                if action=='tickets/buy':return self.economy.buy_tickets(member,data)
-                game='fortune' if action=='tickets/fortune' else data.get('game')
-                if game in ('apple','snake','suika','2048'):
-                    config={'mode':game,'difficulty':'normal','seconds':120 if game=='apple' else 180 if game=='snake' else 600}
-                    return self.training.start(member,{**data,**config})
-                return self.economy.start(member,data,game)
+            return await self._economy_action(member, action, data)
         if action in {'training/start','training/ticket','training/submit'}:
-            async with self.lock:
-                if action=='training/start':return self.training.start(member,data)
-                if action=='training/ticket':
-                    row=self.training.ticket(member,data)
-                    return {'id':data.get('id'),'seed':row[5],'config':{'mode':row[2],'difficulty':row[3],'seconds':row[4]}}
-                return self.training.submit(member,data)
+            return await self._training_action(member, action, data)
         if action=='rewards' or action in {'rewards/support','rewards/bonus'}:
             from mari_web_rewards import Rewards
             rewards=Rewards(self,WebError)
