@@ -16552,16 +16552,70 @@ def build_command_guide_embeds():
     return admin_embed, general_embed
 
 
-@bot.tree.command(name="도움말", description="일반·경제/게임·관리자 기능 안내를 선택합니다.")
-@app_commands.rename(category="분류")
-@app_commands.choices(category=[app_commands.Choice(name="일반", value="general"), app_commands.Choice(name="경제/게임", value="economy"), app_commands.Choice(name="관리자", value="admin")])
-async def command_help(interaction: discord.Interaction, category: str = "general"):
+def build_help_menu_embed(category):
     if category == "economy":
         embed = build_economy_commands_embed()
     else:
         admin_embed, general_embed = build_command_guide_embeds()
         embed = admin_embed if category == "admin" else general_embed
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    embed.add_field(
+        name="🌐 마리웹",
+        value="[마리웹 바로가기](https://maribot.co.kr) · 게임, 주식, 랭킹과 상점을 이용해보세요.",
+        inline=False,
+    )
+    embed.set_footer(text="아래 메뉴에서 카테고리를 선택하세요 · 메뉴가 만료되면 /도움말을 다시 입력해주세요.")
+    return embed
+
+
+class HelpCategorySelect(discord.ui.Select):
+    def __init__(self, category):
+        super().__init__(
+            placeholder="도움말 카테고리 선택",
+            options=[
+                discord.SelectOption(label="일반", value="general", emoji="📚",
+                                     description="기본 정보, 구인, 팀과 음성 기능", default=category == "general"),
+                discord.SelectOption(label="경제/게임", value="economy", emoji="🎮",
+                                     description="재화, 적금, 대출과 게임 이용 안내", default=category == "economy"),
+                discord.SelectOption(label="관리자", value="admin", emoji="🛠",
+                                     description="서버 설정, 패널과 운영 명령어", default=category == "admin"),
+            ],
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        category = self.values[0]
+        for option in self.options:
+            option.default = option.value == category
+        await interaction.response.edit_message(embed=build_help_menu_embed(category), view=self.view)
+
+
+class HelpMenuView(discord.ui.View):
+    def __init__(self, owner_id, category="general"):
+        super().__init__(timeout=900)
+        self.owner_id = owner_id
+        self.add_item(HelpCategorySelect(category))
+        self.add_item(discord.ui.Button(
+            label="마리웹 바로가기", emoji="🌐",
+            style=discord.ButtonStyle.link, url="https://maribot.co.kr", row=1,
+        ))
+
+    async def interaction_check(self, interaction: discord.Interaction):
+        if interaction.user.id == self.owner_id:
+            return True
+        await interaction.response.send_message("직접 /도움말을 입력해서 확인해주세요.", ephemeral=True)
+        return False
+
+
+@bot.tree.command(name="도움말", description="카테고리별 기능 안내와 마리웹 바로가기를 확인합니다.")
+@app_commands.rename(category="분류")
+@app_commands.choices(category=[app_commands.Choice(name="일반", value="general"), app_commands.Choice(name="경제/게임", value="economy"), app_commands.Choice(name="관리자", value="admin")])
+async def command_help(interaction: discord.Interaction, category: str = "general"):
+    await interaction.response.send_message(
+        embed=build_help_menu_embed(category),
+        view=HelpMenuView(interaction.user.id, category),
+        ephemeral=True,
+    )
+
 
 @bot.tree.command(name="내전공지", description="참여 버튼이 있는 내전 공지를 작성합니다.")
 @app_commands.checks.has_permissions(administrator=True)
@@ -17696,6 +17750,7 @@ if _mari_web_os.environ.get("MARIBOT_WEB_ENABLED") == "1":
     _install_mari_web(globals())
 
 bot.run(TOKEN)
+
 
 
 
