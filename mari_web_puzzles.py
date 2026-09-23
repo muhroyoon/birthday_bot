@@ -13,6 +13,12 @@ GAMES={'parking':'마리 주차장 탈출','power':'전력 연결','warehouse':'
 KST=timezone(timedelta(hours=9))
 DIRS=((0,-1),(1,0),(0,1),(-1,0))
 
+# Switch at a KST day boundary so every entrant receives the same daily board.
+DAILY_EXPERT_FROM='2026-09-24'
+DAILY_EXPERT_LEVEL=40
+
+def daily_level(day):return DAILY_EXPERT_LEVEL if day>=DAILY_EXPERT_FROM else None
+
 def rotate(mask):return ((mask<<1)&15)|(mask>>3)
 def cells(car,n):return [car['y']*n+car['x']+i*(1 if car['axis']=='h' else n) for i in range(car['length'])]
 def car_move(b,i,d):
@@ -306,7 +312,7 @@ class Puzzles:
     if mode=='daily':self.b.economy.consume_ticket(member.id)
     seed=int(hashlib.sha256(('puzzles-v1:'+game+':'+day).encode()).hexdigest()[:16],16) if mode=='daily' else secrets.randbits(32)
     level=1+self.db.execute("SELECT COUNT(*) FROM mari_web_puzzles WHERE user_id=? AND game=? AND mode='free' AND done=1",(str(member.id),game)).fetchone()[0] if mode=='free' else None
-    board=make(game,seed,level=level);state={'board':board,'initial':copy.deepcopy(board),'history':[],'moves':0,'done':False,'level':level};jid=secrets.token_urlsafe(24);now=time.time()
+    board=make(game,seed,level=daily_level(day) if mode=='daily' else level);state={'board':board,'initial':copy.deepcopy(board),'history':[],'moves':0,'done':False,'level':level};jid=secrets.token_urlsafe(24);now=time.time()
     self.db.execute('INSERT INTO mari_web_puzzles(id,user_id,guild_id,game,mode,day,created,last,state) VALUES(?,?,?,?,?,?,?,?,?)',(jid,str(member.id),str(member.guild.id),game,mode,day,now,now,json.dumps(state)))
     row=self.db.execute('SELECT * FROM mari_web_puzzles WHERE id=?',(jid,)).fetchone()
    self.b.economy.remember(request,member.id,fp,{'id':row[0]})
