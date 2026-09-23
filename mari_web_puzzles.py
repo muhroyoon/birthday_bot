@@ -9,7 +9,7 @@ import secrets
 import time
 from datetime import datetime, timezone, timedelta
 
-GAMES={'parking':'마리 주차장 탈출','power':'전력 연결','warehouse':'보석 창고','untangle':'엉킨 실 풀기','light':'빛의 미로'}
+GAMES={'parking':'마리 주차장 탈출','power':'전력 연결','warehouse':'보석 창고','untangle':'엉킨 실 풀기','light':'빛의 미로','shikaku':'마리 사각 퍼즐'}
 KST=timezone(timedelta(hours=9))
 DIRS=((0,-1),(1,0),(0,1),(-1,0))
 
@@ -59,6 +59,7 @@ def free_parking(seed,level,proof):
 
 def make(game,seed,proof=None,level=None):
  r=random.Random(seed)
+ if game=='shikaku':return make_shikaku(seed,proof,level)
  if game=='parking':
   if level is not None:return free_parking(seed,level,proof)
   cars=[(4,2,2,'h'),(0,0,3,'v'),(1,0,2,'h'),(3,0,2,'v'),(4,0,2,'h'),(1,3,3,'h'),(4,3,2,'v'),(0,5,3,'h'),(5,3,3,'v'),(1,1,2,'v')]
@@ -171,6 +172,13 @@ def crossed(b):
 
 def solved(b):
  g=b['game']
+ if g=='shikaku':
+  covered=set()
+  for rect in b['rects']:
+   cells=shikaku_cells(b,rect)
+   if cells is None or covered.intersection(cells):return False
+   covered.update(cells)
+  return len(covered)==b['n']**2
  if g=='parking':return b['cars'][0]['x']==b['n']-2
  if g=='warehouse':return set(b['boxes'])==set(b['goals'])
  if g=='power':return len(powered(b))==b['n']**2
@@ -181,6 +189,13 @@ def solved(b):
 def move(b,e):
  if not isinstance(e,list) or not e or any(type(v) is not int for v in e):return False
  g=b['game'];n=b['n']
+ if g=='shikaku':
+  if len(e)==2 and e[0]==-1 and 0<=e[1]<len(b['rects']):
+   b['rects'].pop(e[1]);return True
+  cells=shikaku_cells(b,e)
+  if cells is None:return False
+  if any(cells.intersection(shikaku_cells(b,rect)) for rect in b['rects']):return False
+  b['rects'].append(e[:]);return True
  if g=='parking':return len(e)==2 and car_move(b,*e)
  if g=='power' and len(e)==1 and 0<=e[0]<n*n:b['tiles'][e[0]]=rotate(b['tiles'][e[0]]);return True
  if g=='light' and len(e)==1 and str(e[0]) in b['mirrors']:b['mirrors'][str(e[0])]=1-b['mirrors'][str(e[0])];return True
@@ -207,6 +222,67 @@ def apply(state,event):
   state['history']=(state['history']+[state['board']])[-50:];state['board']=board
  state['moves']+=1;state['done']=solved(state['board'])
 
+def shikaku_cells(b,rect):
+ if len(rect)!=4 or any(type(v) is not int for v in rect):return None
+ x1,y1,x2,y2=rect;n=b['n']
+ if not(0<=x1<=x2<n and 0<=y1<=y2<n):return None
+ cells={y*n+x for y in range(y1,y2+1) for x in range(x1,x2+1)}
+ clues=[b['clues'][i] for i in cells if b['clues'][i]]
+ return cells if len(clues)==1 and clues[0]==len(cells) else None
+
+def shikaku_unique(b):
+ n=b['n'];groups=[]
+ for i,area in enumerate(b['clues']):
+  if not area:continue
+  masks=[]
+  for w in range(1,n+1):
+   if area%w:continue
+   h=area//w
+   if h>n:continue
+   for x in range(max(0,i%n-w+1),min(i%n,n-w)+1):
+    for y in range(max(0,i//n-h+1),min(i//n,n-h)+1):
+     cells=shikaku_cells(b,[x,y,x+w-1,y+h-1])
+     if cells is not None:masks.append(sum(1<<c for c in cells))
+  groups.append(masks)
+ nodes=0
+ def search(left,occupied):
+  nonlocal nodes
+  nodes+=1
+  if nodes>10000:return 2
+  if not left:return 1
+  options=[(i,[m for m in group if not m&occupied]) for i,group in enumerate(left)]
+  index,choices=min(options,key=lambda item:len(item[1]))
+  rest=left[:index]+left[index+1:];count=0
+  for mask in choices:
+   count+=search(rest,occupied|mask)
+   if count>=2:return 2
+  return count
+ return search(groups,0)==1
+
+def make_shikaku(seed,proof=None,level=None):
+ r=random.Random(seed);n=8 if level is None else min(10,5+(level-1)//4)
+ for attempt in range(100):
+  rects=[]
+  def split(x,y,w,h):
+   if w*h<=3 or w*h<=10 and r.random()<.3:
+    rects.append([x,y,x+w-1,y+h-1]);return
+   vertical=w>1 and (h==1 or r.random()<w/(w+h))
+   if vertical:
+    cut=r.randrange(1,w);split(x,y,cut,h);split(x+cut,y,w-cut,h)
+   else:
+    cut=r.randrange(1,h);split(x,y,w,cut);split(x,y+cut,w,h-cut)
+  split(0,0,n,n)
+  clues=[0]*(n*n)
+  for x,y,x2,y2 in rects:clues[r.randint(y,y2)*n+r.randint(x,x2)]=(x2-x+1)*(y2-y+1)
+  b={'game':'shikaku','n':n,'clues':clues,'rects':[]}
+  if shikaku_unique(b):break
+ else:
+  # Guaranteed unique fallback: each row has one clue in the same column.
+  column=r.randrange(n);b={'game':'shikaku','n':n,'clues':[n if i%n==column else 0 for i in range(n*n)],'rects':[]}
+  rects=[[0,y,n-1,y] for y in range(n)]
+ if proof is not None:proof.extend(rects)
+ return b
+
 class Puzzles:
  def __init__(self,b,error):
   self.b=b;self.db=b.db;self.Error=error
@@ -227,6 +303,7 @@ class Puzzles:
   row=self.db.execute('SELECT * FROM mari_web_puzzles WHERE user_id=? AND game=? AND mode=? AND (day=? OR mode=\'free\') ORDER BY created DESC LIMIT 1',(str(member.id),game,mode,day)).fetchone()
   with self.db:
    if not row or mode=='free' and row[10]:
+    if mode=='daily':self.b.economy.consume_ticket(member.id)
     seed=int(hashlib.sha256(('puzzles-v1:'+game+':'+day).encode()).hexdigest()[:16],16) if mode=='daily' else secrets.randbits(32)
     level=1+self.db.execute("SELECT COUNT(*) FROM mari_web_puzzles WHERE user_id=? AND game=? AND mode='free' AND done=1",(str(member.id),game)).fetchone()[0] if mode=='free' else None
     board=make(game,seed,level=level);state={'board':board,'initial':copy.deepcopy(board),'history':[],'moves':0,'done':False,'level':level};jid=secrets.token_urlsafe(24);now=time.time()
@@ -250,6 +327,12 @@ class Puzzles:
   return self.public(self.db.execute('SELECT * FROM mari_web_puzzles WHERE id=?',(row[0],)).fetchone())
  def ranking(self,uid,game):
   from mari_web_rankings import Rankings
-  rows=self.db.execute("SELECT user_id,moves,elapsed FROM mari_web_puzzles WHERE game=? AND day=? AND mode='daily' AND done=1 ORDER BY moves,elapsed,last,user_id",(game,self.day())).fetchall()
+  order='elapsed,moves,last,user_id' if game=='shikaku' else 'moves,elapsed,last,user_id'
+  rows=self.db.execute("SELECT user_id,moves,elapsed FROM mari_web_puzzles WHERE game=? AND day=? AND mode='daily' AND done=1 ORDER BY "+order,(game,self.day())).fetchall()
   result=Rankings(self.b,self.Error).result([{'userId':u,'value':m,'score':m,'averageMs':round(t*1000)} for u,m,t in rows],uid,'moves','오늘의 공통 퍼즐 · 적은 이동 횟수 → 짧은 소요 시간 → 먼저 완료한 순서. 되돌리기·처음부터도 이동에 포함돼요. 오늘의 도전은 최초 완료 기록으로 확정돼요.')
+  if game=='shikaku':
+   for entry in result['entries']:entry['value']=entry['averageMs']/1000;entry['score']=entry['value']
+   if result.get('mine'):result['mine']['value']=result['mine']['averageMs']/1000;result['mine']['score']=result['mine']['value']
+   result['metric']='seconds';result['note']='오늘의 공통 퍼즐 · 짧은 소요 시간 → 적은 이동 횟수 → 먼저 완료한 순서. 최초 시작부터 시간을 재며 첫 완료 기록으로 확정해요.'
+  result['todayStarted']=bool(self.db.execute("SELECT 1 FROM mari_web_puzzles WHERE user_id=? AND game=? AND mode='daily' AND day=?",(str(uid),game,self.day())).fetchone())
   result['day']=self.day();return result
