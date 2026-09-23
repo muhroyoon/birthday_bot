@@ -331,8 +331,18 @@ class Puzzles:
   now=time.time();elapsed=max(0,now-row[6])
   with self.db:self.db.execute('UPDATE mari_web_puzzles SET state=?,seq=?,last=?,done=?,moves=?,elapsed=? WHERE id=?',(json.dumps(state),seq,now,int(state['done']),state['moves'],elapsed,row[0]))
   return self.public(self.db.execute('SELECT * FROM mari_web_puzzles WHERE id=?',(row[0],)).fetchone())
- def ranking(self,uid,game):
+ def ranking(self,uid,game,mode='daily'):
   from mari_web_rankings import Rankings
+  if mode=='free':
+   rows=self.db.execute("SELECT user_id,state,moves,elapsed,last,ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created,id) FROM mari_web_puzzles WHERE game=? AND mode='free' AND done=1",(game,)).fetchall()
+   best={}
+   for user,state,moves,elapsed,last,completed in rows:
+    level=json.loads(state).get('level') or completed
+    key=(-level,moves,elapsed,last,user)
+    if user not in best or key<best[user][0]:best[user]=(key,{'userId':user,'value':level,'score':level,'moves':moves,'averageMs':round(elapsed*1000)})
+   result=Rankings(self.b,self.Error).result([entry for _,entry in sorted(best.values(),key=lambda item:item[0])],uid,'level','누적 최고 클리어 단계 → 해당 단계의 적은 이동 횟수 → 짧은 소요 시간 → 먼저 완료한 순서. 진행 중인 단계는 제외해요.')
+   result['todayStarted']=bool(self.db.execute("SELECT 1 FROM mari_web_puzzles WHERE user_id=? AND game=? AND mode='daily' AND day=?",(str(uid),game,self.day())).fetchone())
+   return result
   order='elapsed,moves,last,user_id' if game=='shikaku' else 'moves,elapsed,last,user_id'
   rows=self.db.execute("SELECT user_id,moves,elapsed FROM mari_web_puzzles WHERE game=? AND day=? AND mode='daily' AND done=1 ORDER BY "+order,(game,self.day())).fetchall()
   result=Rankings(self.b,self.Error).result([{'userId':u,'value':m,'score':m,'averageMs':round(t*1000)} for u,m,t in rows],uid,'moves','오늘의 공통 퍼즐 · 적은 이동 횟수 → 짧은 소요 시간 → 먼저 완료한 순서. 되돌리기·처음부터도 이동에 포함돼요. 오늘의 도전은 최초 완료 기록으로 확정돼요.')
