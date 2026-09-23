@@ -289,6 +289,43 @@ def make_shikaku(seed,proof=None,level=None):
  if proof is not None:proof.extend(rects)
  return b
 
+def make_shikaku_challenge(seed,proof=None,level=1):
+ # Prefer ambiguous rectangle shapes over single cells and obvious full-row strips.
+ r=random.Random(seed);n=min(12,7+(level-1)//4);best=None;best_score=-1;unique=0
+ for attempt in range(160):
+  rects=[]
+  def split(x,y,w,h):
+   axes=([True] if w>=4 else [])+([False] if h>=4 else [])
+   if not axes or w*h<=12 and r.random()<.65:
+    rects.append([x,y,x+w-1,y+h-1]);return
+   if r.choice(axes):
+    cut=r.randint(2,w-2);split(x,y,cut,h);split(x+cut,y,w-cut,h)
+   else:
+    cut=r.randint(2,h-2);split(x,y,w,cut);split(x,y+cut,w,h-cut)
+  split(0,0,n,n)
+  if len(rects)<4:continue
+  clues=[0]*(n*n)
+  for x,y,x2,y2 in rects:clues[r.randint(y,y2)*n+r.randint(x,x2)]=(x2-x+1)*(y2-y+1)
+  b={'game':'shikaku','n':n,'clues':clues,'rects':[]}
+  if not shikaku_unique(b):continue
+  score=0
+  for i,area in enumerate(clues):
+   if not area:continue
+   choices=0
+   for w in range(1,n+1):
+    if area%w or area//w>n:continue
+    h=area//w
+    for x in range(max(0,i%n-w+1),min(i%n,n-w)+1):
+     for y in range(max(0,i//n-h+1),min(i//n,n-h)+1):
+      choices+=shikaku_cells(b,[x,y,x+w-1,y+h-1]) is not None
+   score+=min(choices-1,8)
+  if score>best_score:best=(b,rects);best_score=score
+  unique+=1
+  if unique>=12:break
+ if best is None:return make_shikaku(seed,proof,level)
+ if proof is not None:proof.extend(best[1])
+ return best[0]
+
 class Puzzles:
  def __init__(self,b,error):
   self.b=b;self.db=b.db;self.Error=error
@@ -312,7 +349,8 @@ class Puzzles:
     if mode=='daily':self.b.economy.consume_ticket(member.id)
     seed=int(hashlib.sha256(('puzzles-v1:'+game+':'+day).encode()).hexdigest()[:16],16) if mode=='daily' else secrets.randbits(32)
     level=1+self.db.execute("SELECT COUNT(*) FROM mari_web_puzzles WHERE user_id=? AND game=? AND mode='free' AND done=1",(str(member.id),game)).fetchone()[0] if mode=='free' else None
-    board=make(game,seed,level=daily_level(day) if mode=='daily' else level);state={'board':board,'initial':copy.deepcopy(board),'history':[],'moves':0,'done':False,'level':level};jid=secrets.token_urlsafe(24);now=time.time()
+    board=make_shikaku_challenge(seed,level=level if mode=='free' else DAILY_EXPERT_LEVEL) if game=='shikaku' and (mode=='free' or day>='2026-09-25') else make(game,seed,level=daily_level(day) if mode=='daily' else level)
+    state={'board':board,'initial':copy.deepcopy(board),'history':[],'moves':0,'done':False,'level':level};jid=secrets.token_urlsafe(24);now=time.time()
     self.db.execute('INSERT INTO mari_web_puzzles(id,user_id,guild_id,game,mode,day,created,last,state) VALUES(?,?,?,?,?,?,?,?,?)',(jid,str(member.id),str(member.guild.id),game,mode,day,now,now,json.dumps(state)))
     row=self.db.execute('SELECT * FROM mari_web_puzzles WHERE id=?',(jid,)).fetchone()
    self.b.economy.remember(request,member.id,fp,{'id':row[0]})
