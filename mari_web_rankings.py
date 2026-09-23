@@ -61,7 +61,7 @@ class Rankings:
             for row in result['entries']:row['value']=9-row['score']
             if result['mine']:result['mine']['value']=9-result['mine']['score']
             return result
-        if game in PUZZLES:return Puzzles(self.b,self.Error).ranking(uid,game)
+        if game in PUZZLES:return Puzzles(self.b,self.Error).ranking(uid,game,data.get('puzzleMode','daily'))
         if game in GAMES or game in self.b.ns['CASINO_GAMES'] or game=='work':
             if game=='all_in':return self.result([],uid,'money','몰빵은 주간 랭킹 상금 대상이 아닙니다.')
             return self.b.weekly.ranking(game,uid,data.get('period')=='previous')
