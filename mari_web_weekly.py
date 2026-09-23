@@ -7,6 +7,7 @@ KST=timezone(timedelta(hours=9))
 WEEK=7*86400
 PRIZES=(30000000,15000000,5000000)
 UNIFIED_DEVICE_GAMES={'apple','snake','suika','2048'}
+UNIFIED_TRAINING_MODES={'flick','grid','precision','path','reaction','stopwatch'}
 NAMES={'number_baseball_skill':'숫자야구','flick':'에임 연습','reaction':'반응속도','stopwatch':'스톱워치','apple':'사과게임','snake':'지렁이 게임','suika':'수박게임','2048':'2048','fishing':'마리 낚시','runner':'장애물 달리기','memory':'기억력 게임','tower':'타워 쌓기','territory':'땅따먹기','dodge':'탄막 피하기','work':'마리 광산'}
 
 def week_start(now):
@@ -39,11 +40,14 @@ class Weekly:
         self.db.execute('INSERT OR IGNORE INTO mari_web_weekly_meta VALUES(1,?,?)',(now,week_start(now)+WEEK))
         self.db.execute("INSERT OR IGNORE INTO mari_web_weekly_policy VALUES('unified_devices',?)",(week_start(now),))
         self.unified_since=self.db.execute("SELECT starts_week FROM mari_web_weekly_policy WHERE id='unified_devices'").fetchone()[0]
+        self.db.execute("INSERT OR IGNORE INTO mari_web_weekly_policy VALUES('unified_training_devices',?)",(week_start(now),))
+        self.training_unified_since=self.db.execute("SELECT starts_week FROM mari_web_weekly_policy WHERE id='unified_training_devices'").fetchone()[0]
         self.db.commit()
 
     def unified(self,board,week):
         parts=board.split(':')
-        return week>=self.unified_since and len(parts)==4 and parts[0] in UNIFIED_DEVICE_GAMES and parts[3] in ('mouse','touch')
+        if len(parts)!=4 or parts[3] not in ('mouse','touch'):return False
+        return (parts[0] in UNIFIED_DEVICE_GAMES and week>=self.unified_since) or (parts[0] in UNIFIED_TRAINING_MODES and week>=self.training_unified_since)
 
     def canonical_board(self,board,week):
         # Retain the old PC key as the payout ledger key; never create a second prize pool.
