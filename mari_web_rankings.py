@@ -68,7 +68,7 @@ class Rankings:
         if game in ('pubg','fortune'):
             return self.result([],uid,'score','경쟁 기록이 없어 주간 랭킹 상금 대상이 아닙니다.')
         mode=data.get('mode') if game=='aim' else game
-        if game not in ('aim','reaction','stopwatch','apple','snake','suika','2048'):raise self.Error('게임을 확인해주세요.')
+        if game not in ('aim','reaction','stopwatch','apple','snake','suika','2048','direction'):raise self.Error('게임을 확인해주세요.')
         mode,difficulty,seconds=self.b.training.config({'mode':mode,'difficulty':data.get('difficulty'),'seconds':data.get('seconds')})
         device=data.get('input','mouse')
         if device not in ('mouse','touch'):raise self.Error('입력 장치를 확인해주세요.')

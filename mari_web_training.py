@@ -13,19 +13,19 @@ class TrainingRecords:
         ''');self.db.commit()
     def config(self,data):
         mode=data.get('mode');difficulty=data.get('difficulty');seconds=data.get('seconds')
-        valid = type(seconds) is int and ((mode in ('flick','grid','precision','path') and difficulty in ('easy','normal','hard') and seconds in (15,30,60)) or (mode=='reaction' and difficulty=='normal' and seconds==60) or (mode in ('apple','snake','suika','2048') and difficulty=='normal' and seconds==(120 if mode=='apple' else 180 if mode=='snake' else 600)) or (mode=='stopwatch' and difficulty in ('normal','hard') and seconds in (5,10,15)))
+        valid = type(seconds) is int and ((mode in ('flick','grid','precision','path') and difficulty in ('easy','normal','hard') and seconds in (15,30,60)) or (mode=='direction' and difficulty=='normal' and seconds==0) or (mode=='reaction' and difficulty=='normal' and seconds==60) or (mode in ('apple','snake','suika','2048') and difficulty=='normal' and seconds==(120 if mode=='apple' else 180 if mode=='snake' else 600)) or (mode=='stopwatch' and difficulty in ('normal','hard') and seconds in (5,10,15)))
         if not valid:raise self.Error('연습 조건을 확인해주세요.')
         return mode,difficulty,seconds
     def start(self,member,data):
         mode,difficulty,seconds=self.config(data)
-        game=mode if mode in ('reaction','stopwatch','apple','snake','suika','2048') else 'aim'
+        game=mode if mode in ('reaction','stopwatch','apple','snake','suika','2048','direction') else 'aim'
         def create(rid,seed,now):
             self.db.execute('INSERT INTO mari_web_training_runs VALUES(?,?,?,?,?,?,?,?,0)',(rid,str(member.id),str(member.guild.id),mode,difficulty,seconds,seed,now))
             return {'config':{'mode':mode,'difficulty':difficulty,'seconds':seconds}}
         return self.b.economy.start(member,data,game,create)
     def ticket(self,member,data):
         row=self.db.execute('SELECT user_id,guild_id,mode,difficulty,seconds,seed,started_at,submitted FROM mari_web_training_runs WHERE id=?',(data.get('id'),)).fetchone()
-        if not row or row[0]!=str(member.id) or row[1]!=str(member.guild.id) or time.time()-row[6]>900:raise self.Error('연습 기록이 만료됐어요. 다시 연습해주세요.',409)
+        if not row or row[0]!=str(member.id) or row[1]!=str(member.guild.id) or (row[2]!='direction' and time.time()-row[6]>900):raise self.Error('연습 기록이 만료됐어요. 다시 연습해주세요.',409)
         return row
     def submit(self,member,data):
         row=self.ticket(member,data);m=data.get('metrics',{})
@@ -33,13 +33,16 @@ class TrainingRecords:
         for key in ('score','accuracy','precision','averageMs','hits','elapsed'):
             n=m.get(key)
             if type(n) not in (int,float) or not math.isfinite(n) or n<0:raise self.Error('잘못된 측정 기록입니다.')
-        if m['accuracy']>100 or m['precision']>100 or m['elapsed']>(120 if row[2]=='reaction' else row[4]+10 if row[2]=='stopwatch' else row[4]) or time.time()-row[6]+1<m['elapsed']:raise self.Error('연습 시간을 확인해주세요.')
+        if m['accuracy']>100 or m['precision']>100 or (row[2]!='direction' and m['elapsed']>(120 if row[2]=='reaction' else row[4]+10 if row[2]=='stopwatch' else row[4])) or time.time()-row[6]+1<m['elapsed']:raise self.Error('연습 시간을 확인해주세요.')
+        if row[2]=='direction' and (type(m['hits']) is not int or m['hits']>40000 or m['score']!=m['elapsed'] or m['elapsed']>(m['hits']+1)*1.2):raise self.Error('방향 반응 기록을 확인해주세요.')
         config={'mode':row[2],'difficulty':row[3],'seconds':row[4],'input':m['input']}
         if row[7]:return self.ranking(config,member.id)
         from mari_web_weekly import training_board
         self.b.weekly.record('training:'+data['id'],training_board(row[2],row[3],row[4],m['input']),member.id,member.guild.id,m['score'],m)
-        old=self.db.execute('SELECT score,accuracy,average_ms FROM mari_web_training_best WHERE user_id=? AND mode=? AND difficulty=? AND seconds=? AND input=?',(str(member.id),row[2],row[3],row[4],m['input'])).fetchone()
-        if not old or (m['score'],m['accuracy'],-m['averageMs'])>(old[0],old[1],-old[2]):
+        old=self.db.execute('SELECT score,accuracy,average_ms,metrics FROM mari_web_training_best WHERE user_id=? AND mode=? AND difficulty=? AND seconds=? AND input=?',(str(member.id),row[2],row[3],row[4],m['input'])).fetchone()
+        current_key=(m['score'],m['hits'],0) if row[2]=='direction' else (m['score'],m['accuracy'],-m['averageMs'])
+        old_key=((old[0],json.loads(old[3]).get('hits',0),0) if row[2]=='direction' else (old[0],old[1],-old[2])) if old else None
+        if old_key is None or current_key>old_key:
             self.db.execute('INSERT OR REPLACE INTO mari_web_training_best VALUES(?,?,?,?,?,?,?,?,?,?,?)',(str(member.id),str(member.guild.id),row[2],row[3],row[4],m['input'],m['score'],m['accuracy'],m['averageMs'],json.dumps(m),time.time()))
         self.db.execute('UPDATE mari_web_training_runs SET submitted=1 WHERE id=?',(data.get('id'),));self.db.commit()
         return self.ranking(config,member.id)

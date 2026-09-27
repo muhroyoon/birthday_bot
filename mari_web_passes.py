@@ -6,7 +6,7 @@ Transaction boundaries and replay receipts remain owned by each operation.
 import json
 import secrets
 import time
-PAID = {'aim', 'pubg', 'reaction', 'stopwatch', 'apple', 'snake', 'suika', '2048', 'fortune'}
+PAID = {'aim', 'pubg', 'reaction', 'stopwatch', 'apple', 'snake', 'suika', '2048', 'direction', 'fortune'}
 PASS_PRICE = 150000
 FORTUNE_PRICE = 1000000
 PASS_LIFETIME_SECONDS = 900

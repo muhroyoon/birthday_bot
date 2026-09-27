@@ -6,9 +6,9 @@ from datetime import datetime, timedelta, timezone
 KST=timezone(timedelta(hours=9))
 WEEK=7*86400
 PRIZES=(30000000,15000000,5000000)
-UNIFIED_DEVICE_GAMES={'apple','snake','suika','2048'}
+UNIFIED_DEVICE_GAMES={'apple','snake','suika','2048','direction'}
 UNIFIED_TRAINING_MODES={'flick','grid','precision','path','reaction','stopwatch'}
-NAMES={'number_baseball_skill':'숫자야구','flick':'에임 연습','reaction':'반응속도','stopwatch':'스톱워치','apple':'사과게임','snake':'지렁이 게임','suika':'수박게임','2048':'2048','fishing':'마리 낚시','runner':'장애물 달리기','memory':'기억력 게임','tower':'타워 쌓기','territory':'땅따먹기','dodge':'탄막 피하기','work':'마리 광산'}
+NAMES={'direction':'방향 반응','number_baseball_skill':'숫자야구','flick':'에임 연습','reaction':'반응속도','stopwatch':'스톱워치','apple':'사과게임','snake':'지렁이 게임','suika':'수박게임','2048':'2048','fishing':'마리 낚시','runner':'장애물 달리기','memory':'기억력 게임','tower':'타워 쌓기','territory':'땅따먹기','dodge':'탄막 피하기','work':'마리 광산'}
 
 def week_start(now):
     d=datetime.fromtimestamp(now,KST)
@@ -22,7 +22,7 @@ def official(board):
     if board=='all_in':return False
     if ':' not in board:return True
     mode,difficulty,seconds,device=board.split(':')
-    durations={'flick':30,'reaction':60,'stopwatch':10,'apple':120,'snake':180,'suika':600,'2048':600}
+    durations={'direction':0,'flick':30,'reaction':60,'stopwatch':10,'apple':120,'snake':180,'suika':600,'2048':600}
     return difficulty=='normal' and device=='mouse' and mode in durations and int(seconds)==durations[mode]
 
 class Weekly:
@@ -68,9 +68,10 @@ class Weekly:
             old=best.get(uid)
             if old:item['plays']=old['plays']+1
             if summed and old:item['score']+=old['score']
-            if summed or old is None or (score,accuracy,-average)>(old['score'],old['accuracy'],-old['averageMs']):best[uid]=item
+            key=lambda r:(r['score'],r['metrics'].get('hits',0),0) if board.startswith('direction:') else (r['score'],r['accuracy'],-r['averageMs'])
+            if summed or old is None or key(item)>key(old):best[uid]=item
             elif old:old['plays']+=1
-        return sorted(best.values(),key=lambda r:(-r['score'],-r['accuracy'],r['averageMs'],r['at'],r['userId']))
+        return sorted(best.values(),key=lambda r:(-r['score'],-r['metrics'].get('hits',0),0,r['at'],r['userId']) if board.startswith('direction:') else (-r['score'],-r['accuracy'],r['averageMs'],r['at'],r['userId']))
 
     def decorate(self,rows):
         from mari_web_rankings import Rankings
@@ -116,10 +117,10 @@ class Weekly:
         archived=self.db.execute('SELECT rows_json FROM mari_web_weekly_results WHERE week=? AND board=?',(week,board)).fetchone()
         rows=json.loads(archived[0]) if archived else self.decorate(self.rows(week,board))
         mode=board.split(':')[0]
-        metric='ms' if mode in ('reaction','stopwatch') else 'percent' if mode in ('precision','path') else 'speed' if mode in ('flick','grid') else 'money' if mode=='work' or mode in self.b.ns.get('CASINO_GAMES',{}) else 'score'
+        metric='seconds' if mode=='direction' else 'ms' if mode in ('reaction','stopwatch') else 'percent' if mode in ('precision','path') else 'speed' if mode in ('flick','grid') else 'money' if mode=='work' or mode in self.b.ns.get('CASINO_GAMES',{}) else 'score'
         for row in rows:row['value']=row['averageMs'] if metric=='ms' else row['score']
         return {'entries':rows[:100],'mine':next((r for r in rows if r['userId']==str(uid)),None),'total':len(rows),'metric':metric,
-                'note':'선택한 주의 기록 기준입니다. 동점은 점수·정확도·평균 시간 비교 후 먼저 달성한 기록을 우선합니다.','weekly':{'start':datetime.fromtimestamp(week,KST).isoformat(),'end':datetime.fromtimestamp(week+WEEK,KST).isoformat(),'prizeEligible':self.eligible(board,week),'prizes':PRIZES,'previous':previous,'settled':bool(archived),'deviceUnified':self.unified(board,week)}}
+                'note':('생존 시간 → 정답 수 → 먼저 달성한 순서. 계정별 최고 한 판만 비교하며 누적 합산하지 않습니다.' if mode=='direction' else '선택한 주의 기록 기준입니다. 동점은 점수·정확도·평균 시간 비교 후 먼저 달성한 기록을 우선합니다.'),'weekly':{'start':datetime.fromtimestamp(week,KST).isoformat(),'end':datetime.fromtimestamp(week+WEEK,KST).isoformat(),'prizeEligible':self.eligible(board,week),'prizes':PRIZES,'previous':previous,'settled':bool(archived),'deviceUnified':self.unified(board,week)}}
 
     def notices(self,uid):
         rows=self.db.execute('SELECT week,board,rank,amount,paid_at FROM mari_web_weekly_awards WHERE user_id=? ORDER BY paid_at DESC LIMIT 30',(str(uid),)).fetchall()

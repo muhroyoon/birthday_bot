@@ -12669,6 +12669,31 @@ async def set_attendance_feature(
     )
 
 
+@settings_group.command(name="치킨인증채널", description="치킨 인증 채널을 설정합니다. 매일 자정 인증 1건당 각 100만 마리 지급")
+@app_commands.rename(channel="채널")
+@app_commands.describe(channel="이미지 또는 임베드와 유저 멘션이 포함된 치킨 인증 채널")
+@app_commands.checks.has_permissions(administrator=True)
+async def set_chicken_proof_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+    if interaction.guild is None or channel.guild.id != interaction.guild.id:
+        await interaction.response.send_message("현재 서버의 텍스트 채널을 선택해주세요.", ephemeral=True)
+        return
+    permissions = channel.permissions_for(interaction.guild.me)
+    if not permissions.view_channel or not permissions.read_message_history:
+        await interaction.response.send_message("봇에 해당 채널 보기와 메시지 기록 보기 권한이 필요합니다.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    from mari_chicken_bonus import install as install_chicken_bonus
+    install_chicken_bonus(bot, conn)
+    effective = await bot._mari_chicken_bonus_service.configure(interaction.guild.id, channel.id)
+    timing = effective.strftime("%Y-%m-%d %H:%M KST") if effective else "기존 설정 유지 (예약 변경 취소)"
+    await interaction.followup.send(
+        f"치킨 인증 채널: {channel.mention}\n적용: {timing}\n"
+        "매일 자정(KST)에 전날 인증 1건당 멘션된 일반 멤버에게 각각 1,000,000마리를 자동 지급합니다.\n"
+        "채널 변경은 다음 자정부터 적용되며 오늘 인증은 기존 채널에서 정산합니다. 적용 전 새 채널의 인증은 소급하지 않습니다.",
+        ephemeral=True,
+    )
+
+
 @settings_group.command(name="성과급금액", description="음성 성과급의 1시간당 지급 금액을 설정합니다.")
 @app_commands.rename(amount="금액")
 @app_commands.describe(amount="1시간당 지급할 서버 재화")
@@ -13684,125 +13709,6 @@ async def register_youtube_cookie(interaction: discord.Interaction, cookie_file:
 @app_commands.checks.has_permissions(administrator=True)
 async def check_youtube_cookie(interaction: discord.Interaction):
     await interaction.response.send_message(get_youtube_cookie_status_text(), ephemeral=True)
-
-
-@bot.tree.command(name="치킨성과급", description="현재 채널의 치킨 인증글 멘션 인원에게 성과급을 지급합니다.")
-@app_commands.rename(amount="금액", proof_count="인증글개수")
-@app_commands.describe(amount="인증 1회당 지급할 금액", proof_count="최근 인증글 중 처리할 개수")
-async def chicken_bonus(interaction: discord.Interaction, amount: int, proof_count: int):
-    if interaction.guild is None:
-        await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
-        return
-
-    if not (
-        interaction.user.id == interaction.guild.owner_id
-        or interaction.user.guild_permissions.administrator
-        or interaction.user.guild_permissions.manage_guild
-    ):
-        await interaction.response.send_message("이 명령어는 서버 관리자 이상만 사용할 수 있습니다.", ephemeral=True)
-        return
-
-    if amount <= 0:
-        await interaction.response.send_message("지급 금액은 1마리 이상이어야 합니다.", ephemeral=True)
-        return
-
-    if proof_count <= 0:
-        await interaction.response.send_message("인증글 개수는 1개 이상이어야 합니다.", ephemeral=True)
-        return
-
-    if proof_count > 20:
-        await interaction.response.send_message("한 번에 처리할 수 있는 인증글은 최대 20개입니다.", ephemeral=True)
-        return
-
-    if not isinstance(interaction.channel, discord.TextChannel):
-        await interaction.response.send_message("텍스트 채널에서만 사용할 수 있습니다.", ephemeral=True)
-        return
-
-    await interaction.response.defer(thinking=True)
-
-    bonus_counts = {}
-    scanned_message_count = 0
-    proof_message_count = 0
-
-    async for message in interaction.channel.history(limit=100):
-        if bot.user is not None and message.author.id == bot.user.id:
-            is_previous_bonus_result = any(
-                embed.title == "🍗 치킨 성과급 지급 완료"
-                for embed in message.embeds
-            )
-            if is_previous_bonus_result:
-                break
-            continue
-
-        scanned_message_count += 1
-
-        if not message.mentions:
-            continue
-
-        # 치킨 인증글은 보통 스크린샷이 함께 올라오므로 이미지/임베드가 있는 메시지만 집계합니다.
-        if not message.attachments and not message.embeds:
-            continue
-
-        proof_message_count += 1
-
-        for member in message.mentions:
-            if member.bot:
-                continue
-            bonus_counts[member.id] = bonus_counts.get(member.id, 0) + 1
-
-        if proof_message_count >= proof_count:
-            break
-
-    if not bonus_counts:
-        await interaction.followup.send(
-            "지급할 치킨 인증 인원을 찾지 못했습니다.\n"
-            "이미지를 첨부한 인증 메시지에 유저 멘션이 포함되어 있는지 확인해주세요.",
-            ephemeral=True,
-        )
-        return
-
-    paid_lines = []
-    total_paid_amount = 0
-
-    for user_id, count in sorted(bonus_counts.items(), key=lambda item: (-item[1], item[0])):
-        member = interaction.guild.get_member(user_id)
-        if member is None or member.bot:
-            continue
-
-        payout = amount * count
-        add_balance(member.id, payout)
-        add_money_grant_log(
-            interaction.guild.id,
-            member.id,
-            interaction.user.id,
-            payout,
-            f"치킨 성과급 {count}회",
-        )
-        total_paid_amount += payout
-        paid_lines.append(f"{member.mention} - `{count}회` / `{format_money(payout)}`")
-
-    if not paid_lines:
-        await interaction.followup.send("지급 가능한 서버 멤버를 찾지 못했습니다.", ephemeral=True)
-        return
-
-    embed = discord.Embed(
-        title="🍗 치킨 성과급 지급 완료",
-        description=(
-            f"인증 1회당 `{format_money(amount)}`을 지급했습니다.\n"
-            f"총 지급액: `{format_money(total_paid_amount)}`"
-        ),
-        color=0xF1C40F,
-    )
-    embed.add_field(
-        name="지급 대상",
-        value=join_compact_discord_field_lines(paid_lines),
-        inline=False,
-    )
-    embed.set_footer(
-        text=f"요청 인증글 {proof_count}개 중 {proof_message_count}개 집계 / 최근 메시지 {scanned_message_count}개 확인"
-    )
-
-    await interaction.followup.send(embed=embed)
 
 
 @bot.tree.command(name="출석랭킹", description="출석 랭킹 보기")
@@ -16461,7 +16367,7 @@ def build_command_guide_embeds():
     admin_embed.add_field(
         name="💰 경제 / 신용 관리",
         value=(
-            "`/돈주기`, `/돈주기내역`, `/돈삭제`, `/치킨성과급`, `/송금내역`, `/벌금부여`, `/벌금삭제`\n"
+            "`/돈주기`, `/돈주기내역`, `/돈삭제`, `/송금내역`, `/벌금부여`, `/벌금삭제`\n"
             "`/사업자 등록`, `/사업자 삭제`, `/사업자 목록`\n"
             "`/추첨권등록`, `/추첨권삭제`\n"
             "`/신용불량자등록`, `/신용불량자목록`, `/신용불량자삭제`, `/신용초기화`\n"
@@ -16481,7 +16387,7 @@ def build_command_guide_embeds():
             "`/세팅 등업패널문구`  여러 줄 패널 문구 설정\n"
             "`/신용불량자등록 @유저`  해당 유저 등록\n"
             "`/돈주기 @유저 10000 이벤트 보상`  특정 유저에게 비고와 함께 재화 지급\n"
-            "`/치킨성과급 500000 2`  최근 치킨 인증글 2개에 성과급 지급"
+            "`/세팅 치킨인증채널`  인증 채널 설정 · 매일 자정(KST) 인증 1건당 멘션된 일반 멤버에게 각 100만 마리 자동 지급"
         ),
         inline=False,
     )
@@ -17686,6 +17592,9 @@ async def storage_cleanup_loop():
 
 @bot.event
 async def on_ready():
+    from mari_chicken_bonus import install as install_chicken_bonus
+    install_chicken_bonus(bot, conn)
+
     for guild in bot.guilds:
         try:
             bot.tree.clear_commands(guild=guild)
@@ -17750,6 +17659,7 @@ if _mari_web_os.environ.get("MARIBOT_WEB_ENABLED") == "1":
     _install_mari_web(globals())
 
 bot.run(TOKEN)
+
 
 
 
