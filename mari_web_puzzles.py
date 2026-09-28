@@ -236,8 +236,11 @@ def shikaku_cells(b,rect):
  clues=[b['clues'][i] for i in cells if b['clues'][i]]
  return cells if len(clues)==1 and clues[0]==len(cells) else None
 
-def shikaku_unique(b):
+def shikaku_options(b):
  n=b['n'];groups=[]
+ prefix=[[0]*(n+1) for _ in range(n+1)]
+ for y in range(n):
+  for x in range(n):prefix[y+1][x+1]=bool(b['clues'][y*n+x])+prefix[y][x+1]+prefix[y+1][x]-prefix[y][x]
  for i,area in enumerate(b['clues']):
   if not area:continue
   masks=[]
@@ -245,11 +248,17 @@ def shikaku_unique(b):
    if area%w:continue
    h=area//w
    if h>n:continue
+   row=(1<<w)-1
+   shape=sum(row<<(dy*n) for dy in range(h))
    for x in range(max(0,i%n-w+1),min(i%n,n-w)+1):
     for y in range(max(0,i//n-h+1),min(i//n,n-h)+1):
-     cells=shikaku_cells(b,[x,y,x+w-1,y+h-1])
-     if cells is not None:masks.append(sum(1<<c for c in cells))
+     if prefix[y+h][x+w]-prefix[y][x+w]-prefix[y+h][x]+prefix[y][x]==1:
+      masks.append(shape<<(y*n+x))
   groups.append(masks)
+ return groups
+
+def shikaku_unique(b):
+ groups=shikaku_options(b)
  nodes=0
  def search(left,occupied):
   nonlocal nodes
@@ -289,14 +298,19 @@ def make_shikaku(seed,proof=None,level=None):
  if proof is not None:proof.extend(rects)
  return b
 
-def make_shikaku_challenge(seed,proof=None,level=1):
+def make_shikaku_challenge(seed,proof=None,level=1,progressive=False):
  # Prefer ambiguous rectangle shapes over single cells and obvious full-row strips.
  r=random.Random(seed);n=min(12,7+(level-1)//4);best=None;best_score=-1;unique=0
+ # Free play keeps growing beyond the old level-21 ceiling; daily seeds stay unchanged.
+ tier=min(4,max(0,(level-21)//15)) if progressive else 0
+ n+=tier
+ target=12+3*tier
+ max_area=12+2*tier
  for attempt in range(160):
   rects=[]
   def split(x,y,w,h):
    axes=([True] if w>=4 else [])+([False] if h>=4 else [])
-   if not axes or w*h<=12 and r.random()<.65:
+   if not axes or w*h<=max_area and r.random()<.65:
     rects.append([x,y,x+w-1,y+h-1]);return
    if r.choice(axes):
     cut=r.randint(2,w-2);split(x,y,cut,h);split(x+cut,y,w-cut,h)
@@ -308,20 +322,10 @@ def make_shikaku_challenge(seed,proof=None,level=1):
   for x,y,x2,y2 in rects:clues[r.randint(y,y2)*n+r.randint(x,x2)]=(x2-x+1)*(y2-y+1)
   b={'game':'shikaku','n':n,'clues':clues,'rects':[]}
   if not shikaku_unique(b):continue
-  score=0
-  for i,area in enumerate(clues):
-   if not area:continue
-   choices=0
-   for w in range(1,n+1):
-    if area%w or area//w>n:continue
-    h=area//w
-    for x in range(max(0,i%n-w+1),min(i%n,n-w)+1):
-     for y in range(max(0,i//n-h+1),min(i//n,n-h)+1):
-      choices+=shikaku_cells(b,[x,y,x+w-1,y+h-1]) is not None
-   score+=min(choices-1,8)
+  score=sum(min(len(options)-1,8+3*tier) for options in shikaku_options(b))
   if score>best_score:best=(b,rects);best_score=score
   unique+=1
-  if unique>=12:break
+  if unique>=target:break
  if best is None:return make_shikaku(seed,proof,level)
  if proof is not None:proof.extend(best[1])
  return best[0]
@@ -349,7 +353,7 @@ class Puzzles:
     if mode=='daily':self.b.economy.consume_ticket(member.id)
     seed=int(hashlib.sha256(('puzzles-v1:'+game+':'+day).encode()).hexdigest()[:16],16) if mode=='daily' else secrets.randbits(32)
     level=1+self.db.execute("SELECT COUNT(*) FROM mari_web_puzzles WHERE user_id=? AND game=? AND mode='free' AND done=1",(str(member.id),game)).fetchone()[0] if mode=='free' else None
-    board=make_shikaku_challenge(seed,level=level if mode=='free' else DAILY_EXPERT_LEVEL) if game=='shikaku' and (mode=='free' or day>='2026-09-25') else make(game,seed,level=daily_level(day) if mode=='daily' else level)
+    board=make_shikaku_challenge(seed,level=level if mode=='free' else DAILY_EXPERT_LEVEL,progressive=mode=='free') if game=='shikaku' and (mode=='free' or day>='2026-09-25') else make(game,seed,level=daily_level(day) if mode=='daily' else level)
     state={'board':board,'initial':copy.deepcopy(board),'history':[],'moves':0,'done':False,'level':level};jid=secrets.token_urlsafe(24);now=time.time()
     self.db.execute('INSERT INTO mari_web_puzzles(id,user_id,guild_id,game,mode,day,created,last,state) VALUES(?,?,?,?,?,?,?,?,?)',(jid,str(member.id),str(member.guild.id),game,mode,day,now,now,json.dumps(state)))
     row=self.db.execute('SELECT * FROM mari_web_puzzles WHERE id=?',(jid,)).fetchone()
