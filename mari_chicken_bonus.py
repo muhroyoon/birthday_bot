@@ -1,6 +1,7 @@
 """Daily KST chicken proof bonuses; the shared SQLite connection is event-loop owned."""
 import asyncio
 import logging
+import discord
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
@@ -42,6 +43,16 @@ class ChickenBonus:
             self.db.execute('INSERT OR IGNORE INTO chicken_bonus_config(guild_id,channel_id,active_from) VALUES (?, ?, ?)',
                 (str(GUILD_ID), str(CHANNEL_ID), today+'T00:00:00+09:00'))
 
+            self.db.execute('''CREATE TABLE IF NOT EXISTS chicken_bonus_notices (
+                channel_id TEXT, proof_day TEXT, next_page INTEGER NOT NULL DEFAULT 0,
+                attempted_at TEXT, completed INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(channel_id, proof_day))''')
+            # Announce the latest already-completed payout when upgrading from silent payouts.
+            self.db.execute('''INSERT OR IGNORE INTO chicken_bonus_notices(channel_id,proof_day)
+                SELECT p.channel_id, max(p.proof_day) FROM chicken_bonus_payouts p
+                JOIN chicken_bonus_state s ON s.channel_id=p.channel_id
+                WHERE p.proof_day<s.next_day GROUP BY p.channel_id''')
+
     async def configure(self, guild_id, channel_id, now=None):
         now = (now or datetime.now(KST)).astimezone(KST)
         async with self.lock:
@@ -81,6 +92,7 @@ class ChickenBonus:
                 except Exception as exc:
                     log.warning('Chicken bonus guild %s failed: %s', row[0], exc)
                     failures.append(exc)
+            await self.send_notices(now)
             if failures:
                 raise failures[0]
 
@@ -114,6 +126,8 @@ class ChickenBonus:
             with self.db:
                 self.db.execute('UPDATE chicken_bonus_state SET next_day=? WHERE channel_id=?',
                                 (end.date().isoformat(), str(self.channel_id)))
+                self.db.execute('INSERT OR IGNORE INTO chicken_bonus_notices(channel_id,proof_day) VALUES (?,?)',
+                                (str(self.channel_id),day))
 
     async def pay_day(self, start, end, now):
         guild = self.bot.get_guild(self.guild_id)
@@ -167,6 +181,47 @@ class ChickenBonus:
                 VALUES (?, ?, ?, ?, ?, ?)''',
                 (str(self.guild_id), str(user_id), str(self.bot.user.id), AMOUNT,
                  f'치킨 자동 성과급 / {day} / 인증 {message_id}', now.isoformat()))
+
+    async def send_notices(self, now):
+        for channel_id, day, page, attempted, _ in self.db.execute(
+                'SELECT * FROM chicken_bonus_notices WHERE completed=0').fetchall():
+            try:
+                rows = self.db.execute('''SELECT user_id,count(*),sum(amount) FROM chicken_bonus_payouts
+                    WHERE channel_id=? AND proof_day=? GROUP BY user_id ORDER BY sum(amount) DESC,user_id''',
+                    (channel_id,day)).fetchall()
+                if rows:
+                    channel = self.bot.get_channel(int(channel_id))
+                    if channel is None:
+                        channel = await self.bot.fetch_channel(int(channel_id))
+                    pages = [rows[i:i+35] for i in range(0,len(rows),35)]
+                    # Reconcile a successful Discord send if the process stopped before DB acknowledgement.
+                    seen = set()
+                    if attempted:
+                        async for message in channel.history(limit=None,oldest_first=True,
+                                after=datetime.fromisoformat(attempted)-timedelta(seconds=1),
+                                before=now+timedelta(seconds=1)):
+                            if message.author.id == self.bot.user.id:
+                                seen.update(getattr(getattr(e,'footer',None),'text',None) for e in message.embeds)
+                    for index in range(page,len(pages)):
+                        marker = f'chicken-auto:{channel_id}:{day}:{index}'
+                        if marker not in seen:
+                            if not attempted:
+                                attempted = now.isoformat()
+                                with self.db:
+                                    self.db.execute('UPDATE chicken_bonus_notices SET attempted_at=? WHERE channel_id=? AND proof_day=?',
+                                                    (attempted,channel_id,day))
+                            header = f'**{day} 인증분 · 한국 시간 기준**\n지급 인원 **{len(rows)}명** · 총 **{sum(r[2] for r in rows):,}마리**\n\n'
+                            details = '\n'.join(f'<@{uid}> · {count}회 · **{amount:,}마리**' for uid,count,amount in pages[index])
+                            embed = discord.Embed(title='🍗 치킨 자동 성과급 지급 완료',description=header+details,color=0xA4E9B8)
+                            embed.set_footer(text=marker)
+                            await channel.send(embed=embed,allowed_mentions=discord.AllowedMentions.none())
+                        with self.db:
+                            self.db.execute('UPDATE chicken_bonus_notices SET next_page=? WHERE channel_id=? AND proof_day=?',
+                                            (index+1,channel_id,day))
+                with self.db:
+                    self.db.execute('UPDATE chicken_bonus_notices SET completed=1 WHERE channel_id=? AND proof_day=?',(channel_id,day))
+            except Exception:
+                log.exception('Chicken bonus notice failed; payout is unchanged, retrying notice only')
 
     async def run(self):
         while not self.bot.is_closed():
