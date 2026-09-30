@@ -205,4 +205,12 @@ class EconomyTests(unittest.IsolatedAsyncioTestCase):
   with patch.object(self.e,'stock_slot',return_value=datetime(2026,9,7,0,10,tzinfo=KST)),patch('mari_web_economy.stock_move_bps',side_effect=[5500,__import__("fractions").Fraction(-55000000,15500),100,-100,2500,-2500,1000,500]):
    self.e.settle()
   prices=dict(self.f.db.execute('SELECT symbol,price FROM mari_web_stocks'))
-  self.assertEqual(prices['muro'],10000000);self.assertEqual(prices['jeumi_fb'],150)
+  self.assertEqual(prices['muro'],15500000);self.assertEqual(prices['jeumi_fb'],150)
+  self.f.db.execute("UPDATE mari_web_stocks SET price=49000000 WHERE symbol='muro'");self.f.db.commit()
+  with patch.object(self.e,'stock_slot',return_value=datetime(2026,9,7,0,15,tzinfo=KST)),patch('mari_web_economy.stock_move_bps',return_value=3500):
+   self.e.settle()
+  self.assertEqual(self.f.db.execute("SELECT price FROM mari_web_stocks WHERE symbol='muro'").fetchone()[0],50000000)
+  with patch.object(self.e,'stock_slot',return_value=datetime(2026,9,7,0,20,tzinfo=KST)),patch('mari_web_economy.stock_move_bps',return_value=-1000):
+   self.e.settle()
+  self.assertEqual(self.f.db.execute("SELECT price FROM mari_web_stocks WHERE symbol='muro'").fetchone()[0],45000000)
+
