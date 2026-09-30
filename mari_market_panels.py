@@ -332,9 +332,9 @@ class AuctionPanel(SafeView):
     def __init__(self,market,aid,status='open',reviewed=False):
         super().__init__(timeout=None);self.market,self.aid=market,aid
         if status=='open':
-            b=discord.ui.Button(label='입찰',style=discord.ButtonStyle.success,custom_id=f'mari:auction:{aid}:bid');b.callback=self.bid;self.add_item(b)
+            b=discord.ui.Button(label='입찰하기',emoji='🔨',style=discord.ButtonStyle.success,custom_id=f'mari:auction:{aid}:bid');b.callback=self.bid;self.add_item(b)
         elif status=='sold':
-            b=discord.ui.Button(label='후기등록',style=discord.ButtonStyle.primary,custom_id=f'mari:auction:{aid}:review',disabled=reviewed);b.callback=self.review;self.add_item(b)
+            b=discord.ui.Button(label='후기 등록 완료' if reviewed else '낙찰 후기 쓰기',emoji='✍️',style=discord.ButtonStyle.secondary if reviewed else discord.ButtonStyle.primary,custom_id=f'mari:auction:{aid}:review',disabled=reviewed);b.callback=self.review;self.add_item(b)
 
     async def bid(self,i):
         a=self.market.store.auction(self.aid,i.guild.id)
@@ -386,11 +386,53 @@ class Market:
         e.set_footer(text=f"추첨권 #{r['id']} · 삭제 전까지 유지")
         return e
 
-    def auction_embed(self,a):
-        labels={'open':'진행 중','sold':'낙찰 완료','unsold':'유찰'}
-        e=discord.Embed(title=f"🔨 {a['title']}",description=f"**{labels[a['status']]}** · 경매 #{a['id']}",color=0x9b87f5)
-        for name,value in [('등록자',f"<@{a['seller']}>"),('시작가',f"{a['start']:,}마리"),('호찰가',f"{a['step']:,}마리"),('최고 입찰자',f"<@{a['bidder']}>" if a['bidder'] else '아직 없음'),('현재 금액',f"{a['amount']:,}마리" if a['bidder'] else '입찰 대기'),('마감',f"<t:{int(a['ends'])}:F> · <t:{int(a['ends'])}:R>")]:e.add_field(name=name,value=value)
-        e.set_footer(text='입찰금 보관 → 상위 입찰 시 환급 → 낙찰 시 등록자에게 지급')
+    def auction_embed(self, a):
+        status = a['status']
+        labels = {'open': '입찰 진행 중', 'sold': '낙찰 완료', 'unsold': '입찰 없이 마감'}
+        colors = {'open': 0x8DDBC0, 'sold': 0xEDC877, 'unsold': 0x89919E}
+        count = self.store.db.execute('SELECT COUNT(*) FROM market_bids WHERE auction_id=?', (a['id'],)).fetchone()[0]
+        e = discord.Embed(title=a['title'], color=colors[status])
+        e.set_author(name=f"MARI AUCTION  ·  {labels[status]}")
+        if status == 'open':
+            amount = a['amount'] if a['bidder'] else a['start']
+            caption = '현재 최고가' if a['bidder'] else '첫 입찰을 기다리고 있어요'
+            e.description = f"{caption}\n**{amount:,} 마리**"
+            next_amount = a['amount'] + a['step'] if a['bidder'] else a['start']
+            e.add_field(name='다음 입찰가', value=f"**{next_amount:,} 마리**", inline=True)
+            e.add_field(name='남은 시간', value=f"<t:{int(a['ends'])}:R>", inline=True)
+            e.add_field(name='최고 입찰자', value=f"<@{a['bidder']}>" if a['bidder'] else '아직 없어요 · 첫 주인공이 되어보세요', inline=False)
+        elif status == 'sold':
+            e.description = f"🏆 **낙찰을 축하합니다!**\n**{a['amount']:,} 마리**에 경매가 마감됐어요."
+            e.add_field(name='낙찰자', value=f"<@{a['bidder']}>", inline=True)
+            e.add_field(name='정산', value='등록자에게 낙찰금 지급 완료', inline=True)
+        else:
+            e.description = '이번 경매는 입찰 없이 마감됐어요.'
+        e.add_field(name='경매 조건', value=f"시작가 **{a['start']:,} 마리**  ·  호찰가 **+{a['step']:,} 마리**", inline=False)
+        e.add_field(name='마감 일시', value=f"<t:{int(a['ends'])}:F>", inline=True)
+        e.add_field(name='등록자', value=f"<@{a['seller']}>", inline=True)
+        if status == 'open':
+            e.add_field(name='입찰 안내', value='아래 버튼에서 금액을 확인한 뒤 입찰하세요.\n더 높은 입찰이 들어오면 보관된 마리는 전액 돌려드려요.', inline=False)
+        elif status == 'sold':
+            e.add_field(name='낙찰 후기', value='후기 등록이 완료됐어요. 감사합니다!' if a['review'] is not None else '낙찰자만 아래 버튼으로 후기를 한 번 남길 수 있어요.', inline=False)
+        e.set_footer(text=f"경매 #{a['id']}  ·  총 {count:,}회 입찰  ·  마리 경매장")
+        return e
+
+    def auction_notice_embed(self, kind, p):
+        colors = {'bid': 0x8DDBC0, 'closed': 0xEDC877 if p['user'] else 0x89919E, 'review': 0xB5A5E8}
+        labels = {'bid': '새로운 최고 입찰', 'closed': '낙찰 완료' if p['user'] else '입찰 없이 마감', 'review': '낙찰자의 후기'}
+        e = discord.Embed(title=p['title'], color=colors[kind])
+        e.set_author(name=f"MARI AUCTION  ·  {labels[kind]}")
+        if kind == 'review':
+            e.description = p['body']
+            e.add_field(name='작성자', value=f"<@{p['user']}>", inline=True)
+            e.add_field(name='낙찰 금액', value=f"{p['amount']:,} 마리", inline=True)
+        elif p['user']:
+            e.description = f"{'🔨' if kind == 'bid' else '🏆'} **{p['amount']:,} 마리**"
+            e.add_field(name='최고 입찰자' if kind == 'bid' else '낙찰자', value=f"<@{p['user']}>", inline=True)
+            e.add_field(name='안내', value='이전 입찰금은 전액 환급됩니다.' if kind == 'bid' else '등록자에게 낙찰금이 지급됐어요.\n낙찰자는 아래에서 후기를 남겨주세요.', inline=False)
+        else:
+            e.description = '입찰자가 없어 이번 경매는 유찰됐어요.'
+        e.set_footer(text=f"경매 #{p['auction']}  ·  마리 경매장")
         return e
 
     async def channel(self,cid):
@@ -425,11 +467,7 @@ class Market:
                     elif kind=='auction_panel':
                         a=self.store.auction(item,p['guild']);e=self.auction_embed(a);view=AuctionPanel(self,item,a['status'],a['review'] is not None);self.bot.add_view(AuctionPanel(self,item,'open'));self.bot.add_view(AuctionPanel(self,item,'sold'))
                     else:
-                        title={'bid':'🔨 새 입찰','closed':'🏆 경매 마감','review':'💬 낙찰 후기'}[kind]
-                        e=discord.Embed(title=title,description=f"**{discord.utils.escape_markdown(p['title'])}** · 경매 #{p['auction']}",color=0x9b87f5)
-                        e.add_field(name='입찰자' if kind=='bid' else '낙찰자',value=f"<@{p['user']}>" if p['user'] else '입찰자 없음 · 유찰')
-                        if p['user']:e.add_field(name='금액',value=f"{p['amount']:,}마리")
-                        if kind=='review':e.add_field(name='후기',value=p['body'],inline=False)
+                        e=self.auction_notice_embed(kind,p)
                         if kind=='closed' and p['user']:view=AuctionPanel(self,item,'sold')
                     e.set_footer(text=marker)
                     if not found:
