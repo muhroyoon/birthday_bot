@@ -187,7 +187,7 @@ class Economy(PaidPasses):
       move=stock_move_bps(*self.market_parameters(symbol,date),volatility=self.private_volatility(symbol,date))
      else:
       move=stock_move_bps(*self.market_parameters(symbol,date)) if date>=cutover else legacy_stock_move_bps(self.private_up_chance(symbol,date))
-     price=max(floor,min(10000000,int((old*(10000+move)+5000)//10000)))
+     price=max(floor,min(50000000,int((old*(10000+move)+5000)//10000)))
      if date<cutover:price=max((old*10+16)//17,min(old*170//100,price))
      self.liquidate(symbol,price,date.isoformat())
      self.db.execute('INSERT INTO mari_web_stock_days VALUES(?,?,?,?)',(symbol,date.isoformat(),old,price))
