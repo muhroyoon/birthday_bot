@@ -10071,6 +10071,14 @@ class RaffleTicketCreateModal(discord.ui.Modal):
             await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
             return
 
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("관리자만 추첨권을 등록할 수 있습니다.", ephemeral=True)
+            return
+        permissions = interaction.channel.permissions_for(interaction.guild.me)
+        if not (permissions.send_messages and permissions.embed_links and permissions.read_message_history):
+            await interaction.response.send_message("이 채널에서 봇의 메시지 보내기·링크 임베드·메시지 기록 보기 권한을 허용해주세요.", ephemeral=True)
+            return
+
         title = self.title_input.value.strip()
         if not title:
             await interaction.response.send_message("추첨권 제목을 입력해주세요.", ephemeral=True)
@@ -10096,12 +10104,9 @@ class RaffleTicketCreateModal(discord.ui.Modal):
             return
 
         raffle_id = create_raffle_ticket(interaction.guild.id, title, price, daily_limit, interaction.user.id)
-        embed = discord.Embed(title="🎟 추첨권 등록 완료", color=0xF1C40F)
-        embed.add_field(name="번호", value=f"`#{raffle_id}`", inline=True)
-        embed.add_field(name="제목", value=title, inline=True)
-        embed.add_field(name="가격", value=f"`{format_money(price)}`", inline=True)
-        embed.add_field(name="하루 제한", value=f"`{daily_limit}장`", inline=True)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        bot.mari_market.store.publish_raffle(raffle_id, interaction.guild.id, interaction.channel_id)
+        await interaction.response.send_message("추첨권을 등록했습니다. 이 채널에 구매·현황·삭제 패널을 게시합니다.", ephemeral=True)
+        await bot.mari_market.flush()
 
 
 class RafflePurchaseSelect(discord.ui.Select):
@@ -10214,63 +10219,24 @@ class RafflePurchaseView(discord.ui.View):
         await interaction.response.send_modal(RafflePurchaseQuantityModal(self, raffle, remaining_count))
 
     async def purchase(self, interaction: discord.Interaction, raffle_id: int, quantity: int):
+        from mari_market_panels import MarketError
         if interaction.guild is None:
             await interaction.response.send_message("서버에서만 사용할 수 있습니다.", ephemeral=True)
             return
-
-        if self.resolved:
-            await interaction.response.send_message("이미 처리된 추첨권 구매 패널입니다.", ephemeral=True)
+        try:
+            if self.resolved:
+                raise MarketError("이미 처리된 구매 화면입니다.")
+            result = bot.mari_market.store.buy_raffle(raffle_id, interaction.guild.id, interaction.user.id, quantity, interaction.id)
+        except MarketError as error:
+            await interaction.response.send_message(str(error), ephemeral=True)
             return
-
-        raffle = get_active_raffle_by_id(interaction.guild.id, raffle_id)
-        if raffle is None:
-            self.resolved = True
-            self.disable_all_items()
-            embed = discord.Embed(
-                title="🎟 추첨권 구매 불가",
-                description="선택한 추첨권이 삭제되었거나 더 이상 판매 중이 아닙니다.",
-                color=0xE74C3C,
-            )
-            await interaction.response.edit_message(embed=embed, view=self)
-            return
-
-        already_bought = get_raffle_purchase_count_today(raffle["id"], interaction.guild.id, interaction.user.id)
-        remaining_count = raffle["daily_limit"] - already_bought
-        if remaining_count <= 0:
-            await interaction.response.send_message(
-                f"오늘 `{raffle['title']}` 추첨권 구매 제한 `{raffle['daily_limit']}장`을 모두 사용했습니다.",
-                ephemeral=True,
-            )
-            return
-
-        if quantity > remaining_count:
-            await interaction.response.send_message(
-                f"오늘은 `{remaining_count}장`까지만 더 구매할 수 있습니다.",
-                ephemeral=True,
-            )
-            return
-
-        total_amount = raffle["price"] * quantity
-        if not can_afford(interaction.user.id, total_amount):
-            await interaction.response.send_message(
-                f"잔액이 부족합니다. 필요 금액: `{format_money(total_amount)}`",
-                ephemeral=True,
-            )
-            return
-
         self.resolved = True
-        add_balance(interaction.user.id, -total_amount)
-        add_raffle_purchase(raffle["id"], interaction.guild.id, interaction.user.id, quantity, total_amount)
-
         self.disable_all_items()
-        member_name = interaction.user.display_name if isinstance(interaction.user, discord.Member) else interaction.user.name
         embed = discord.Embed(title="🎟 추첨권 구매 완료", color=0x2ECC71)
-        embed.add_field(name="구매자", value=member_name, inline=False)
-        embed.add_field(name="추첨권", value=raffle["title"], inline=False)
-        embed.add_field(name="구매 수량", value=f"`{quantity}장`", inline=True)
-        embed.add_field(name="차감 금액", value=f"`{format_money(total_amount)}`", inline=True)
-        embed.add_field(name="오늘 구매량", value=f"`{already_bought + quantity}/{raffle['daily_limit']}장`", inline=True)
-        embed.add_field(name="현재 잔액", value=f"`{format_money(get_balance(interaction.user.id))}`", inline=False)
+        embed.add_field(name="추첨권", value=result['title'], inline=False)
+        embed.add_field(name="구매 수량", value=f"{result['quantity']:,}장")
+        embed.add_field(name="차감 금액", value=f"{result['total']:,}마리")
+        embed.add_field(name="오늘 구매량", value=f"{result['today']:,}장")
         await interaction.response.edit_message(embed=embed, view=self)
 
 
@@ -13916,6 +13882,15 @@ async def initialize_legacy_guests(interaction: discord.Interaction):
     )
 
 
+@bot.tree.command(name="경매등록", description="상품·시작가·호찰가·마감일시를 설정하고 마리 경매를 시작합니다.")
+async def auction_create(interaction: discord.Interaction):
+    from mari_market_panels import AuctionCreate
+    if interaction.guild is None or interaction.user.bot:
+        await interaction.response.send_message("서버 구성원만 이용할 수 있습니다.", ephemeral=True)
+        return
+    await interaction.response.send_modal(AuctionCreate(bot.mari_market))
+
+
 @bot.tree.command(name="추첨권등록", description="서버 재화로 구매할 수 있는 추첨권을 등록합니다.")
 @app_commands.checks.has_permissions(administrator=True)
 async def raffle_create(interaction: discord.Interaction):
@@ -14001,7 +13976,7 @@ async def raffle_delete(interaction: discord.Interaction, title: str):
         return
 
     rows, total_quantity, total_amount = get_raffle_summary(raffle["id"], interaction.guild.id)
-    delete_raffle_ticket(raffle["id"])
+    bot.mari_market.store.delete_raffle(raffle["id"], interaction.guild.id, interaction.user.id, interaction.user.guild_permissions.administrator)
 
     await interaction.response.send_message(
         f"`{raffle['title']}` 추첨권을 삭제했습니다.\n"
@@ -16297,6 +16272,18 @@ def build_economy_commands_embed():
     )
 
     embed.add_field(
+        name="추첨권 / 경매",
+        value=(
+            "`/추첨권등록` - 구매·현황·삭제 상시 패널 생성 (관리자)\n"
+            "추첨권 패널 구매와 마리웹 구매는 구매량·일일 한도를 함께 사용합니다.\n"
+            "`/경매등록` - 상품명·시작가·호찰가·한국 시간 마감일시 입력\n"
+            "입찰금 보관 → 상위 입찰 시 환급 → 마감 시 등록자에게 지급\n"
+            "낙찰자는 마감 패널의 후기등록 버튼으로 공개 후기를 작성할 수 있습니다."
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
         name="참고 정보",
         value=(
             "각 게임 패널의 `확률 보기` 버튼 - 해당 게임 확률과 배당 확인\n"
@@ -16369,7 +16356,7 @@ def build_command_guide_embeds():
         value=(
             "`/돈주기`, `/돈주기내역`, `/돈삭제`, `/송금내역`, `/벌금부여`, `/벌금삭제`\n"
             "`/사업자 등록`, `/사업자 삭제`, `/사업자 목록`\n"
-            "`/추첨권등록`, `/추첨권삭제`\n"
+            "`/추첨권등록` → 구매·현황·삭제 상시 패널, `/추첨권삭제`\n"
             "`/신용불량자등록`, `/신용불량자목록`, `/신용불량자삭제`, `/신용초기화`\n"
             "`/노동가챠권지급`, `/노동가챠권삭제`\n"
             "`/신용조회`, `/신용레벨표`, `/신용대출`, `/대출상환`"
@@ -16405,7 +16392,7 @@ def build_command_guide_embeds():
         name="🏠 기본 / 정보",
         value=(
             "기초생활수급비 패널, `/잔액`, `/랭킹`, `/송금`, `/송금내역`\n"
-            "`/사업자 목록`, `/추첨권구매`, `/추첨권현황`\n"
+            "`/사업자 목록`, `/추첨권구매`, `/추첨권현황`, `/경매등록`\n"
             "`/도움말 분류:경제/게임`, `/족보`, 게임 패널의 `확률 보기` 버튼"
         ),
         inline=False,
@@ -17592,6 +17579,8 @@ async def storage_cleanup_loop():
 
 @bot.event
 async def on_ready():
+    from mari_market_panels import install as install_market
+    install_market(bot, conn)
     from mari_chicken_bonus import install as install_chicken_bonus
     install_chicken_bonus(bot, conn)
 
@@ -17659,6 +17648,7 @@ if _mari_web_os.environ.get("MARIBOT_WEB_ENABLED") == "1":
     _install_mari_web(globals())
 
 bot.run(TOKEN)
+
 
 
 
