@@ -48,6 +48,7 @@ class MarketStore:
         CREATE TABLE IF NOT EXISTS market_receipts(request TEXT PRIMARY KEY,fingerprint TEXT,result TEXT);
         CREATE TABLE IF NOT EXISTS market_bids(id INTEGER PRIMARY KEY,auction_id INTEGER,user_id TEXT,amount INTEGER,at REAL);
         CREATE TABLE IF NOT EXISTS market_notices(id INTEGER PRIMARY KEY,kind TEXT,item_id INTEGER,channel_id TEXT,payload TEXT,created REAL,attempted REAL,message_id TEXT,next_retry REAL NOT NULL DEFAULT 0,UNIQUE(kind,item_id));
+        CREATE TABLE IF NOT EXISTS market_panel_cleanup(channel_id TEXT,message_id TEXT PRIMARY KEY);
         ''')
 
     @contextmanager
@@ -464,7 +465,8 @@ class Market:
                             with self.store.db:self.store.db.execute("UPDATE market_notices SET message_id='cancelled' WHERE id=?",(nid,))
                             continue
                         e=self.raffle_embed(r);view=RafflePanel(self,item,r['status']=='active');self.bot.add_view(view)
-                    elif kind=='auction_panel':
+                    elif kind in ('auction_panel','auction_bump'):
+                        if kind=='auction_bump':item=p['auction']
                         a=self.store.auction(item,p['guild']);e=self.auction_embed(a);view=AuctionPanel(self,item,a['status'],a['review'] is not None);self.bot.add_view(AuctionPanel(self,item,'open'));self.bot.add_view(AuctionPanel(self,item,'sold'))
                     else:
                         e=self.auction_notice_embed(kind,p)
@@ -472,14 +474,46 @@ class Market:
                     e.set_footer(text=marker)
                     if not found:
                         with self.store.db:self.store.db.execute('UPDATE market_notices SET attempted=? WHERE id=?',(time.time(),nid))
-                        found=await channel.send(embed=e,view=view,allowed_mentions=discord.AllowedMentions.none())
+                        options={'silent':True} if kind=='auction_bump' else {}
+                        found=await channel.send(embed=e,view=view,allowed_mentions=discord.AllowedMentions.none(),**options)
                     with self.store.db:
                         self.store.db.execute('UPDATE market_notices SET message_id=? WHERE id=?',(str(found.id),nid))
                         if kind in ('auction_panel','raffle_panel'):
                             self.store.db.execute('INSERT OR REPLACE INTO market_panels VALUES(?,?,?,?,?,NULL)',(kind,item,p['guild'],cid,str(found.id)))
+                        elif kind=='auction_bump':
+                            self.store.db.execute("UPDATE market_panels SET message_id=?,signature=NULL WHERE kind='auction_panel' AND item_id=? AND message_id=?",(str(found.id),item,p['previous']))
+                            self.store.db.execute('INSERT OR IGNORE INTO market_panel_cleanup VALUES(?,?)',(cid,p['previous']))
                 except Exception:
                     with self.store.db:self.store.db.execute('UPDATE market_notices SET next_retry=? WHERE id=?',(time.time()+60,nid))
                     log.exception('Market notice %s pending retry',nid)
+
+    async def queue_auction_bumps(self):
+        # One trailing group per channel, so multiple auctions never chase each other.
+        async with self.lock:
+            groups={}
+            rows=self.store.db.execute("SELECT p.item_id,p.guild_id,p.channel_id,p.message_id FROM market_panels p JOIN market_auctions a ON a.id=p.item_id WHERE p.kind='auction_panel' AND a.status='open' AND a.ends>?",(time.time(),)).fetchall()
+            for item,gid,cid,mid in rows:groups.setdefault(cid,[]).append((item,gid,mid))
+            for cid,panels in groups.items():
+                try:
+                    channel=await self.channel(cid)
+                    latest=next(iter([m async for m in channel.history(limit=1)]),None)
+                    if latest is None or str(latest.id) in {mid for _,_,mid in panels}:continue
+                    if latest.id<=max(int(mid) for _,_,mid in panels):continue
+                    with self.store.db:
+                        for item,gid,mid in panels:
+                            self.store.notice('auction_bump',int(mid),cid,{'auction':item,'guild':gid,'previous':mid},time.time())
+                except Exception:log.exception('Auction bottom placement failed: %s',cid)
+
+    async def cleanup_panels(self):
+        # Persist cleanup before removing old bot messages; retries survive restarts.
+        async with self.lock:
+            for cid,mid in self.store.db.execute('SELECT channel_id,message_id FROM market_panel_cleanup').fetchall():
+                try:
+                    channel=await self.channel(cid)
+                    try:await channel.get_partial_message(int(mid)).delete()
+                    except discord.NotFound:pass
+                    with self.store.db:self.store.db.execute('DELETE FROM market_panel_cleanup WHERE message_id=?',(mid,))
+                except Exception:log.exception('Old auction panel cleanup pending: %s',mid)
 
     async def refresh_panels(self):
         async with self.lock:
@@ -509,7 +543,7 @@ class Market:
             try:
                 self.store.settle_due()
             except Exception:log.exception('Market settlement pass failed')
-            for action in (self.flush,self.refresh_panels):
+            for action in (self.queue_auction_bumps,self.flush,self.refresh_panels,self.cleanup_panels):
                 try:await action()
                 except Exception:log.exception('Market maintenance failed')
             await asyncio.sleep(10)
