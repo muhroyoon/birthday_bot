@@ -1,5 +1,5 @@
 """Editorial releases. Set publication timestamp only after verified deployment."""
-PUBLISHED_AT = None
+PUBLISHED_AT = '2026-10-02T10:43:54.159130+00:00'
 RELEASE_ID = 'puzzle-refresh-20261002'
 
 def entries():
