@@ -927,6 +927,9 @@ class Bridge:
             return self.training.submit(member, data)
 
     async def dispatch(self, action, token, data):
+        if action == 'updates':
+            from mari_web_announcements import entries
+            return {'entries':entries()}
         if action == 'pubg/status':
             from mari_web_pubg import Pubg
             if not hasattr(self,'pubg'):self.pubg=Pubg(self,WebError)
@@ -963,9 +966,28 @@ class Bridge:
                 return self.baseball.guess(member,data)
         if action in {'puzzles/start','puzzles/step'}:
             from mari_web_puzzles import Puzzles
+            if not hasattr(self,'puzzles'):self.puzzles=Puzzles(self,WebError)
+            prepared=None
+            if action=='puzzles/start':
+                async with self.lock:prepared=self.puzzles.preparation(member,data)
+                if prepared:
+                    import copy
+                    from mari_logic_puzzles import make as make_logic
+                    if not hasattr(self,'puzzle_generation'):
+                        self.puzzle_generation=asyncio.Semaphore(2);self.puzzle_daily_cache={}
+                    key=(prepared['game'],prepared['day']) if prepared['level'] is None else None
+                    if key in self.puzzle_daily_cache:prepared['board']=copy.deepcopy(self.puzzle_daily_cache[key])
+                    else:
+                        if self.puzzle_generation.locked():raise WebError('문제를 준비하는 이용자가 많아요. 잠시 후 다시 시도해주세요. 티켓은 사용되지 않았어요.',503)
+                        async with self.puzzle_generation:
+                            try:prepared['board']=await asyncio.to_thread(make_logic,prepared['game'],prepared['seed'],None,prepared['level'] or 400)
+                            except ValueError as e:raise WebError(str(e),503)
+                        if key:
+                            if len(self.puzzle_daily_cache)>=12:self.puzzle_daily_cache.pop(next(iter(self.puzzle_daily_cache)))
+                            self.puzzle_daily_cache[key]=copy.deepcopy(prepared['board'])
             async with self.lock:
-                if not hasattr(self,'puzzles'):self.puzzles=Puzzles(self,WebError)
-                return self.puzzles.start(member,data) if action=='puzzles/start' else self.puzzles.control(member,data)
+                try:return self.puzzles.start(member,data,prepared) if action=='puzzles/start' else self.puzzles.control(member,data)
+                except ValueError as e:raise WebError(str(e),503)
         if action in {'adventure/status','adventure/start','adventure/step'}:
             from mari_web_adventure import Adventure
             async with self.lock:

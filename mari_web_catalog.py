@@ -2,7 +2,8 @@
 import hashlib
 import re
 from datetime import datetime,timedelta,timezone
-GAMES=('direction','shikaku','parking','power','warehouse','untangle','light','fishing','runner','memory','tower','territory','dodge','work','blackjack','slot','baccarat','horse_race','seotda','coin','minesweeper','supply_drop','duckmong','rock_paper_scissors','number_baseball','all_in','aim','pubg','reaction','stopwatch','fortune','stocks','apple','snake','suika','2048')
+GAMES=('nurikabe','slitherlink','hashi','direction','shikaku','parking','power','warehouse','untangle','light','fishing','runner','memory','tower','territory','dodge','work','blackjack','slot','baccarat','horse_race','seotda','coin','minesweeper','supply_drop','duckmong','rock_paper_scissors','number_baseball','all_in','aim','pubg','reaction','stopwatch','fortune','stocks','apple','snake','suika','2048')
+GAMES=tuple(g for g in GAMES if g not in ('parking','warehouse','light','fishing','runner','memory','pubg'))
 KST=timezone(timedelta(hours=9))
 class GameCatalog:
     def __init__(self,bridge,error):

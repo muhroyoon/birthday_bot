@@ -9,7 +9,9 @@ import secrets
 import time
 from datetime import datetime, timezone, timedelta
 
-GAMES={'parking':'마리 주차장 탈출','power':'전력 연결','warehouse':'보석 창고','untangle':'엉킨 실 풀기','light':'빛의 미로','shikaku':'마리 사각 퍼즐'}
+from mari_logic_puzzles import GAMES as LOGIC_GAMES, make as logic_make, move as logic_move, solved as logic_solved
+
+GAMES={**LOGIC_GAMES,'parking':'마리 주차장 탈출','power':'전력 연결','warehouse':'보석 창고','untangle':'엉킨 실 풀기','light':'빛의 미로','shikaku':'마리 사각 퍼즐'}
 KST=timezone(timedelta(hours=9))
 DIRS=((0,-1),(1,0),(0,1),(-1,0))
 
@@ -64,6 +66,7 @@ def free_parking(seed,level,proof):
  return {'game':'parking','n':6,'cars':result}
 
 def make(game,seed,proof=None,level=None):
+ if game in LOGIC_GAMES:return logic_make(game,seed,proof,level=level or DAILY_EXPERT_LEVEL)
  r=random.Random(seed)
  if game=='shikaku':return make_shikaku(seed,proof,level)
  if game=='parking':
@@ -178,6 +181,7 @@ def crossed(b):
 
 def solved(b):
  g=b['game']
+ if g in LOGIC_GAMES:return logic_solved(b)
  if g=='shikaku':
   covered=set()
   for rect in b['rects']:
@@ -195,6 +199,7 @@ def solved(b):
 def move(b,e):
  if not isinstance(e,list) or not e or any(type(v) is not int for v in e):return False
  g=b['game'];n=b['n']
+ if g in LOGIC_GAMES:return logic_move(b,e)
  if g=='shikaku':
   if len(e)==2 and e[0]==-1 and 0<=e[1]<len(b['rects']):
    b['rects'].pop(e[1]);return True
@@ -397,7 +402,19 @@ class Puzzles:
   state=json.loads(row[8])
   if row[4]=='free' and state.get('level') is None:state['level']=1+self.db.execute("SELECT COUNT(*) FROM mari_web_puzzles WHERE user_id=? AND game=? AND mode='free' AND done=1 AND created<?",(row[1],row[3],row[6])).fetchone()[0]
   return {'id':row[0],'game':row[3],'mode':row[4],'day':row[5],'created':row[6],'elapsed':row[12],'seq':row[9],**state}
- def start(self,member,data):
+ def preparation(self,member,data):
+  """Read on the event-loop thread; generate without a DB lock or ticket charge."""
+  game=data.get('game');mode=data.get('mode','daily');day=self.day()
+  if game not in LOGIC_GAMES or mode not in ('free','daily'):return None
+  _,_,receipt=self.b.economy.receipt(member,data,'puzzles/start')
+  if receipt:return None
+  row=self.db.execute("SELECT done FROM mari_web_puzzles WHERE user_id=? AND game=? AND mode=? AND (day=? OR mode='free') ORDER BY created DESC LIMIT 1",(str(member.id),game,mode,day)).fetchone()
+  if row and (mode=='daily' or not row[0]):return None
+  if mode=='daily' and self.b.economy.ticket_count(member.id)<1:raise self.Error('게임 티켓이 부족해요. 상점에서 티켓을 구매해주세요.',409)
+  level=1+self.db.execute("SELECT COUNT(*) FROM mari_web_puzzles WHERE user_id=? AND game=? AND mode='free' AND done=1",(str(member.id),game)).fetchone()[0] if mode=='free' else None
+  seed=int(hashlib.sha256(('puzzles-v1:'+game+':'+day).encode()).hexdigest()[:16],16) if mode=='daily' else secrets.randbits(32)
+  return {'game':game,'day':day,'level':level,'seed':seed}
+ def start(self,member,data,prepared=None):
   game=data.get('game');mode=data.get('mode','daily');day=self.day()
   if game not in GAMES or mode not in ('daily','free'):raise self.Error('게임 모드를 확인해주세요.')
   request,fp,old=self.b.economy.receipt(member,data,'puzzles/start')
@@ -405,10 +422,14 @@ class Puzzles:
   row=self.db.execute('SELECT * FROM mari_web_puzzles WHERE user_id=? AND game=? AND mode=? AND (day=? OR mode=\'free\') ORDER BY created DESC LIMIT 1',(str(member.id),game,mode,day)).fetchone()
   with self.db:
    if not row or mode=='free' and row[10]:
+    if game in ('parking','warehouse','light'):raise self.Error('서비스가 종료된 게임이에요. 새 퍼즐을 이용해주세요.',410)
     if mode=='daily':self.b.economy.consume_ticket(member.id)
     seed=int(hashlib.sha256(('puzzles-v1:'+game+':'+day).encode()).hexdigest()[:16],16) if mode=='daily' else secrets.randbits(32)
     level=1+self.db.execute("SELECT COUNT(*) FROM mari_web_puzzles WHERE user_id=? AND game=? AND mode='free' AND done=1",(str(member.id),game)).fetchone()[0] if mode=='free' else None
-    board=make_shikaku_challenge(seed,level=level if mode=='free' else DAILY_EXPERT_LEVEL,progressive=mode=='free') if game=='shikaku' and (mode=='free' or day>='2026-09-25') else make(game,seed,level=daily_level(day) if mode=='daily' else level)
+    if prepared:
+     if prepared['game']!=game or prepared['day']!=day or prepared['level']!=level:raise self.Error('문제가 갱신됐어요. 다시 시작해주세요.',409)
+     board=prepared['board']
+    else:board=make_shikaku_challenge(seed,level=level if mode=='free' else DAILY_EXPERT_LEVEL,progressive=mode=='free') if game=='shikaku' and (mode=='free' or day>='2026-09-25') else make(game,seed,level=(400 if game in LOGIC_GAMES else daily_level(day)) if mode=='daily' else level)
     state={'board':board,'initial':copy.deepcopy(board),'history':[],'moves':0,'done':False,'level':level};jid=secrets.token_urlsafe(24);now=time.time()
     self.db.execute('INSERT INTO mari_web_puzzles(id,user_id,guild_id,game,mode,day,created,last,state) VALUES(?,?,?,?,?,?,?,?,?)',(jid,str(member.id),str(member.guild.id),game,mode,day,now,now,json.dumps(state)))
     row=self.db.execute('SELECT * FROM mari_web_puzzles WHERE id=?',(jid,)).fetchone()

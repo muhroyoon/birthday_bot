@@ -8,7 +8,7 @@ import secrets
 import time
 PAID = {'aim', 'pubg', 'reaction', 'stopwatch', 'apple', 'snake', 'suika', '2048', 'direction', 'fortune'}
 PASS_PRICE = 150000
-FORTUNE_PRICE = 1000000
+FORTUNE_PRICE = 0
 PASS_LIFETIME_SECONDS = 900
 
 class PaidPasses:
@@ -39,6 +39,8 @@ class PaidPasses:
 
     def start(self, member, data, game=None, create=None):
         game = game or data.get('game')
+        if game == 'pubg':
+            raise self.Error('배그 훈련장 서비스가 종료됐어요.', 410)
         if game not in PAID:
             raise self.Error('지원하지 않는 티켓입니다.')
         request, fp, old = self.receipt(member, data, 'pass:' + game)
@@ -53,9 +55,7 @@ class PaidPasses:
                 raise self.Error('오늘 날짜로 운세를 다시 확인해주세요.')
         price = FORTUNE_PRICE if game == 'fortune' else PASS_PRICE
         with self.db:
-            if game == 'fortune':
-                self.debit(member.id, price)
-            else:
+            if game != 'fortune':
                 self.consume_ticket(member.id)
             rid = secrets.token_urlsafe(24)
             seed = secrets.randbits(32)

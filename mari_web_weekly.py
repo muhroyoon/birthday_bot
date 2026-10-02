@@ -42,6 +42,8 @@ class Weekly:
         self.unified_since=self.db.execute("SELECT starts_week FROM mari_web_weekly_policy WHERE id='unified_devices'").fetchone()[0]
         self.db.execute("INSERT OR IGNORE INTO mari_web_weekly_policy VALUES('unified_training_devices',?)",(week_start(now),))
         self.training_unified_since=self.db.execute("SELECT starts_week FROM mari_web_weekly_policy WHERE id='unified_training_devices'").fetchone()[0]
+        self.db.execute("INSERT OR IGNORE INTO mari_web_weekly_policy VALUES('retired_puzzles_20261002',?)",(week_start(now)+WEEK,))
+        self.retired_since=self.db.execute("SELECT starts_week FROM mari_web_weekly_policy WHERE id='retired_puzzles_20261002'").fetchone()[0]
         self.db.commit()
 
     def unified(self,board,week):
@@ -84,6 +86,7 @@ class Weekly:
 
     def eligible(self,board,week):
         board=self.canonical_board(board,week)
+        if board.split(':')[0] in ('fishing','runner','memory','parking','warehouse','light','pubg') and week>=self.retired_since:return False
         if board=='number_baseball_skill':
             first=self.db.execute('SELECT MIN(week) FROM mari_web_weekly_records WHERE board=?',(board,)).fetchone()[0]
             # The transition week retains the old game's accrued awards, without a second prize pool.

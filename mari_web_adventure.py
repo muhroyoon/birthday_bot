@@ -213,6 +213,7 @@ class Adventure:
   self.status(member)
   active=self.db.execute('SELECT * FROM mari_web_adventures WHERE user_id=? AND done=0',(str(member.id),)).fetchone()
   if active:return self.public(active)
+  if game in ('fishing','runner','memory'):raise self.Error('서비스가 종료된 게임이에요.',410)
   with self.db:
    self.b.economy.consume_ticket(member.id);jid=secrets.token_urlsafe(24);now=time.time();s=initial(game,secrets.randbits(32))
    self.db.execute('INSERT INTO mari_web_adventures VALUES(?,?,?,?,?,?,?,0,0)',(jid,str(member.id),str(member.guild.id),game,json.dumps(s),now,now))
