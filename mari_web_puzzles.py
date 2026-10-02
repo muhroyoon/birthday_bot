@@ -298,15 +298,65 @@ def make_shikaku(seed,proof=None,level=None):
  if proof is not None:proof.extend(rects)
  return b
 
+def shikaku_difficulty(b,node_limit=128):
+ # Measure deductions, not the number of initial rectangle candidates.
+ full=(1<<(b['n']**2))-1
+ stats={'unique':False,'branches':0,'depth':0,'rounds':0,'ownership':0,'limited':False}
+ if sum(b['clues'])!=b['n']**2:return stats
+ nodes=0
+ def search(groups,occupied,depth):
+  nonlocal nodes
+  nodes+=1
+  if nodes>node_limit:stats['limited']=True;return 2
+  while groups:
+   groups=[[m for m in group if not m&occupied] for group in groups]
+   if any(not group for group in groups):return 0
+   singles=[group[0] for group in groups if len(group)==1]
+   if singles:
+    for mask in singles:
+     if occupied&mask:return 0
+     occupied|=mask
+    groups=[group for group in groups if len(group)>1]
+    stats['rounds']+=1
+    continue
+   # A cell reachable by just one clue must belong to that clue.
+   unions=[];once=multiple=0
+   for group in groups:
+    union=0
+    for mask in group:union|=mask
+    unions.append(union);multiple|=once&union;once|=union
+   if once|occupied!=full:return 0
+   exclusive=once&~multiple;changed=False
+   for i,union in enumerate(unions):
+    required=union&exclusive
+    choices=[m for m in groups[i] if m&required==required]
+    if not choices:return 0
+    if len(choices)<len(groups[i]):
+     stats['ownership']+=1;changed=True;groups[i]=choices
+   if changed:continue
+   # Exhaust both hypotheses to verify uniqueness, with a strict work limit.
+   index=min(range(len(groups)),key=lambda i:len(groups[i]))
+   stats['branches']+=1;stats['depth']=max(stats['depth'],depth+1)
+   rest=groups[:index]+groups[index+1:];count=0
+   for mask in groups[index]:
+    count+=search(rest,occupied|mask,depth+1)
+    if count>=2:return 2
+   return count
+  return int(occupied==full)
+ stats['unique']=search(shikaku_options(b),0,0)==1 and not stats['limited']
+ return stats
+
 def make_shikaku_challenge(seed,proof=None,level=1,progressive=False):
  # Prefer ambiguous rectangle shapes over single cells and obvious full-row strips.
  r=random.Random(seed);n=min(12,7+(level-1)//4);best=None;best_score=-1;unique=0
  # Free play keeps growing beyond the old level-21 ceiling; daily seeds stay unchanged.
  tier=min(4,max(0,(level-21)//15)) if progressive else 0
  n+=tier
- target=12+3*tier
+ # Keep daily generation byte-for-byte stable. Free challenge uses measured
+ # reasoning and a growing candidate pool, including beyond stage 200.
+ target=12+3*tier if not progressive else 12+min(84,(level-1)//5)
  max_area=12+2*tier
- for attempt in range(160):
+ for attempt in range(160 if not progressive else min(1600,160+4*level)):
   rects=[]
   def split(x,y,w,h):
    axes=([True] if w>=4 else [])+([False] if h>=4 else [])
@@ -321,9 +371,14 @@ def make_shikaku_challenge(seed,proof=None,level=1,progressive=False):
   clues=[0]*(n*n)
   for x,y,x2,y2 in rects:clues[r.randint(y,y2)*n+r.randint(x,x2)]=(x2-x+1)*(y2-y+1)
   b={'game':'shikaku','n':n,'clues':clues,'rects':[]}
-  if not shikaku_unique(b):continue
-  score=sum(min(len(options)-1,8+3*tier) for options in shikaku_options(b))
-  if score>best_score:best=(b,rects);best_score=score
+  if progressive:
+   difficulty=shikaku_difficulty(b)
+   if not difficulty['unique']:continue
+   score=(difficulty['depth'],difficulty['branches'],difficulty['ownership'],difficulty['rounds'])
+  else:
+   if not shikaku_unique(b):continue
+   score=sum(min(len(options)-1,8+3*tier) for options in shikaku_options(b))
+  if best is None or score>best_score:best=(b,rects);best_score=score
   unique+=1
   if unique>=target:break
  if best is None:return make_shikaku(seed,proof,level)
