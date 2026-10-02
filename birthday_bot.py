@@ -13,6 +13,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from mari_attendance_rewards import pay_reward, reward_amount
+
 import discord
 from PIL import Image, ImageDraw, ImageFont
 from discord import app_commands
@@ -3359,9 +3361,33 @@ def refresh_attendance_data():
 
 
 def save_attendance_data():
-    os.makedirs(os.path.dirname(ATTENDANCE_DATA_FILE), exist_ok=True)
-    with open(ATTENDANCE_DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(attendance_data, f, indent=4, ensure_ascii=False)
+    directory = os.path.dirname(ATTENDANCE_DATA_FILE)
+    os.makedirs(directory, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(dir=directory, prefix="attendance-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(attendance_data, f, indent=4, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary, ATTENDANCE_DATA_FILE)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def settle_pending_attendance_rewards():
+    # Only new attendance writes an outbox entry; historical ranks are not backfilled.
+    for guild_id, guild_data in attendance_data.get("guilds", {}).items():
+        pending = guild_data.get("pending_rewards", [])
+        while pending:
+            entry = pending[0]
+            try:
+                pay_reward(conn, guild_id, entry["day"], entry["user_id"], entry["rank"])
+            except Exception as exc:
+                print(f"출석 보상 지급 재시도 대기: {guild_id} / {exc}")
+                break
+            pending.pop(0)
+            save_attendance_data()
 
 
 def parse_attendance_date(date_str: str | None):
@@ -9533,7 +9559,7 @@ class DailyAttendanceView(discord.ui.View):
 
 def build_daily_attendance_description(guild: discord.Guild | None, attendee_ids: list[str]) -> str:
     rank_icons = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
-    lines = ["🏆 오늘 출석 TOP 5"]
+    lines = ["🏆 오늘 출석 TOP 5", "💰 1등 500만 · 2등 300만 · 3등 100만 마리 자동 지급", ""]
 
     for index in range(5):
         if index < len(attendee_ids):
@@ -9571,6 +9597,7 @@ class AttendanceButton(discord.ui.Button):
             return
 
         refresh_attendance_data()
+        settle_pending_attendance_rewards()
         guild_data = get_attendance_guild_data(interaction.guild.id)
         guild_users = guild_data["users"]
         guild_today_order = guild_data["today_order"]
@@ -9620,11 +9647,23 @@ class AttendanceButton(discord.ui.Button):
         user["total"] += 1
         user["monthly"][month] = user["monthly"].get(month, 0) + 1
         today_list.append(user_id)
+        rank = len(today_list)
+        amount = reward_amount(rank)
+        if amount:
+            guild_data.setdefault("pending_rewards", []).append(
+                {"day": today, "user_id": user_id, "rank": rank}
+            )
         save_attendance_data()
+        settle_pending_attendance_rewards()
+        waiting = any(e["day"] == today and e["user_id"] == user_id
+                      for e in guild_data.get("pending_rewards", []))
+        reward_text = (f"💰 출석 보상: {amount:,}마리 "
+                       + ("지급 대기 중 (자동 재시도)" if waiting else "지급 완료") + "\n") if amount else ""
 
         rank = today_list.index(user_id) + 1
         await interaction.response.send_message(
             f"✅ 출석 완료!\n\n"
+            f"{reward_text}"
             f"🏅 오늘 순위: {rank}등\n\n"
             f"📅 이번 달 출석: {user['monthly'][month]}일\n"
             f"📈 총 누적 출석: {user['total']}일\n"
@@ -17096,6 +17135,9 @@ def get_daily_attendance_release_at(now: datetime, guild_id: int) -> datetime:
 @tasks.loop(seconds=1)
 async def attendance_panel_loop():
     now = get_kst_now()
+    if now.second == 0:
+        refresh_attendance_data()
+        settle_pending_attendance_rewards()
     if now.hour != 0:
         return
 
