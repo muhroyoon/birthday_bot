@@ -9557,7 +9557,15 @@ class DailyAttendanceView(discord.ui.View):
         self.add_item(AttendanceButton())
 
 
-def build_daily_attendance_description(guild: discord.Guild | None, attendee_ids: list[str]) -> str:
+def build_daily_attendance_description(guild: discord.Guild | None, attendee_ids: list[str], day: str) -> str:
+    payments = {}
+    if guild is not None and conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='attendance_reward_payments'"
+    ).fetchone():
+        payments = {str(uid): amount for uid, amount in conn.execute(
+            "SELECT user_id, amount FROM attendance_reward_payments WHERE guild_id=? AND day=?",
+            (str(guild.id), day),
+        )}
     rank_icons = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
     lines = ["🏆 오늘 출석 TOP 5", "💰 1등 500만 · 2등 300만 · 3등 100만 마리 자동 지급", ""]
 
@@ -9565,7 +9573,9 @@ def build_daily_attendance_description(guild: discord.Guild | None, attendee_ids
         if index < len(attendee_ids):
             member = guild.get_member(int(attendee_ids[index])) if guild is not None else None
             name = member.display_name if member else f"ID:{attendee_ids[index]}"
-            lines.append(f"{rank_icons[index]} {index + 1}등: {name}")
+            amount = payments.get(str(attendee_ids[index]), 0)
+            reward_label = f" · {amount:,}마리 지급 완료" if amount else ""
+            lines.append(f"{rank_icons[index]} {index + 1}등: {name}{reward_label}")
         else:
             lines.append(f"{rank_icons[index]} {index + 1}등: 없음")
 
@@ -9673,7 +9683,7 @@ class AttendanceButton(discord.ui.Button):
 
         embed = discord.Embed(
             title=f"📅 {today} 출석하기",
-            description=build_daily_attendance_description(interaction.guild, today_list),
+            description=build_daily_attendance_description(interaction.guild, today_list, today),
             color=0x00FFCC,
         )
         await interaction.message.edit(embed=embed, view=DailyAttendanceView())
@@ -13545,7 +13555,7 @@ async def create_attendance(interaction: discord.Interaction):
 
     embed = discord.Embed(
         title=f"📅 {today} 출석하기",
-        description=build_daily_attendance_description(interaction.guild, guild_data["today_order"][today]),
+        description=build_daily_attendance_description(interaction.guild, guild_data["today_order"][today], today),
         color=0x00FFCC,
     )
 
@@ -17167,7 +17177,7 @@ async def attendance_panel_loop():
 
         attendance_embed = discord.Embed(
             title=f"📅 {today} 출석하기",
-            description=build_daily_attendance_description(guild, guild_today_order[today]),
+            description=build_daily_attendance_description(guild, guild_today_order[today], today),
             color=0x00FFCC,
         )
         if isinstance(attendance_channel, discord.TextChannel):

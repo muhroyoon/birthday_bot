@@ -15,6 +15,21 @@ class AttendanceRewardsTests(unittest.TestCase):
     def test_amounts_and_non_winners(self):
         self.assertEqual([reward_amount(i) for i in range(1, 6)], [5000000, 3000000, 1000000, 0, 0])
 
+    def test_panel_only_marks_actual_payments(self):
+        from types import SimpleNamespace
+        tree = ast.parse(Path(__file__).with_name('birthday_bot.py').read_text(encoding='utf-8'))
+        function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'build_daily_attendance_description')
+        env = {'discord': SimpleNamespace(Guild=object), 'conn': self.db}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), '<panel>', 'exec'), env)
+        guild = SimpleNamespace(id='g', get_member=lambda uid: SimpleNamespace(display_name=f'User{uid}'))
+        render = env['build_daily_attendance_description']
+        self.assertNotIn('지급 완료', render(guild, ['1'], '2026-10-02'))
+        pay_reward(self.db, 'g', '2026-10-02', '1', 1)
+        panel = render(guild, ['1', '2'], '2026-10-02')
+        self.assertIn('1등: User1 · 5,000,000마리 지급 완료', panel)
+        self.assertEqual(panel.count('지급 완료'), 1)
+        self.assertNotIn('지급 완료', render(guild, ['1'], '2026-10-03'))
+
     def test_replay_and_rank_collision_do_not_pay_twice(self):
         self.assertEqual(pay_reward(self.db, 'g', '2026-10-02', 'u', 1), 5000000)
         self.assertEqual(pay_reward(self.db, 'g', '2026-10-02', 'u', 1), 0)
